@@ -33,7 +33,7 @@ If it is missing (a fresh clone), say so instead of guessing the queue.
 | R2 | Commit or push only when the maintainer asks. Releases are tagged and published deliberately. |
 | R3 | Long-running work and scratch files live in `work/` (git-ignored), not in `/tmp`. |
 | R4 | The visual language is hard-edged Grid: no corner radius, hairline borders, 32 px rhythm, Material Symbols only. New UI follows it. |
-| R5 | Preserve the Quadra attribution in both READMEs. The Tide clock keeps its concept and font but is drawn in the Grid language; do not copy the reference screen literally. |
+| R5 | Preserve the Quadra attribution and link in both READMEs and `docs/THEMES.md`. Quadra is the Roblox client for Linux (https://quadrahq.org), praised for its hard-edged design; it is not a Steam Deck theme. The clock is drawn in the Grid language: big time, hairline grid, hard edges; do not copy any reference screen literally. |
 | R6 | One repo, two binaries. Shared types go to `sdw-core`; never duplicate a serialized type on one side. |
 | R7 | Every config field needs a `serde(default)` and a sensible default, so old configs keep loading. |
 | R8 | `cargo check --workspace` before saying a change compiles; `cargo fmt` on touched crates. |

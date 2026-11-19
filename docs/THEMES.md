@@ -43,8 +43,9 @@ use the `light-` prefix.
 Accepted colours: `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb(r,g,b)`,
 `rgba(r,g,b,a)` (alpha `0..1` or `0..255`).
 
-The default **grid** look is fully inspired by **Quadra**, a great hard-edge Steam
-Deck theme — try it.
+The default **grid** look is inspired by [**Quadra**](https://quadrahq.org),
+the Roblox client for Linux: hard edges, a quiet palette and exact spacing.
+It is a very well-made program and well worth a look.
 
 Rounding is **always zero** in the grid look, even if `--radius` is set: hard
 edges are a product decision, not a theme option.

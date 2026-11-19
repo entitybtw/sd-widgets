@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="assets/icons/sdw-widgets-256.png" width="128" alt="sd-widgets icon" />
+<img src="assets/icons/sd-widgets-256.png" width="128" alt="sd-widgets icon" />
 
 # sd-widgets
 
@@ -19,12 +19,14 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 - **One repo, two binaries**: `sdw-deck` (runs on the Deck) and `sdw-daemon` (runs on the computer).
 - **Grid** visual language: no rounding anywhere, hairline borders, 32 px cells,
   and a minimal set of **Material Symbols** icons.
-  The grid theme is fully inspired by **Quadra**, a gorgeous hard-edge Steam Deck
-  theme — go try it, it's great.
+  The grid look is inspired by [**Quadra**](https://quadrahq.org), the Roblox
+  client for Linux. It is a wonderfully crafted piece of software — hard-edged,
+  quiet and exact — and we are happy to point at it. Go give it a look.
 - **Full customisation**: CSS themes, an exact 15-token palette editor, density,
   tile grid, page and tile visibility, interface sounds, per-event sound files.
-- **A clock you own**: Tide, digital, analog and minimal styles, with colours,
-  size, animation, position, 12/24-hour time, caption and optional elements.
+- **A clock you own**: a big grid face plus digital, analog and minimal styles,
+  with colours, font, size, animation, position, 12/24-hour time, caption,
+  headset battery and the latest notification.
 - **Addons on both sides**: declarative packages add themes, clock presets, home
   tiles, sounds and daemon actions without rebuilding anything.
 - **PC audio on the Deck**: stream the whole computer or picked applications to
@@ -59,8 +61,9 @@ glyph dock, by three-finger swipes, by keyboard, or with the deck's own controls
 the left stick and d-pad move a cursor, the right stick scrolls, **A** clicks,
 **B** goes back, **LB/RB** change pages, **Y** opens Home and **View** opens
 Settings. Drag anywhere on a page to scroll; a horizontal swipe from a screen
-edge also switches pages. Page swaps animate with a fade, a small rise and a
-directional slide; tiles stagger in behind it.
+edge also switches pages. While you swipe, the page follows your finger; on
+release it either eases back or slides into the next space with a fade and a
+directional slide, and the tiles stagger in behind it.
 
 ### On the computer (`sdw-daemon`)
 
@@ -83,8 +86,10 @@ directional slide; tiles stagger in behind it.
   so the token never lives on the Deck.
 - **PC audio** — records the default output or the applications you pick and
   serves raw PCM to the Deck, which plays it with `pw-play`/`paplay`. The daemon
-  keeps it off until you allow audio, and the Deck can require up to three
+  keeps it off until you allow audio, and the Deck can require any number of
   confirmations before a stream starts.
+- **Tray icon** — an optional StatusNotifierItem in Settings; the daemon keeps
+  running and stays reachable after every window is closed.
 - **Setup wizard** — password inputs, dependency detection, install buttons for
   VIIPER and friends, and an explicit line telling you what to add to your
   compositor config when auto-patching is not possible.
@@ -219,12 +224,13 @@ The CSS variables and the full theme model are documented in
 
 The Clock page draws a full-screen clock and keeps the settings next to it:
 
-- four styles: **Tide** (the FLOW · Tide concept, restyled into the grid
-  language), **digital**, **analog** and **minimal**;
-- accent and two background colours, font scale, animation (`drift`, `pulse`,
-  `off`), screen position and a caption;
-- optional seconds, date, weekday, battery, moon, bars and particles;
-- 12/24-hour time and a language-aware day part.
+- four faces: **grid** (the big time on the house grid), **digital**, **analog**
+  and **minimal**;
+- accent and two background colours, a font choice, size, animation (`drift`,
+  `pulse`, `off`), screen position and a caption;
+- optional seconds, date, weekday, deck battery, headset battery and a one-line
+  notification summary;
+- 12/24-hour time and a full-screen mode that exits on a tap or Escape;
 
 Any configuration can be saved as a clock addon and then reused or shipped.
 
