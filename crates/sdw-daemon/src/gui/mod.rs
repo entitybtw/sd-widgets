@@ -171,6 +171,9 @@ pub struct App {
     ha_show_token: bool,
     ha_search: String,
     ha_entities: Vec<HaEntity>,
+    ha_categories: Vec<HaCategory>,
+    ha_new_category: String,
+    ha_pending_category: Option<(String, Option<String>)>,
     last_ha_fetch: Instant,
 
     // security
@@ -279,6 +282,9 @@ impl App {
             ha_show_token: false,
             ha_search: String::new(),
             ha_entities: Vec::new(),
+            ha_categories: cfg.ha.categories.clone(),
+            ha_new_category: String::new(),
+            ha_pending_category: None,
             last_ha_fetch: Instant::now() - Duration::from_secs(60),
             new_pass: String::new(),
             new_pass2: String::new(),
@@ -530,8 +536,36 @@ impl App {
                 let _ = ha.refresh();
             }
             self.ha_entities = ha.entities.clone();
+            self.ha_categories = ha.categories.clone();
         }
         self.last_ha_fetch = Instant::now();
+    }
+
+    /// Persist the category list to the shared config and to the running
+    /// Home Assistant runtime, so the deck sees it on its next poll.
+    fn save_ha_categories(&mut self) {
+        let list = self.ha_categories.clone();
+        let clean = self
+            .state
+            .ha
+            .lock()
+            .map(|mut h| h.set_categories(list))
+            .unwrap_or_default();
+        let saved = clean.clone();
+        let _ = self.state.update_cfg(|c| c.ha.categories = saved);
+        self.ha_categories = clean;
+    }
+
+    fn assign_category(&mut self, entity: &str, category: Option<&str>) {
+        for c in &mut self.ha_categories {
+            c.entities.retain(|x| x != entity);
+        }
+        if let Some(id) = category {
+            if let Some(c) = self.ha_categories.iter_mut().find(|c| c.id == id) {
+                c.entities.push(entity.to_string());
+            }
+        }
+        self.save_ha_categories();
     }
 }
 
@@ -1220,6 +1254,40 @@ impl App {
                 "computer state and quick actions"
             ),
         );
+
+        if let Some(info) = self.update_info.clone().filter(|i| i.newer) {
+            card(ui, t, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(theme::icon::CHECK, 18.0, t.good));
+                    ui.label(
+                        RichText::new(format!(
+                            "{} {} → {}",
+                            t!(self.lang, "доступно обновление", "update available"),
+                            info.current,
+                            info.latest
+                        ))
+                        .size(13.5)
+                        .strong()
+                        .color(t.strong),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ghost(ui, t!(self.lang, "настройки", "settings"), t).clicked() {
+                            self.page = Page::Settings;
+                        }
+                        small(
+                            ui,
+                            t!(
+                                self.lang,
+                                "там можно скачать и установить",
+                                "download and install there"
+                            ),
+                            t.faint,
+                        );
+                    });
+                });
+            });
+            ui.add_space(10.0);
+        }
 
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
@@ -2292,6 +2360,117 @@ impl App {
         });
 
         ui.add_space(10.0);
+        let mut cat_changed = false;
+        let mut cat_remove: Option<usize> = None;
+        let mut cat_swap: Option<(usize, usize)> = None;
+        let cat_count = self.ha_categories.len();
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(t!(self.lang, "категории", "categories"))
+                        .size(15.0)
+                        .strong(),
+                );
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "вкладки на деке: порядок вкладок и плиток внутри них",
+                        "deck tabs: tab order and tile order inside each one"
+                    ),
+                    t.faint,
+                );
+            });
+            ui.add_space(6.0);
+            if self.ha_categories.is_empty() {
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "пока нет категорий. создайте первую ниже.",
+                        "no categories yet. create the first one below."
+                    ),
+                    t.muted,
+                );
+            }
+            for (i, c) in self.ha_categories.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(TextEdit::singleline(&mut c.name).desired_width(200.0))
+                        .lost_focus()
+                    {
+                        cat_changed = true;
+                    }
+                    tag(ui, &format!("{}", c.entities.len()), t.muted);
+                    if ui
+                        .add_enabled(
+                            i > 0,
+                            egui::Button::new(hud(theme::icon::ARROW_LEFT, t.muted)),
+                        )
+                        .clicked()
+                    {
+                        cat_swap = Some((i, i - 1));
+                    }
+                    if ui
+                        .add_enabled(
+                            i + 1 < cat_count,
+                            egui::Button::new(hud(theme::icon::ARROW_RIGHT, t.muted)),
+                        )
+                        .clicked()
+                    {
+                        cat_swap = Some((i, i + 1));
+                    }
+                    if ui
+                        .add(egui::Button::new(hud(theme::icon::CLOSE, t.bad)))
+                        .on_hover_text(t!(self.lang, "удалить категорию", "delete category"))
+                        .clicked()
+                    {
+                        cat_remove = Some(i);
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.ha_new_category)
+                        .hint_text(t!(self.lang, "новая категория", "new category"))
+                        .desired_width(220.0),
+                );
+                if ghost(ui, t!(self.lang, "добавить", "add"), t).clicked()
+                    && !self.ha_new_category.trim().is_empty()
+                {
+                    self.ha_categories
+                        .push(HaCategory::new(&self.ha_new_category));
+                    self.ha_new_category.clear();
+                    cat_changed = true;
+                }
+            });
+            small(
+                ui,
+                t!(
+                    self.lang,
+                    "добавляйте и сортируйте сущности через кнопку со стрелками в строке сущности.",
+                    "add and sort entities with the arrows button on each entity row."
+                ),
+                t.faint,
+            );
+        });
+        if let Some((a, b)) = cat_swap {
+            if a < self.ha_categories.len() && b < self.ha_categories.len() {
+                self.ha_categories.swap(a, b);
+                cat_changed = true;
+            }
+        }
+        if let Some(i) = cat_remove {
+            if i < self.ha_categories.len() {
+                self.ha_categories.remove(i);
+                cat_changed = true;
+            }
+        }
+        if cat_changed {
+            self.save_ha_categories();
+        }
+
+        ui.add_space(10.0);
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(t!(self.lang, "сущности", "entities")).size(15.0).strong());
@@ -2361,6 +2540,10 @@ impl App {
                 shown += 1;
             }
         });
+
+        if let Some((entity, target)) = self.ha_pending_category.take() {
+            self.assign_category(&entity, target.as_deref());
+        }
     }
 
     fn ha_entity_row(&mut self, ui: &mut Ui, t: &Tokens, e: &HaEntity) {
@@ -2380,6 +2563,37 @@ impl App {
                 );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if !self.ha_categories.is_empty() {
+                    let cats = self.ha_categories.clone();
+                    let current = cats
+                        .iter()
+                        .find(|c| c.entities.iter().any(|x| x == &e.entity_id))
+                        .map(|c| c.id.clone());
+                    ui.menu_button(
+                        theme::icon(theme::icon::DRAG, 16.0, t.faint),
+                        |ui| {
+                            ui.label(hud(t!(self.lang, "категория", "category"), t.faint));
+                            for c in &cats {
+                                let inside = current.as_deref() == Some(c.id.as_str());
+                                if ui.selectable_label(inside, &c.name).clicked() {
+                                    self.ha_pending_category =
+                                        Some((e.entity_id.clone(), Some(c.id.clone())));
+                                }
+                            }
+                            if current.is_some()
+                                && ui
+                                    .button(t!(
+                                        self.lang,
+                                        "убрать из категории",
+                                        "remove from category"
+                                    ))
+                                    .clicked()
+                            {
+                                self.ha_pending_category = Some((e.entity_id.clone(), None));
+                            }
+                        },
+                    );
+                }
                 if ui
                     .add(egui::Button::new(theme::icon(
                         theme::icon::STAR,

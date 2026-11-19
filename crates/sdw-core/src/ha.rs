@@ -135,6 +135,7 @@ impl HaClient {
             entities,
             fetched_ms: crate::model::now_ms(),
             areas,
+            categories: Vec::new(),
         })
     }
 

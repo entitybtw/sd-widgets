@@ -113,14 +113,29 @@ fn handle(state: Arc<AppState>, mut req: Request) {
         (Method::Get, "/api/v1/monitor/frame") => monitor_frame(state, req),
 
         (Method::Post, "/api/v1/remote") => remote_command(state, req),
+        (Method::Get, "/api/v1/media") => {
+            respond_json(req, 200, &state.media.snapshot())
+        }
+        (Method::Post, "/api/v1/media/control") => media_control(state, req),
+        (Method::Get, "/api/v1/media/art") => {
+            let url = query_param(query, "url").unwrap_or_default();
+            match state.media.art(&url) {
+                Ok(bytes) => respond_bytes(req, 200, super::media::art_mime(&bytes), bytes),
+                Err(e) => error(req, 404, &e),
+            }
+        }
         (Method::Get, "/api/v1/notifications") => {
+            let after_id = query_u64(query, "after_id");
             let since = query_u64(query, "since").unwrap_or(0);
             let items: Vec<Notification> = state
                 .notifications
                 .status()
                 .recent
                 .into_iter()
-                .filter(|n| n.ts > since)
+                .filter(|n| match after_id {
+                    Some(id) => n.id > id,
+                    None => n.ts > since,
+                })
                 .collect();
             respond_json(req, 200, &items)
         }
@@ -138,6 +153,8 @@ fn handle(state: Arc<AppState>, mut req: Request) {
         (Method::Post, "/api/v1/ha/test") => ha_test(state, req),
         (Method::Post, "/api/v1/ha/call") => ha_call(state, req),
         (Method::Post, "/api/v1/ha/favorites") => ha_favorites(state, req),
+        (Method::Get, "/api/v1/ha/categories") => ha_categories_get(state, req),
+        (Method::Post, "/api/v1/ha/categories") => ha_categories_set(state, req),
 
         (Method::Post, "/api/v1/security/password") => security_password(state, req),
         (Method::Post, "/api/v1/security/rotate") => security_rotate(state, req),
@@ -499,6 +516,32 @@ fn remote_command(state: Arc<AppState>, mut req: Request) {
     }
 }
 
+fn media_control(state: Arc<AppState>, mut req: Request) {
+    let body: Value = match read_json(&mut req) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &e),
+    };
+    let action = body
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if action.is_empty() {
+        return error(req, 400, "Пустое действие");
+    }
+    let value = body.get("value").and_then(Value::as_f64).unwrap_or(0.0);
+    let player = body
+        .get("player")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    match state.media.control(&action, value, &player) {
+        Ok(message) => respond_json(req, 200, &json!({"ok": true, "message": message})),
+        Err(e) => error(req, 400, &e),
+    }
+}
+
 fn media_command(action: &str) -> Result<String, String> {
     if sdw_core::util::has("playerctl") {
         sdw_core::util::run("playerctl", &[action]).map(|_| action.to_string())
@@ -551,6 +594,7 @@ fn ha_states(state: Arc<AppState>, req: Request) {
         entities: ha.entities.clone(),
         fetched_ms: ha.status.last_sync_ms,
         areas: ha.areas.clone(),
+        categories: ha.categories.clone(),
     };
     drop(ha);
     respond_json(req, 200, &states)
@@ -631,6 +675,34 @@ fn ha_favorites(state: Arc<AppState>, mut req: Request) {
 
 // ---------------------------------------------------------------- security & config
 
+fn ha_categories_get(state: Arc<AppState>, req: Request) {
+    let list = state
+        .ha
+        .lock()
+        .map(|h| h.categories.clone())
+        .unwrap_or_default();
+    respond_json(req, 200, &list)
+}
+
+fn ha_categories_set(state: Arc<AppState>, mut req: Request) {
+    let body: Value = match read_json(&mut req) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &e),
+    };
+    let incoming: Vec<HaCategory> =
+        serde_json::from_value(body.get("categories").cloned().unwrap_or(json!([])))
+            .unwrap_or_default();
+    let clean = match state.ha.lock() {
+        Ok(mut h) => h.set_categories(incoming),
+        Err(_) => return error(req, 500, "Home Assistant lock"),
+    };
+    let saved = clean.clone();
+    if let Err(e) = state.update_cfg(|c| c.ha.categories = saved) {
+        return error(req, 500, &e);
+    }
+    respond_json(req, 200, &clean)
+}
+
 fn security_password(state: Arc<AppState>, mut req: Request) {
     let body: Value = match read_json(&mut req) {
         Ok(b) => b,
@@ -701,6 +773,9 @@ fn patch_config(state: Arc<AppState>, mut req: Request) {
         }
         if let Some(v) = body.get("notifications").and_then(|v| v.get("enabled")).and_then(Value::as_bool) {
             c.notifications.enabled = v;
+        }
+        if let Some(v) = body.get("notifications").and_then(|v| v.get("own_service")).and_then(Value::as_bool) {
+            c.notifications.own_service = v;
         }
         if let Some(m) = body.get("monitor") {
             if let Some(v) = m.get("mode").and_then(|v| serde_json::from_value(v.clone()).ok()) {
@@ -818,11 +893,12 @@ fn redacted_config(state: &AppState) -> Value {
             "quality": cfg.monitor.quality,
             "input_enabled": cfg.monitor.input_enabled,
         },
-        "notifications": { "enabled": cfg.notifications.enabled },
+        "notifications": { "enabled": cfg.notifications.enabled, "own_service": cfg.notifications.own_service },
         "ha": {
             "url": cfg.ha.url,
             "configured": !cfg.ha.url.is_empty() && !cfg.ha.token.is_empty(),
             "favorites": cfg.ha.favorites,
+            "categories": cfg.ha.categories,
         },
         "clients": cfg.clients,
         "config_dir": sdw_core::util::config_dir().display().to_string(),
@@ -889,8 +965,15 @@ fn respond_json<T: Serialize>(req: Request, code: u16, value: &T) {
     let _ = req.respond(resp);
 }
 
-fn respond_html(req: Request, html: String) {
-    let resp = Response::from_string(html)
+fn respond_bytes(req: Request, code: u16, content_type: &str, bytes: Vec<u8>) {
+    let resp = Response::from_data(bytes)
+        .with_status_code(code)
+        .with_header(header("Content-Type", content_type))
+        .with_header(header("Cache-Control", "no-store"));
+    let _ = req.respond(resp);
+}
+
+fn respond_html(req: Request, html: String) {    let resp = Response::from_string(html)
         .with_status_code(200)
         .with_header(header("Content-Type", "text/html; charset=utf-8"))
         .with_header(header("Cache-Control", "no-store"));

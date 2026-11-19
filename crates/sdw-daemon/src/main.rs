@@ -5,6 +5,7 @@ mod config;
 mod gui;
 mod install;
 mod monitor;
+mod media;
 mod notifications;
 mod server;
 mod state;

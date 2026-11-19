@@ -399,6 +399,41 @@ pub struct NotificationStatus {
     pub recent: Vec<Notification>,
 }
 
+// ---------------------------------------------------------------- media
+
+/// What is playing on the computer right now, plus the system output volume.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MediaState {
+    /// A player answered and has something loaded (or at least exists).
+    pub available: bool,
+    pub player: String,
+    pub players: Vec<String>,
+    pub status: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    /// `mpris:artUrl` as reported by the player (file://, http(s):// or data:).
+    pub art_url: String,
+    /// Stable key for the current cover; changes when the track changes.
+    pub art_id: String,
+    pub position: f64,
+    pub length: f64,
+    pub player_volume: Option<f64>,
+    /// System output volume, 0..=100.
+    pub volume: u8,
+    pub muted: bool,
+    pub sink: String,
+    pub sinks: Vec<String>,
+    pub error: String,
+    pub updated_ms: u64,
+}
+
+impl MediaState {
+    pub fn playing(&self) -> bool {
+        self.status.eq_ignore_ascii_case("playing")
+    }
+}
+
 // ---------------------------------------------------------------- home assistant
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -551,6 +586,29 @@ pub struct HaStates {
     /// Area names in Home Assistant order; used by the deck for room paging.
     #[serde(default)]
     pub areas: Vec<String>,
+    /// User-made categories, ordered, shared by the daemon and every deck.
+    #[serde(default)]
+    pub categories: Vec<HaCategory>,
+}
+
+/// A custom group of Home Assistant entities. The order of `entities` is the
+/// order shown on the deck; the order of categories is the order of the tabs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaCategory {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub entities: Vec<String>,
+}
+
+impl HaCategory {
+    pub fn new(name: &str) -> Self {
+        Self {
+            id: random_id(8),
+            name: name.trim().to_string(),
+            entities: Vec::new(),
+        }
+    }
 }
 
 // ---------------------------------------------------------------- binds

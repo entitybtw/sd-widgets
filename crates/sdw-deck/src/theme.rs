@@ -481,6 +481,16 @@ pub mod icon {
     pub const CAMERA: &str = "\u{e412}";
     pub const PERSON: &str = "\u{f0d3}";
     pub const WIDGETS: &str = "\u{e1bd}";
+    pub const MUSIC: &str = "\u{e405}";
+    pub const ALBUM: &str = "\u{e019}";
+    pub const PLAYLIST: &str = "\u{e03d}";
+    pub const VOLUME_UP: &str = "\u{e050}";
+    pub const VOLUME_DOWN: &str = "\u{e04d}";
+    pub const VOLUME_OFF: &str = "\u{e04f}";
+    pub const SPEAKER: &str = "\u{e32d}";
+    pub const SHUFFLE: &str = "\u{e043}";
+    pub const REPEAT: &str = "\u{e040}";
+    pub const DRAG: &str = "\u{e25d}";
 }
 
 /// The window / taskbar icon, decoded once from the packaged PNG.

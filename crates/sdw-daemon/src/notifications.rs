@@ -24,6 +24,7 @@ struct Inner {
 pub struct NotificationStore {
     inner: Mutex<Inner>,
     logger: Logger,
+    owns_service: AtomicBool,
 }
 
 impl NotificationStore {
@@ -55,6 +56,7 @@ impl NotificationStore {
                 enabled,
             }),
             logger,
+            owns_service: AtomicBool::new(false),
         }
     }
 
@@ -99,14 +101,84 @@ impl NotificationStore {
         });
     }
 
+    /// Store a notification delivered by the built-in D-Bus service.
+    /// `replaces` replaces an existing notification id (libnotify uses this).
+    pub fn record(
+        &self,
+        app: &str,
+        summary: &str,
+        body: &str,
+        icon: &str,
+        urgency: u8,
+        has_actions: bool,
+        replaces: u64,
+    ) -> u64 {
+        let mut inner = match self.inner.lock() {
+            Ok(i) => i,
+            Err(_) => return 0,
+        };
+        if !inner.enabled {
+            return 0;
+        }
+        if replaces != 0 {
+            inner.items.retain(|n| n.id != replaces);
+        }
+        let id = if replaces != 0 {
+            replaces
+        } else {
+            inner.next_id
+        };
+        inner.next_id = inner.next_id.max(id + 1);
+        let n = Notification {
+            id,
+            app: if app.trim().is_empty() {
+                "Система".into()
+            } else {
+                app.trim().to_string()
+            },
+            summary: summary.trim().to_string(),
+            body: body.trim().to_string(),
+            icon: icon.trim().to_string(),
+            urgency,
+            ts: now_ms(),
+            has_actions,
+        };
+        if n.summary.is_empty() && n.body.is_empty() {
+            return 0;
+        }
+        // Apps often repeat the same notification: collapse exact repeats within 2 seconds.
+        if replaces == 0 {
+            if let Some(last) = inner.items.back() {
+                if last.app == n.app
+                    && last.summary == n.summary
+                    && last.body == n.body
+                    && n.ts.saturating_sub(last.ts) < 2000
+                {
+                    return last.id;
+                }
+            }
+        }
+        inner.items.push_back(n);
+        while inner.items.len() > 120 {
+            inner.items.pop_front();
+        }
+        id
+    }
+
     pub fn clear(&self) {
         if let Ok(mut i) = self.inner.lock() {
             i.items.clear();
         }
     }
 
-    pub fn dismiss(&self, id: u64) {
-        let dbus_id = {
+    /// Remove from the ring buffer without talking to the bus.
+    pub fn dismiss_local(&self, id: u64) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.items.retain(|n| n.id != id);
+        }
+    }
+
+    pub fn dismiss(&self, id: u64) {        let dbus_id = {
             let mut inner = match self.inner.lock() {
                 Ok(i) => i,
                 Err(_) => return,
@@ -115,7 +187,7 @@ impl NotificationStore {
             id
         };
         #[cfg(target_os = "linux")]
-        {
+        if !self.owns_service.load(Ordering::Relaxed) {
             let _ = Command::new("gdbus")
                 .args([
                     "call",
@@ -165,10 +237,30 @@ impl NotificationStore {
         }
     }
 
-    pub fn start(self: Arc<Self>, stop: Arc<AtomicBool>) {
+    pub fn start(self: Arc<Self>, stop: Arc<AtomicBool>, own_service: bool) {
         if !cfg!(target_os = "linux") {
             return;
         }
+
+        #[cfg(target_os = "linux")]
+        if own_service {
+            let service = self.clone();
+            let stop2 = stop.clone();
+            std::thread::spawn(move || {
+                if service.run_service(&stop2) {
+                    return;
+                }
+                // A real desktop daemon owns the name; observe its calls instead.
+                service.observe(stop2);
+            });
+            return;
+        }
+
+        self.observe(stop);
+    }
+
+    /// The old passive mode: watch `Notify` calls made to some other daemon.
+    fn observe(self: Arc<Self>, stop: Arc<AtomicBool>) {
         std::thread::spawn(move || {
             let mut backoff = Duration::from_secs(2);
             while !stop.load(Ordering::Relaxed) {
@@ -188,6 +280,7 @@ impl NotificationStore {
                     Ok(mut child) => {
                         if let Ok(mut inner) = self.inner.lock() {
                             inner.status.listening = true;
+                            inner.status.backend = "D-Bus · наблюдение".into();
                             inner.status.error.clear();
                         }
                         if let Some(out) = child.stdout.take() {
@@ -213,6 +306,42 @@ impl NotificationStore {
                 backoff = (backoff * 2).min(Duration::from_secs(20));
             }
         });
+    }
+
+    /// Own `org.freedesktop.Notifications` until shutdown. Returns false when
+    /// another daemon already has the name (or the bus is unreachable).
+    #[cfg(target_os = "linux")]
+    fn run_service(self: &Arc<Self>, stop: &Arc<AtomicBool>) -> bool {
+        let server = NotifServer {
+            store: self.clone(),
+        };
+        let built = zbus::blocking::connection::Builder::session()
+            .and_then(|b| b.serve_at("/org/freedesktop/Notifications", server))
+            .and_then(|b| b.name("org.freedesktop.Notifications"))
+            .and_then(|b| b.build());
+        let conn = match built {
+            Ok(c) => c,
+            Err(e) => {
+                self.logger.info(format!(
+                    "встроенный сервер уведомлений не занял имя ({e}); включаю наблюдение"
+                ));
+                return false;
+            }
+        };
+        self.owns_service.store(true, Ordering::Relaxed);
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.status.listening = true;
+            inner.status.backend = "D-Bus · встроенный".into();
+            inner.status.error.clear();
+        }
+        self.logger
+            .info("встроенный сервер уведомлений слушает org.freedesktop.Notifications");
+        while !stop.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(400));
+        }
+        self.owns_service.store(false, Ordering::Relaxed);
+        drop(conn);
+        true
     }
 
     fn read_loop(&self, out: impl std::io::Read, stop: &AtomicBool) {
@@ -369,4 +498,69 @@ fn unescape(s: &str) -> String {
         .replace("\\t", "\t")
         .replace("\\\"", "\"")
         .replace("\\\\", "\\")
+}
+
+// ---------------------------------------------------------------- built-in server
+
+#[cfg(target_os = "linux")]
+struct NotifServer {
+    store: Arc<NotificationStore>,
+}
+
+#[cfg(target_os = "linux")]
+#[zbus::interface(name = "org.freedesktop.Notifications")]
+impl NotifServer {
+    fn get_capabilities(&self) -> Vec<String> {
+        vec![
+            "body".into(),
+            "body-markup".into(),
+            "persistence".into(),
+        ]
+    }
+
+    fn get_server_information(&self) -> (String, String, String, String) {
+        (
+            "sd-widgets".into(),
+            "entitybtw".into(),
+            env!("CARGO_PKG_VERSION").into(),
+            "1.2".into(),
+        )
+    }
+
+    fn notify(
+        &self,
+        app_name: &str,
+        replaces_id: u32,
+        app_icon: &str,
+        summary: &str,
+        body: &str,
+        actions: Vec<String>,
+        hints: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
+        _expire_timeout: i32,
+    ) -> u32 {
+        let urgency = hints
+            .get("urgency")
+            .and_then(|v| u8::try_from(v).ok())
+            .or_else(|| {
+                hints
+                    .get("urgency")
+                    .and_then(|v| u32::try_from(v).ok())
+                    .map(|v| v as u8)
+            })
+            .unwrap_or(0);
+        let id = self.store.record(
+            app_name,
+            summary,
+            body,
+            app_icon,
+            urgency,
+            !actions.is_empty(),
+            replaces_id as u64,
+        );
+        id as u32
+    }
+
+    fn close_notification(&self, id: u32) {
+        self.store.dismiss_local(id as u64);
+    }
 }

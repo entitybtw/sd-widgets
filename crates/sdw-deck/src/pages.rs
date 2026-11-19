@@ -1691,6 +1691,367 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
 }
 
 
+// ---------------------------------------------------------------- media
+
+fn media_time(seconds: f64) -> String {
+    let s = seconds.max(0.0).round() as u64;
+    let (h, m, s) = (s / 3600, (s % 3600) / 60, s % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+fn media_button(ui: &mut Ui, t: &Tokens, glyph: &str, size: f32, active: bool) -> bool {
+    let fill = if active { t.accent } else { t.well };
+    let color = if active { Color32::WHITE } else { t.ink };
+    ui.add(
+        egui::Button::new(theme::icon(glyph, size * 0.44, color))
+            .fill(fill)
+            .stroke(Stroke::new(1.0, if active { t.accent } else { t.line_strong }))
+            .corner_radius(CornerRadius::ZERO)
+            .min_size(Vec2::splat(size)),
+    )
+    .clicked()
+}
+
+fn media_cover(ui: &mut Ui, t: &Tokens, side: f32, art: Option<&egui::TextureHandle>, error: &str) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), egui::Sense::hover());
+    match art {
+        Some(tex) => {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().image(
+                tex.id(),
+                rect,
+                uv,
+                Color32::WHITE,
+            );
+        }
+        None => {
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, t.well);
+            ui.painter().rect_stroke(
+                rect,
+                CornerRadius::ZERO,
+                Stroke::new(1.0, t.line),
+                egui::StrokeKind::Inside,
+            );
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                theme::icon::ALBUM,
+                egui::FontId::new(side * 0.28, theme::icon_family()),
+                t.faint,
+            );
+            if !error.is_empty() {
+                ui.painter().text(
+                    rect.center() + Vec2::new(0.0, side * 0.22),
+                    Align2::CENTER_CENTER,
+                    util::truncate(error, 28),
+                    egui::FontId::new(11.0, FontFamily::Monospace),
+                    t.bad,
+                );
+            }
+        }
+    }
+}
+
+pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    page_title(
+        ui,
+        t,
+        t!(app.lang, "медиа", "media"),
+        t!(
+            app.lang,
+            "плеер, обложка и системный звук — всё с дека.",
+            "player, cover art and system sound — all from the deck."
+        ),
+    );
+
+    let st = app.media.state.clone();
+    let connected = app.status.is_some();
+    let art = app.media.art.clone();
+    let art_error = app.media.art_error.clone();
+
+    // status line
+    ui.horizontal(|ui| {
+        theme::dot(ui, if connected { t.good } else { t.bad }, true);
+        ui.label(
+            RichText::new(if !connected {
+                t!(app.lang, "нет связи с компьютером", "no computer")
+            } else if st.player.is_empty() {
+                t!(app.lang, "плеер не найден", "no player")
+            } else {
+                &st.player
+            })
+            .size(14.0)
+            .strong()
+            .color(if connected { t.strong } else { t.bad }),
+        );
+        if st.available && !st.status.is_empty() {
+            theme::chip(ui, &st.status.to_lowercase(), if st.playing() { t.good } else { t.faint });
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked() {
+                app.media.last_poll =
+                    std::time::Instant::now() - std::time::Duration::from_secs(5);
+            }
+        });
+    });
+    ui.add_space(6.0);
+
+    // now playing
+    theme::card(ui, t, |ui| {
+        ui.horizontal_top(|ui| {
+            let side = (ui.available_width() * 0.26).clamp(160.0, 250.0);
+            media_cover(ui, t, side, art.as_ref(), &art_error);
+            ui.add_space(18.0);
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width());
+                let title = if st.title.trim().is_empty() {
+                    if st.available {
+                        t!(app.lang, "ничего не играет", "nothing playing")
+                    } else {
+                        t!(app.lang, "запустите музыку на пк", "start something on the PC")
+                    }
+                } else {
+                    &st.title
+                };
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(title)
+                            .size((side * 0.13).clamp(22.0, 34.0))
+                            .strong()
+                            .color(t.strong),
+                    )
+                    .truncate(),
+                );
+                if !st.artist.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&st.artist).size(18.0).color(t.ink),
+                        )
+                        .truncate(),
+                    );
+                }
+                if !st.album.is_empty() {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(&st.album)
+                                .size(13.0)
+                                .color(t.muted),
+                        )
+                        .truncate(),
+                    );
+                }
+                ui.add_space(10.0);
+
+                // position
+                let length = if st.length > 1.0 { st.length } else { 1.0 };
+                let mut pos = app
+                    .media
+                    .seeking
+                    .unwrap_or(st.position)
+                    .clamp(0.0, length);
+                ui.spacing_mut().interact_size.y = 30.0;
+                let r = ui.add_sized(
+                    [ui.available_width(), 30.0],
+                    egui::Slider::new(&mut pos, 0.0..=length)
+                        .show_value(false)
+                        .trailing_fill(true),
+                );
+                if r.dragged() {
+                    app.media.seeking = Some(pos);
+                }
+                if r.drag_stopped() {
+                    app.media_command("seek", pos);
+                }
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(media_time(pos))
+                            .family(FontFamily::Monospace)
+                            .size(11.0)
+                            .color(t.faint),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(if st.length > 1.0 {
+                                media_time(st.length)
+                            } else {
+                                "—".into()
+                            })
+                            .family(FontFamily::Monospace)
+                            .size(11.0)
+                            .color(t.faint),
+                        );
+                    });
+                });
+
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if media_button(ui, t, theme::icon::PREV, 52.0, false) {
+                        app.media_command("prev", 0.0);
+                    }
+                    ui.add_space(4.0);
+                    let playing = st.playing();
+                    if media_button(ui, t, theme::icon::PLAY_PAUSE, 64.0, playing) {
+                        app.media_command("play_pause", 0.0);
+                    }
+                    ui.add_space(4.0);
+                    if media_button(ui, t, theme::icon::NEXT, 52.0, false) {
+                        app.media_command("next", 0.0);
+                    }
+                    ui.add_space(4.0);
+                    if media_button(ui, t, theme::icon::STOP, 52.0, false) {
+                        app.media_command("stop", 0.0);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(if st.error.is_empty() {
+                                util::truncate(&st.player, 30)
+                            } else {
+                                util::truncate(&st.error, 44)
+                            })
+                            .family(FontFamily::Monospace)
+                            .size(10.5)
+                            .color(if st.error.is_empty() { t.faint } else { t.warn }),
+                        );
+                    });
+                });
+            });
+        });
+    });
+
+    ui.add_space(10.0);
+
+    // system sound
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(theme::icon(
+                if st.muted { theme::icon::VOLUME_OFF } else { theme::icon::VOLUME_UP },
+                22.0,
+                if st.muted { t.warn } else { t.accent },
+            ));
+            ui.label(
+                RichText::new(t!(app.lang, "системный звук", "system sound"))
+                    .size(16.0)
+                    .strong()
+                    .color(t.strong),
+            );
+            ui.label(
+                RichText::new(if st.sink.is_empty() {
+                    "default output".to_string()
+                } else {
+                    util::truncate(&st.sink, 52)
+                })
+                .family(FontFamily::Monospace)
+                .size(11.0)
+                .color(t.muted),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if media_button(
+                    ui,
+                    t,
+                    if st.muted {
+                        theme::icon::VOLUME_OFF
+                    } else {
+                        theme::icon::VOLUME_UP
+                    },
+                    46.0,
+                    st.muted,
+                ) {
+                    app.media_command("mute", 0.0);
+                }
+            });
+        });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            let mut vol = st.volume.min(100) as i32;
+            ui.spacing_mut().interact_size.y = 34.0;
+            let r = ui.add_sized(
+                [(ui.available_width() - 150.0).max(120.0), 34.0],
+                egui::Slider::new(&mut vol, 0..=100)
+                    .show_value(false)
+                    .trailing_fill(true),
+            );
+            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                app.media_command("volume", vol as f64);
+            }
+            ui.label(
+                RichText::new(format!("{vol}%"))
+                    .family(FontFamily::Monospace)
+                    .size(14.0)
+                    .strong()
+                    .color(t.strong),
+            );
+            if media_button(ui, t, theme::icon::VOLUME_DOWN, 34.0, false) {
+                app.media_command("volume_down", 0.0);
+            }
+            if media_button(ui, t, theme::icon::VOLUME_UP, 34.0, false) {
+                app.media_command("volume_up", 0.0);
+            }
+        });
+        if st.sinks.len() > 1 {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::hud(t!(app.lang, "выход", "output"), t.faint));
+                egui::ComboBox::from_id_salt("media-sink")
+                    .selected_text(util::truncate(&st.sink, 46))
+                    .width(360.0)
+                    .show_ui(ui, |ui| {
+                        for sink in &st.sinks {
+                            if ui
+                                .selectable_label(sink == &st.sink, sink.as_str())
+                                .clicked()
+                            {
+                                app.set_media_sink(sink);
+                            }
+                        }
+                    });
+            });
+        }
+    });
+
+    if !st.players.is_empty() {
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(theme::hud(t!(app.lang, "плееры", "players"), t.faint));
+            for p in &st.players {
+                let selected = p == &st.player;
+                let resp = ui.add(
+                    egui::Button::new(
+                        RichText::new(util::truncate(p, 34))
+                            .size(12.5)
+                            .color(if selected { Color32::WHITE } else { t.ink }),
+                    )
+                    .fill(if selected { t.accent } else { t.well })
+                    .stroke(Stroke::new(1.0, if selected { t.accent } else { t.line }))
+                    .corner_radius(CornerRadius::ZERO)
+                    .min_size(Vec2::new(0.0, 38.0)),
+                );
+                if resp.clicked() && !selected {
+                    app.select_media_player(p);
+                }
+            }
+        });
+    }
+
+    if !connected {
+        ui.add_space(8.0);
+        theme::card(ui, t, |ui| {
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "подключите компьютер на странице «компьютеры», чтобы управлять его плеером и звуком.",
+                    "connect a computer on the computers page to control its player and sound."
+                ))
+                .size(13.0)
+                .color(t.muted),
+            );
+        });
+    }
+}
+
 // ---------------------------------------------------------------- home assistant
 
 fn ha_glyph(domain: &str) -> &'static str {
@@ -1781,6 +2142,103 @@ fn ha_service(e: &HaEntity, service: &str, data: serde_json::Value) -> HaCall {
     }
 }
 
+#[derive(Clone)]
+enum HaRoom {
+    Favorites,
+    Category(usize),
+    Area(String),
+    Unassigned,
+    All,
+}
+
+struct HaAction {
+    call: HaCall,
+    entity: String,
+    /// Local state to show until Home Assistant confirms the change.
+    state: Option<String>,
+}
+
+/// Sensors worth a tile. Everything else (updates, counters, diagnostics)
+/// would drown the page in 600 rows.
+fn ha_visible(e: &HaEntity) -> bool {
+    if sdw_core::ha::is_controllable(e) {
+        if e.domain() == "media_player" {
+            return e.is_on() || e.media_title().is_some();
+        }
+        return true;
+    }
+    let device_class = e
+        .attributes
+        .get("device_class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    match e.domain() {
+        "sensor" => {
+            matches!(
+                device_class,
+                "temperature"
+                    | "humidity"
+                    | "illuminance"
+                    | "pressure"
+                    | "carbon_dioxide"
+                    | "battery"
+                    | "power"
+                    | "energy"
+            ) || matches!(
+                e.unit().as_str(),
+                "°C" | "°F" | "%" | "lx" | "hPa" | "W" | "kWh"
+            )
+        }
+        "binary_sensor" => matches!(
+            device_class,
+            "door" | "window" | "motion" | "occupancy" | "smoke" | "moisture" | "opening"
+        ),
+        "weather" | "person" => true,
+        _ => false,
+    }
+}
+
+fn ha_power_button(ui: &mut Ui, t: &Tokens, on: bool, lang: Lang, width: f32) -> bool {
+    let label = if on {
+        t!(lang, "выключить", "turn off")
+    } else {
+        t!(lang, "включить", "turn on")
+    };
+    ui.add_sized(
+        [width.max(120.0), 46.0],
+        egui::Button::new(
+            RichText::new(label)
+                .size(15.5)
+                .strong()
+                .color(if on { t.accent } else { t.ink }),
+        )
+        .fill(if on {
+            t.accent.gamma_multiply(0.16)
+        } else {
+            t.well
+        })
+        .stroke(Stroke::new(
+            1.0,
+            if on { t.accent.gamma_multiply(0.55) } else { t.line_strong },
+        ))
+        .corner_radius(CornerRadius::ZERO),
+    )
+    .clicked()
+}
+
+fn ha_move_button(ui: &mut Ui, t: &Tokens, glyph: &str, tip: &str, enabled: bool) -> bool {
+    let resp = ui.add_enabled(
+        enabled,
+        egui::Button::new(theme::icon(glyph, 16.0, t.muted))
+            .fill(t.well)
+            .stroke(Stroke::new(1.0, t.line))
+            .corner_radius(CornerRadius::ZERO)
+            .min_size(Vec2::splat(30.0)),
+    );
+    resp.on_hover_text(tip).clicked()
+}
+
+#[allow(clippy::too_many_arguments)]
 fn ha_card(
     ui: &mut Ui,
     t: &Tokens,
@@ -1788,8 +2246,12 @@ fn ha_card(
     e: &HaEntity,
     width: f32,
     favorites: &[String],
-    calls: &mut Vec<HaCall>,
+    categories: &[HaCategory],
+    current_category: Option<usize>,
+    actions: &mut Vec<HaAction>,
     star: &mut Option<String>,
+    category_change: &mut Option<(String, Option<String>)>,
+    move_entity: &mut Option<(usize, String, i32)>,
 ) {
     let on = e.is_on();
     let accent = if on { t.accent } else { t.faint };
@@ -1800,22 +2262,26 @@ fn ha_card(
             if on { accent.gamma_multiply(0.45) } else { t.line },
         ))
         .corner_radius(CornerRadius::ZERO)
-        .inner_margin(Margin::same(13))
+        .inner_margin(Margin::same(14))
         .show(ui, |ui| {
             ui.set_width(width);
             ui.horizontal(|ui| {
-                ui.label(theme::icon(ha_glyph(e.domain()), 20.0, accent));
+                ui.label(theme::icon(ha_glyph(e.domain()), 22.0, accent));
                 ui.vertical(|ui| {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(e.name()).size(14.0).strong().color(t.strong),
+                            RichText::new(e.name()).size(15.0).strong().color(t.strong),
                         )
                         .truncate(),
                     );
                     ui.label(
                         RichText::new(format!(
                             "{} · {}",
-                            sdw_core::ha::domain_label(e.domain(), lang),
+                            if e.area.is_empty() {
+                                t!(lang, "дом", "home")
+                            } else {
+                                &e.area
+                            },
                             ha_state_text(e, lang)
                         ))
                         .family(FontFamily::Monospace)
@@ -1839,42 +2305,104 @@ fn ha_card(
                     {
                         *star = Some(e.entity_id.clone());
                     }
+                    // Move inside the current category.
+                    if let Some(ci) = current_category {
+                        let pos = categories
+                            .get(ci)
+                            .and_then(|c| c.entities.iter().position(|x| x == &e.entity_id));
+                        if let Some(pos) = pos {
+                            if ha_move_button(
+                                ui,
+                                t,
+                                theme::icon::ARROW_DOWN,
+                                t!(lang, "ниже", "move down"),
+                                pos + 1 < categories[ci].entities.len(),
+                            ) {
+                                *move_entity = Some((ci, e.entity_id.clone(), 1));
+                            }
+                            if ha_move_button(
+                                ui,
+                                t,
+                                theme::icon::ARROW_UP,
+                                t!(lang, "выше", "move up"),
+                                pos > 0,
+                            ) {
+                                *move_entity = Some((ci, e.entity_id.clone(), -1));
+                            }
+                        }
+                    }
+                    // Put the entity into a category.
+                    ui.menu_button(theme::icon(theme::icon::DRAG, 15.0, t.faint), |ui| {
+                        ui.label(theme::hud(t!(lang, "категория", "category"), t.faint));
+                        for c in categories {
+                            let inside = c.entities.iter().any(|x| x == &e.entity_id);
+                            if ui.selectable_label(inside, c.name.as_str()).clicked() {
+                                *category_change = Some((e.entity_id.clone(), Some(c.id.clone())));
+                                ui.close();
+                            }
+                        }
+                        if categories.is_empty() {
+                            ui.label(
+                                RichText::new(t!(
+                                    lang,
+                                    "создайте категорию выше",
+                                    "create a category above"
+                                ))
+                                .size(11.5)
+                                .color(t.muted),
+                            );
+                        }
+                        if categories
+                            .iter()
+                            .any(|c| c.entities.iter().any(|x| x == &e.entity_id))
+                            && ui
+                                .button(t!(lang, "убрать из категории", "remove from category"))
+                                .clicked()
+                        {
+                            *category_change = Some((e.entity_id.clone(), None));
+                            ui.close();
+                        }
+                    });
                 });
             });
-            ui.add_space(4.0);
+            ui.add_space(6.0);
 
             match e.domain() {
                 "light" => {
+                    if ha_power_button(ui, t, on, lang, width) {
+                        actions.push(HaAction {
+                            call: ha_toggle(e, !on),
+                            entity: e.entity_id.clone(),
+                            state: Some(if on { "off" } else { "on" }.into()),
+                        });
+                    }
                     let mut pct = e
                         .brightness()
                         .map(|b| (b as u32 * 100 / 255) as i32)
                         .unwrap_or(if on { 100 } else { 0 });
                     ui.horizontal(|ui| {
-                        if ha_icon_button(
-                            ui,
-                            t,
-                            theme::icon::POWER,
-                            on,
-                            t!(lang, "включить или выключить", "turn on or off"),
-                        ) {
-                            calls.push(ha_toggle(e, !on));
-                        }
-                        let r = ui.add(
+                        ui.spacing_mut().interact_size.y = 34.0;
+                        let r = ui.add_sized(
+                            [(width - 58.0).max(100.0), 34.0],
                             egui::Slider::new(&mut pct, 1..=100)
                                 .show_value(false)
                                 .trailing_fill(true),
                         );
                         if r.drag_stopped() {
-                            calls.push(ha_service(
-                                e,
-                                "turn_on",
-                                json!({ "brightness": (pct as u32 * 255 / 100).min(255) }),
-                            ));
+                            actions.push(HaAction {
+                                call: ha_service(
+                                    e,
+                                    "turn_on",
+                                    json!({ "brightness": (pct as u32 * 255 / 100).min(255) }),
+                                ),
+                                entity: e.entity_id.clone(),
+                                state: Some("on".into()),
+                            });
                         }
                         ui.label(
                             RichText::new(format!("{pct}%"))
                                 .family(FontFamily::Monospace)
-                                .size(11.0)
+                                .size(12.0)
                                 .color(t.faint),
                         );
                     });
@@ -1886,21 +2414,43 @@ fn ha_card(
                         as i32;
                     ui.horizontal(|ui| {
                         if ha_icon_button(ui, t, theme::icon::ARROW_UP, false, t!(lang, "открыть", "open")) {
-                            calls.push(ha_service(e, "open_cover", serde_json::Value::Null));
+                            actions.push(HaAction {
+                                call: ha_service(e, "open_cover", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: Some("open".into()),
+                            });
                         }
                         if ha_icon_button(ui, t, theme::icon::STOP, false, t!(lang, "стоп", "stop")) {
-                            calls.push(ha_service(e, "stop_cover", serde_json::Value::Null));
+                            actions.push(HaAction {
+                                call: ha_service(e, "stop_cover", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
                         }
                         if ha_icon_button(ui, t, theme::icon::ARROW_DOWN, false, t!(lang, "закрыть", "close")) {
-                            calls.push(ha_service(e, "close_cover", serde_json::Value::Null));
+                            actions.push(HaAction {
+                                call: ha_service(e, "close_cover", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: Some("closed".into()),
+                            });
                         }
-                        let r = ui.add(
+                        ui.spacing_mut().interact_size.y = 30.0;
+                        let r = ui.add_sized(
+                            [(width - 220.0).max(90.0), 30.0],
                             egui::Slider::new(&mut pos, 0..=100)
                                 .show_value(false)
                                 .trailing_fill(true),
                         );
                         if r.drag_stopped() {
-                            calls.push(ha_service(e, "set_cover_position", json!({ "position": pos })));
+                            actions.push(HaAction {
+                                call: ha_service(
+                                    e,
+                                    "set_cover_position",
+                                    json!({ "position": pos }),
+                                ),
+                                entity: e.entity_id.clone(),
+                                state: Some(if pos > 0 { "open" } else { "closed" }.into()),
+                            });
                         }
                         ui.label(
                             RichText::new(format!("{pos}%"))
@@ -1916,36 +2466,53 @@ fn ha_card(
                     ui.horizontal(|ui| {
                         if ha_text_button(ui, t, "−") {
                             target = (target - 0.5).max(5.0);
-                            calls.push(ha_service(e, "set_temperature", json!({ "temperature": target })));
+                            actions.push(HaAction {
+                                call: ha_service(
+                                    e,
+                                    "set_temperature",
+                                    json!({ "temperature": target }),
+                                ),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
                         }
                         ui.label(
                             RichText::new(format!("{target:.1}°"))
-                                .size(21.0)
+                                .size(23.0)
                                 .strong()
                                 .color(t.strong),
                         );
                         if ha_text_button(ui, t, "+") {
                             target = (target + 0.5).min(35.0);
-                            calls.push(ha_service(e, "set_temperature", json!({ "temperature": target })));
+                            actions.push(HaAction {
+                                call: ha_service(
+                                    e,
+                                    "set_temperature",
+                                    json!({ "temperature": target }),
+                                ),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
                         }
                         if let Some(c) = current {
                             ui.label(
-                                RichText::new(format!(
-                                    "{} {c:.1}°",
-                                    t!(lang, "сейчас", "now")
-                                ))
-                                .family(FontFamily::Monospace)
-                                .size(11.0)
-                                .color(t.faint),
+                                RichText::new(format!("{} {c:.1}°", t!(lang, "сейчас", "now")))
+                                    .family(FontFamily::Monospace)
+                                    .size(11.0)
+                                    .color(t.faint),
                             );
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if ha_icon_button(ui, t, theme::icon::POWER, on, t!(lang, "вкл/выкл", "on/off")) {
-                                calls.push(ha_service(
-                                    e,
-                                    if on { "turn_off" } else { "turn_on" },
-                                    serde_json::Value::Null,
-                                ));
+                                actions.push(HaAction {
+                                    call: ha_service(
+                                        e,
+                                        if on { "turn_off" } else { "turn_on" },
+                                        serde_json::Value::Null,
+                                    ),
+                                    entity: e.entity_id.clone(),
+                                    state: Some(if on { "off" } else { "on" }.into()),
+                                });
                             }
                         });
                     });
@@ -1973,13 +2540,25 @@ fn ha_card(
                     }
                     ui.horizontal(|ui| {
                         if ha_icon_button(ui, t, theme::icon::PREV, false, t!(lang, "назад", "previous")) {
-                            calls.push(ha_service(e, "media_previous_track", serde_json::Value::Null));
+                            actions.push(HaAction {
+                                call: ha_service(e, "media_previous_track", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
                         }
                         if ha_icon_button(ui, t, theme::icon::PLAY_PAUSE, e.state == "playing", t!(lang, "пауза", "play/pause")) {
-                            calls.push(ha_service(e, "media_play_pause", serde_json::Value::Null));
+                            actions.push(HaAction {
+                                call: ha_service(e, "media_play_pause", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
                         }
                         if ha_icon_button(ui, t, theme::icon::NEXT, false, t!(lang, "дальше", "next")) {
-                            calls.push(ha_service(e, "media_next_track", serde_json::Value::Null));
+                            actions.push(HaAction {
+                                call: ha_service(e, "media_next_track", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
                         }
                         if let Some(vol) = e.attributes.get("volume_level").and_then(|v| v.as_f64()) {
                             let mut pct = (vol * 100.0).round() as i32;
@@ -1989,38 +2568,40 @@ fn ha_card(
                                     .trailing_fill(true),
                             );
                             if r.drag_stopped() {
-                                calls.push(ha_service(
-                                    e,
-                                    "volume_set",
-                                    json!({ "volume_level": pct as f64 / 100.0 }),
-                                ));
+                                actions.push(HaAction {
+                                    call: ha_service(
+                                        e,
+                                        "volume_set",
+                                        json!({ "volume_level": pct as f64 / 100.0 }),
+                                    ),
+                                    entity: e.entity_id.clone(),
+                                    state: None,
+                                });
                             }
                         }
                     });
                 }
                 "lock" => {
                     let locked = e.state == "locked";
-                    ui.horizontal(|ui| {
-                        if ha_icon_button(ui, t, if locked { theme::icon::LOCK } else { theme::icon::OPEN }, locked, t!(lang, "замок", "lock")) {
-                            calls.push(ha_service(
+                    if ha_power_button(ui, t, locked, lang, width) {
+                        actions.push(HaAction {
+                            call: ha_service(
                                 e,
                                 if locked { "unlock" } else { "lock" },
                                 serde_json::Value::Null,
-                            ));
-                        }
-                        ui.label(
-                            RichText::new(ha_state_text(e, lang))
-                                .size(13.0)
-                                .color(t.muted),
-                        );
-                    });
+                            ),
+                            entity: e.entity_id.clone(),
+                            state: Some(if locked { "unlocked" } else { "locked" }.into()),
+                        });
+                    }
                 }
                 "scene" | "script" | "button" => {
                     if ui
-                        .add(
+                        .add_sized(
+                            [width, 44.0],
                             egui::Button::new(
                                 RichText::new(t!(lang, "запустить", "run"))
-                                    .size(12.5)
+                                    .size(14.5)
                                     .color(accent),
                             )
                             .fill(accent.gamma_multiply(0.12))
@@ -2029,7 +2610,11 @@ fn ha_card(
                         )
                         .clicked()
                     {
-                        calls.push(ha_toggle(e, true));
+                        actions.push(HaAction {
+                            call: ha_toggle(e, true),
+                            entity: e.entity_id.clone(),
+                            state: None,
+                        });
                     }
                 }
                 "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker" => {
@@ -2044,23 +2629,20 @@ fn ha_card(
                                 format!(" {unit}")
                             }
                         ))
-                        .size(20.0)
+                        .size(22.0)
                         .strong()
                         .color(if on { t.accent } else { t.strong }),
                     );
                 }
                 _ => {
                     if sdw_core::ha::is_controllable(e) {
-                        ui.horizontal(|ui| {
-                            if ha_icon_button(ui, t, theme::icon::POWER, on, t!(lang, "вкл/выкл", "on/off")) {
-                                calls.push(ha_toggle(e, !on));
-                            }
-                            ui.label(
-                                RichText::new(ha_state_text(e, lang))
-                                    .size(13.0)
-                                    .color(t.muted),
-                            );
-                        });
+                        if ha_power_button(ui, t, on, lang, width) {
+                            actions.push(HaAction {
+                                call: ha_toggle(e, !on),
+                                entity: e.entity_id.clone(),
+                                state: Some(if on { "off" } else { "on" }.into()),
+                            });
+                        }
                     } else {
                         ui.label(
                             RichText::new(ha_state_text(e, lang))
@@ -2073,14 +2655,6 @@ fn ha_card(
         });
 }
 
-#[derive(Clone)]
-enum HaRoom {
-    Favorites,
-    Area(String),
-    Unassigned,
-    All,
-}
-
 pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let ha = app
         .status
@@ -2088,6 +2662,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         .map(|s| s.ha.clone())
         .unwrap_or_default();
     let favorites = ha.favorites.clone();
+    let categories = app.ha.categories.clone();
     page_title(
         ui,
         t,
@@ -2121,7 +2696,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         util::truncate(&ha.url, 40),
                         ha.entities,
                         t!(app.lang, "сущностей", "entities"),
-                        app.ha_rooms_count(),
+                        ha_rooms_count(app),
                         t!(app.lang, "комнат", "rooms")
                     ))
                     .family(FontFamily::Monospace)
@@ -2225,39 +2800,195 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         return;
     }
 
-    // Room list: favourite pseudo-room, then Home Assistant areas, then the
-    // leftovers that are not assigned to any area.
-    let mut area_names: Vec<String> = app.ha.areas.clone();
-    for e in &app.ha.entities {
-        if !e.area.is_empty() && !area_names.contains(&e.area) {
-            area_names.push(e.area.clone());
+    // ---------------------------------------------------------------- categories
+
+    if app.ha.manage {
+        ui.add_space(8.0);
+        let mut list = app.ha.categories.clone();
+        let mut new_name = app.ha.new_category.clone();
+        let mut changed = false;
+        theme::card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(t!(app.lang, "категории", "categories"))
+                        .size(16.0)
+                        .strong()
+                        .color(t.strong),
+                );
+                ui.label(
+                    RichText::new(t!(
+                        app.lang,
+                        "порядок вкладок и порядок плиток внутри них.",
+                        "tab order and tile order inside each one."
+                    ))
+                    .size(12.0)
+                    .color(t.muted),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::ghost(ui, t!(app.lang, "готово", "done"), t).clicked() {
+                        app.ha.manage = false;
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            let mut remove: Option<usize> = None;
+            let mut swap: Option<(usize, usize)> = None;
+            let count = list.len();
+            for (i, c) in list.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(
+                            TextEdit::singleline(&mut c.name)
+                                .desired_width(220.0),
+                        )
+                        .lost_focus()
+                    {
+                        changed = true;
+                    }
+                    ui.label(
+                        RichText::new(format!("{}", c.entities.len()))
+                            .family(FontFamily::Monospace)
+                            .size(11.0)
+                            .color(t.faint),
+                    );
+                    if ha_move_button(
+                        ui,
+                        t,
+                        theme::icon::ARROW_LEFT,
+                        t!(app.lang, "левее", "move left"),
+                        i > 0,
+                    ) {
+                        swap = Some((i, i - 1));
+                    }
+                    if ha_move_button(
+                        ui,
+                        t,
+                        theme::icon::ARROW_RIGHT,
+                        t!(app.lang, "правее", "move right"),
+                        i + 1 < count,
+                    ) {
+                        swap = Some((i, i + 1));
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(theme::icon(theme::icon::CLOSE, 16.0, t.bad))
+                                .fill(t.well)
+                                .stroke(Stroke::new(1.0, t.line))
+                                .corner_radius(CornerRadius::ZERO)
+                                .min_size(Vec2::splat(30.0)),
+                        )
+                        .clicked()
+                    {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some((a, b)) = swap {
+                if a < list.len() && b < list.len() {
+                    list.swap(a, b);
+                    changed = true;
+                }
+            }
+            if let Some(i) = remove {
+                if i < list.len() {
+                    list.remove(i);
+                    changed = true;
+                }
+            }
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut new_name)
+                        .hint_text(t!(app.lang, "новая категория", "new category"))
+                        .desired_width(240.0),
+                );
+                if theme::ghost(ui, t!(app.lang, "добавить", "add"), t).clicked()
+                    && !new_name.trim().is_empty()
+                {
+                    list.push(HaCategory::new(&new_name));
+                    new_name.clear();
+                    changed = true;
+                }
+            });
+        });
+        app.ha.new_category = new_name;
+        if changed {
+            app.ha.categories = list;
+            app.save_ha_categories();
         }
     }
-    area_names.sort_by_key(|a| a.to_lowercase());
-    area_names.dedup();
-    let unassigned = app.ha.entities.iter().any(|e| e.area.is_empty());
-    let mut rooms: Vec<(HaRoom, String)> = Vec::new();
-    if area_names.is_empty() && favorites.is_empty() {
-        rooms.push((HaRoom::All, t!(app.lang, "все устройства", "all devices").to_string()));
-    } else {
-        if !favorites.is_empty() {
-            rooms.push((
-                HaRoom::Favorites,
-                format!("★ {}", t!(app.lang, "избранное", "favorites")),
-            ));
+
+    // ---------------------------------------------------------------- rooms
+
+    let mut area_counts: Vec<(String, usize)> = Vec::new();
+    for area in &app.ha.areas {
+        let count = app
+            .ha
+            .entities
+            .iter()
+            .filter(|e| &e.area == area && ha_visible(e))
+            .count();
+        area_counts.push((area.clone(), count));
+    }
+    for e in &app.ha.entities {
+        if e.area.is_empty() {
+            continue;
         }
-        for area in &area_names {
-            rooms.push((HaRoom::Area(area.clone()), area.clone()));
+        if !area_counts.iter().any(|(a, _)| a == &e.area) {
+            let count = app
+                .ha
+                .entities
+                .iter()
+                .filter(|x| x.area == e.area && ha_visible(x))
+                .count();
+            area_counts.push((e.area.clone(), count));
         }
-        if unassigned {
-            rooms.push((
-                HaRoom::Unassigned,
-                t!(app.lang, "без комнаты", "no room").to_string(),
-            ));
-        }
-        if rooms.is_empty() {
-            rooms.push((HaRoom::All, t!(app.lang, "все устройства", "all devices").to_string()));
-        }
+    }
+    area_counts.retain(|(_, n)| *n > 0);
+
+    let mut rooms: Vec<(HaRoom, String, usize)> = Vec::new();
+    let all_count = app
+        .ha
+        .entities
+        .iter()
+        .filter(|e| ha_visible(e))
+        .count();
+    rooms.push((
+        HaRoom::All,
+        t!(app.lang, "весь дом", "whole home").to_string(),
+        all_count,
+    ));
+    if !favorites.is_empty() {
+        rooms.push((
+            HaRoom::Favorites,
+            format!("★ {}", t!(app.lang, "избранное", "favorites")),
+            favorites.len(),
+        ));
+    }
+    for (i, c) in app.ha.categories.iter().enumerate() {
+        rooms.push((
+            HaRoom::Category(i),
+            c.name.clone(),
+            c.entities.len(),
+        ));
+    }
+    for (area, count) in &area_counts {
+        rooms.push((HaRoom::Area(area.clone()), area.clone(), *count));
+    }
+    let has_unassigned = app
+        .ha
+        .entities
+        .iter()
+        .any(|e| e.area.is_empty() && ha_visible(e));
+    if !area_counts.is_empty() && has_unassigned {
+        rooms.push((
+            HaRoom::Unassigned,
+            t!(app.lang, "без комнаты", "no room").to_string(),
+            app.ha
+                .entities
+                .iter()
+                .filter(|e| e.area.is_empty() && ha_visible(e))
+                .count(),
+        ));
     }
     if app.ha.room >= rooms.len() {
         app.ha.room = 0;
@@ -2266,7 +2997,8 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let needle = app.ha.search.trim().to_lowercase();
     let searching = !needle.is_empty();
 
-    // Room pager: two square blue arrows, the room name and a dropdown.
+    // ---------------------------------------------------------------- toolbar
+
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         if !searching {
@@ -2276,21 +3008,14 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 app.ha.room = prev;
             }
             egui::ComboBox::from_id_salt("ha-room")
-                .selected_text(RichText::new(rooms[app.ha.room].1.clone()).size(16.0).strong())
+                .selected_text(
+                    RichText::new(rooms[app.ha.room].1.clone())
+                        .size(16.0)
+                        .strong(),
+                )
                 .width(280.0)
                 .show_ui(ui, |ui| {
-                    for (i, (_, label)) in rooms.iter().enumerate() {
-                        let count = app
-                            .ha
-                            .entities
-                            .iter()
-                            .filter(|e| match &rooms[i].0 {
-                                HaRoom::Favorites => favorites.contains(&e.entity_id),
-                                HaRoom::Area(a) => &e.area == a,
-                                HaRoom::Unassigned => e.area.is_empty(),
-                                HaRoom::All => true,
-                            })
-                            .count();
+                    for (i, (_, label, count)) in rooms.iter().enumerate() {
                         ui.selectable_value(
                             &mut app.ha.room,
                             i,
@@ -2325,31 +3050,96 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui.add(
                 TextEdit::singleline(&mut app.ha.search)
                     .hint_text(t!(app.lang, "поиск по имени", "search by name"))
-                    .desired_width(240.0),
+                    .desired_width(220.0),
             );
+            if theme::ghost(
+                ui,
+                if app.ha.manage {
+                    t!(app.lang, "скрыть категории", "hide categories")
+                } else {
+                    t!(app.lang, "категории", "categories")
+                },
+                t,
+            )
+            .clicked()
+            {
+                app.ha.manage = !app.ha.manage;
+            }
         });
     });
     ui.add_space(6.0);
 
-    let mut entities: Vec<HaEntity> = app
-        .ha
-        .entities
-        .iter()
-        .filter(|e| {
-            if searching {
+    // ---------------------------------------------------------------- entities
+
+    let current_category = match &room {
+        HaRoom::Category(i) => Some(*i),
+        _ => None,
+    };
+    let optimistic = app.ha.optimistic.clone();
+    let mut entities: Vec<HaEntity> = if searching {
+        app.ha
+            .entities
+            .iter()
+            .filter(|e| {
                 let name = e.name().to_lowercase();
                 name.contains(&needle) || e.entity_id.to_lowercase().contains(&needle)
-            } else {
-                match &room {
-                    HaRoom::Favorites => favorites.contains(&e.entity_id),
-                    HaRoom::Area(a) => &e.area == a,
-                    HaRoom::Unassigned => e.area.is_empty(),
-                    HaRoom::All => true,
+            })
+            .cloned()
+            .collect()
+    } else {
+        match &room {
+            HaRoom::Favorites => app
+                .ha
+                .entities
+                .iter()
+                .filter(|e| favorites.contains(&e.entity_id))
+                .cloned()
+                .collect(),
+            HaRoom::Category(i) => {
+                let order = app
+                    .ha
+                    .categories
+                    .get(*i)
+                    .map(|c| c.entities.clone())
+                    .unwrap_or_default();
+                let mut out = Vec::new();
+                for id in order {
+                    if let Some(e) = app.ha.entities.iter().find(|e| e.entity_id == id) {
+                        out.push(e.clone());
+                    }
                 }
+                out
             }
-        })
-        .cloned()
-        .collect();
+            HaRoom::Area(a) => app
+                .ha
+                .entities
+                .iter()
+                .filter(|e| &e.area == a && ha_visible(e))
+                .cloned()
+                .collect(),
+            HaRoom::Unassigned => app
+                .ha
+                .entities
+                .iter()
+                .filter(|e| e.area.is_empty() && ha_visible(e))
+                .cloned()
+                .collect(),
+            HaRoom::All => app
+                .ha
+                .entities
+                .iter()
+                .filter(|e| ha_visible(e))
+                .cloned()
+                .collect(),
+        }
+    };
+    for e in &mut entities {
+        if let Some((state, at)) = optimistic.get(&e.entity_id) {
+            if at.elapsed() < std::time::Duration::from_secs(6) {
+                e.state = state.clone();
+            }
+        }
+    }
     let priority = |d: &str| match d {
         "light" => 0,
         "cover" => 1,
@@ -2362,13 +3152,21 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker" => 20,
         _ => 10,
     };
-    entities.sort_by_key(|e| (priority(e.domain()), e.name().to_lowercase()));
+    if !matches!(room, HaRoom::Category(_)) {
+        entities.sort_by_key(|e| (priority(e.domain()), e.name().to_lowercase()));
+    }
 
     if entities.is_empty() {
         theme::card(ui, t, |ui| {
             ui.label(
                 RichText::new(if searching {
                     t!(app.lang, "ничего не найдено", "nothing found")
+                } else if matches!(room, HaRoom::Category(_)) {
+                    t!(
+                        app.lang,
+                        "категория пуста. откройте «весь дом» и добавьте плитки через меню на карточке.",
+                        "this category is empty. open “whole home” and add tiles from the card menu."
+                    )
                 } else {
                     t!(app.lang, "в этой комнате пока нет устройств", "no devices in this room yet")
                 })
@@ -2379,26 +3177,78 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         return;
     }
 
-    let mut calls: Vec<HaCall> = Vec::new();
+    let mut actions: Vec<HaAction> = Vec::new();
     let mut star: Option<String> = None;
+    let mut category_change: Option<(String, Option<String>)> = None;
+    let mut move_entity: Option<(usize, String, i32)> = None;
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = Vec2::new(10.0, 10.0);
-        let width = ui.available_width();
-        let cols = if width > 940.0 { 3 } else if width > 620.0 { 2 } else { 1 };
-        let w = ((width - 10.0 * (cols as f32 - 1.0)) / cols as f32).max(170.0);
-        for e in &entities {
-            ui.push_id(e.entity_id.as_str(), |ui| {
-                ha_card(ui, t, app.lang, e, w - 26.0, &favorites, &mut calls, &mut star);
-            });
+    // Group tiles by domain so the page reads in sections.
+    let mut groups: Vec<(&str, Vec<&HaEntity>)> = Vec::new();
+    for e in &entities {
+        let d = e.domain();
+        if let Some((_, list)) = groups.iter_mut().find(|(g, _)| *g == d) {
+            list.push(e);
+        } else {
+            groups.push((d, vec![e]));
         }
-    });
-
-    for call in calls {
-        app.ha_call(call);
     }
-    if !entities.is_empty() {
-        app.ha.last_fetch = std::time::Instant::now() - std::time::Duration::from_secs(3);
+    groups.sort_by_key(|(d, _)| priority(d));
+    let width = ui.available_width();
+    let cols = if width > 1100.0 { 2 } else { 1 };
+    let card_w = ((width - 10.0 * (cols as f32 - 1.0)) / cols as f32).max(220.0);
+
+    for (domain, list) in groups {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(sdw_core::ha::domain_label(domain, app.lang).to_lowercase())
+                    .family(FontFamily::Monospace)
+                    .size(11.0)
+                    .extra_letter_spacing(1.2)
+                    .color(t.faint),
+            );
+            ui.label(
+                RichText::new(format!("{}", list.len()))
+                    .family(FontFamily::Monospace)
+                    .size(10.0)
+                    .color(t.faint),
+            );
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(10.0, 10.0);
+            for e in list {
+                ui.push_id(e.entity_id.as_str(), |ui| {
+                    ha_card(
+                        ui,
+                        t,
+                        app.lang,
+                        e,
+                        card_w - 30.0,
+                        &favorites,
+                        &categories,
+                        current_category,
+                        &mut actions,
+                        &mut star,
+                        &mut category_change,
+                        &mut move_entity,
+                    );
+                });
+            }
+        });
+    }
+
+    let acted = !actions.is_empty();
+    for a in actions {
+        if let Some(state) = a.state {
+            app.ha
+                .optimistic
+                .insert(a.entity, (state, std::time::Instant::now()));
+        }
+        app.ha_call(a.call);
+    }
+    if acted {
+        // Ask for the real state shortly after the service call lands.
+        app.ha.last_fetch = std::time::Instant::now() - std::time::Duration::from_secs(4);
     }
 
     if let Some(id) = star {
@@ -2419,7 +3269,61 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             });
         }
     }
+
+    if let Some((entity, target)) = category_change {
+        for c in &mut app.ha.categories {
+            c.entities.retain(|x| x != &entity);
+        }
+        let mut cat_name = t!(app.lang, "без категории", "no category").to_string();
+        if let Some(id) = target {
+            if let Some(c) = app.ha.categories.iter_mut().find(|c| c.id == id) {
+                c.entities.push(entity.clone());
+                cat_name = c.name.clone();
+            }
+        }
+        app.save_ha_categories();
+        app.toast(
+            format!("{} → {}", util::truncate(&entity, 32), cat_name),
+            true,
+        );
+    }
+
+    if let Some((ci, entity, delta)) = move_entity {
+        if let Some(c) = app.ha.categories.get_mut(ci) {
+            if let Some(pos) = c.entities.iter().position(|x| x == &entity) {
+                let next = (pos as i32 + delta).clamp(0, c.entities.len() as i32 - 1) as usize;
+                if next != pos {
+                    c.entities.swap(pos, next);
+                    app.save_ha_categories();
+                }
+            }
+        }
+    }
 }
+
+fn ha_rooms_count(app: &App) -> usize {
+    let mut n = 1; // whole home
+    if app
+        .status
+        .as_ref()
+        .map(|s| !s.ha.favorites.is_empty())
+        .unwrap_or(false)
+    {
+        n += 1;
+    }
+    n += app.ha.categories.len();
+    let mut areas: Vec<&str> = app
+        .ha
+        .entities
+        .iter()
+        .map(|e| e.area.as_str())
+        .filter(|a| !a.is_empty())
+        .collect();
+    areas.sort_unstable();
+    areas.dedup();
+    n + areas.len()
+}
+
 
 // ---------------------------------------------------------------- settings
 

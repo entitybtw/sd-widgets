@@ -168,6 +168,10 @@ pub mod icon {
     pub const CHECK: &str = "\u{e668}";
     pub const CLOSE: &str = "\u{e5cd}";
     pub const STAR: &str = "\u{f09a}";
+    pub const ARROW_LEFT: &str = "\u{e5c4}";
+    pub const ARROW_RIGHT: &str = "\u{e5c8}";
+    pub const DRAG: &str = "\u{e25d}";
+    pub const CHECK_BOX: &str = "\u{e86c}";
 }
 
 /// One Material symbol, sized and coloured like body text.

@@ -26,6 +26,7 @@ pub enum Page {
     Home,
     Computers,
     Gamepad,
+    Media,
     Screen,
     Notifications,
     HomeAssistant,
@@ -35,19 +36,21 @@ pub enum Page {
 }
 
 impl Page {
-    pub const NAV: [Page; 6] = [
+    pub const NAV: [Page; 7] = [
         Page::Home,
         Page::Computers,
         Page::Gamepad,
+        Page::Media,
         Page::Screen,
         Page::Notifications,
         Page::Binds,
     ];
     /// Every page, in the order the arrows and the floating dock walk through them.
-    pub const ORDER: [Page; 9] = [
+    pub const ORDER: [Page; 10] = [
         Page::Home,
         Page::Computers,
         Page::Gamepad,
+        Page::Media,
         Page::Screen,
         Page::Notifications,
         Page::HomeAssistant,
@@ -60,6 +63,7 @@ impl Page {
             Page::Home => "home",
             Page::Computers => "computers",
             Page::Gamepad => "gamepad",
+            Page::Media => "media",
             Page::Screen => "screen",
             Page::Notifications => "notifications",
             Page::HomeAssistant => "ha",
@@ -72,6 +76,7 @@ impl Page {
         match key.trim().to_ascii_lowercase().as_str() {
             "computers" | "pc" => Page::Computers,
             "gamepad" => Page::Gamepad,
+            "media" | "music" | "sound" => Page::Media,
             "screen" | "stream" => Page::Screen,
             "notifications" => Page::Notifications,
             "ha" | "homeassistant" => Page::HomeAssistant,
@@ -86,6 +91,7 @@ impl Page {
             Page::Home => t!(l, "домой", "home"),
             Page::Computers => t!(l, "компьютеры", "computers"),
             Page::Gamepad => t!(l, "геймпад", "gamepad"),
+            Page::Media => t!(l, "медиа", "media"),
             Page::Screen => t!(l, "экран", "screen"),
             Page::Notifications => t!(l, "уведомления", "alerts"),
             Page::HomeAssistant => t!(l, "home assistant", "home assistant"),
@@ -99,6 +105,7 @@ impl Page {
             Page::Home => theme::icon::HOME,
             Page::Computers => theme::icon::COMPUTERS,
             Page::Gamepad => theme::icon::GAMEPAD,
+            Page::Media => theme::icon::MUSIC,
             Page::Screen => theme::icon::SCREEN,
             Page::Notifications => theme::icon::NOTIFICATIONS,
             Page::HomeAssistant => theme::icon::HOME_ASSISTANT,
@@ -142,6 +149,9 @@ impl Drop for StreamFeed {
 pub struct HaState {
     pub entities: Vec<HaEntity>,
     pub areas: Vec<String>,
+    pub categories: Vec<HaCategory>,
+    /// Local state right after a tap, until Home Assistant confirms it.
+    pub optimistic: HashMap<String, (String, Instant)>,
     pub room: usize,
     pub search: String,
     pub url: String,
@@ -151,6 +161,23 @@ pub struct HaState {
     pub pending: bool,
     pub error: String,
     pub last_fetch: Instant,
+    /// Category editor open.
+    pub manage: bool,
+    pub new_category: String,
+}
+
+pub struct MediaUiState {
+    pub state: MediaState,
+    pub pending: bool,
+    pub last_poll: Instant,
+    pub art: Option<egui::TextureHandle>,
+    pub art_id: String,
+    pub art_bytes: Option<(String, Vec<u8>)>,
+    pub art_error: String,
+    pub art_requested: String,
+    /// While the user drags the position slider we do not overwrite it.
+    pub seeking: Option<f64>,
+    pub error: String,
 }
 
 pub struct UpdateState {
@@ -186,6 +213,9 @@ pub enum Task {
     MonitorStopped(Result<MonitorStatus, String>),
     Notifications(Result<Vec<Notification>, String>),
     Ha(Result<HaStates, String>),
+    Media(Result<MediaState, String>),
+    MediaArt { id: String, result: Result<Vec<u8>, String> },
+    Categories(Result<Vec<HaCategory>, String>),
     Update(Result<UpdateInfo, String>),
     Updated(Result<(String, u64), String>),
     Installed(Result<String, String>),
@@ -247,6 +277,7 @@ pub struct App {
 
     pub stream: StreamState,
     pub ha: HaState,
+    pub media: MediaUiState,
     pub binds: BindsState,
     pub update: UpdateState,
     pub settings_name: String,
@@ -294,7 +325,7 @@ impl App {
         let (task_tx, task_rx) = channel();
         let input = input::start();
         let deck_view = DeckViewState::new(cfg.deck_view.clone());
-        let mut app = Self {
+        let app = Self {
             lang: Lang::from_code(&cfg.lang),
             dark: cfg.dark,
             applied_dark: cfg.dark,
@@ -360,6 +391,8 @@ impl App {
             ha: HaState {
                 entities: Vec::new(),
                 areas: Vec::new(),
+                categories: Vec::new(),
+                optimistic: HashMap::new(),
                 room: 0,
                 search: String::new(),
                 url: String::new(),
@@ -369,6 +402,20 @@ impl App {
                 pending: false,
                 error: String::new(),
                 last_fetch: Instant::now() - Duration::from_secs(60),
+                manage: false,
+                new_category: String::new(),
+            },
+            media: MediaUiState {
+                state: MediaState::default(),
+                pending: false,
+                last_poll: Instant::now() - Duration::from_secs(60),
+                art: None,
+                art_id: String::new(),
+                art_bytes: None,
+                art_error: String::new(),
+                art_requested: String::new(),
+                seeking: None,
+                error: String::new(),
             },
             binds: BindsState {
                 editor: None,
@@ -743,6 +790,9 @@ impl App {
             }
             if page == Page::HomeAssistant {
                 self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
+            }
+            if page == Page::Media {
+                self.media.last_poll = Instant::now() - Duration::from_secs(5);
             }
         }
     }
@@ -1189,6 +1239,159 @@ impl App {
         }
     }
 
+    pub fn save_ha_categories(&mut self) {
+        let list = self.ha.categories.clone();
+        if let Some(c) = self.client() {
+            self.spawn(move || {
+                Task::Categories(c.set_ha_categories(&list).map_err(|e| e.to_string()))
+            });
+        }
+    }
+
+    pub fn poll_media(&mut self) {
+        if self.media.pending || self.client().is_none() {
+            return;
+        }
+        if self.media.last_poll.elapsed() < Duration::from_millis(900) {
+            return;
+        }
+        self.media.last_poll = Instant::now();
+        self.media.pending = true;
+        if let Some(c) = self.client() {
+            self.spawn(move || Task::Media(c.media().map_err(|e| e.to_string())));
+        }
+    }
+
+    /// Send one media/volume action; the state updates immediately so the UI
+    /// never feels stuck waiting for the next poll.
+    pub fn media_command(&mut self, action: &str, value: f64) {
+        let player = self.media.state.player.clone();
+        match action {
+            "play_pause" => {
+                self.media.state.status = if self.media.state.playing() {
+                    "Paused".into()
+                } else {
+                    "Playing".into()
+                };
+            }
+            "play" => self.media.state.status = "Playing".into(),
+            "pause" => self.media.state.status = "Paused".into(),
+            "stop" => self.media.state.status = "Stopped".into(),
+            "volume" => {
+                self.media.state.volume = value.clamp(0.0, 100.0) as u8;
+                self.media.state.muted = false;
+            }
+            "mute" => self.media.state.muted = !self.media.state.muted,
+            "seek" => {
+                self.media.state.position = value.max(0.0);
+                self.media.seeking = None;
+            }
+            _ => {}
+        }
+        let action = action.to_string();
+        self.media.last_poll = Instant::now() - Duration::from_secs(5);
+        if let Some(c) = self.client() {
+            self.spawn(move || {
+                Task::Msg(
+                    c.media_control(&action, value, &player)
+                        .map(|_| String::new())
+                        .map_err(|e| e.to_string()),
+                )
+            });
+        }
+    }
+
+    pub fn select_media_player(&mut self, name: &str) {
+        self.media.state.player = name.to_string();
+        let name = name.to_string();
+        self.media.last_poll = Instant::now() - Duration::from_secs(5);
+        if let Some(c) = self.client() {
+            self.spawn(move || {
+                Task::Msg(
+                    c.media_control("select", 0.0, &name)
+                        .map(|_| String::new())
+                        .map_err(|e| e.to_string()),
+                )
+            });
+        }
+    }
+
+    pub fn set_media_sink(&mut self, sink: &str) {        let sink = sink.to_string();
+        self.media.state.sink = sink.clone();
+        if let Some(c) = self.client() {
+            self.spawn(move || {
+                Task::Msg(
+                    c.media_control("sink", 0.0, &sink)
+                        .map(|_| format!("выход: {sink}"))
+                        .map_err(|e| e.to_string()),
+                )
+            });
+        }
+    }
+
+    fn ensure_media_art(&mut self, ctx: &egui::Context) {
+        let id = self.media.state.art_id.clone();
+        if id.is_empty() {
+            self.media.art = None;
+            self.media.art_id.clear();
+            self.media.art_bytes = None;
+            return;
+        }
+        if self.media.art_id != id {
+            self.media.art_id = id.clone();
+            self.media.art = None;
+            self.media.art_error.clear();
+        }
+        if self.media.art.is_none() {
+            if let Some((bytes_id, bytes)) = self.media.art_bytes.take() {
+                if bytes_id == id {
+                    match image::load_from_memory(&bytes) {
+                        Ok(img) => {
+                            let img = img.to_rgba8();
+                            let (w, h) = img.dimensions();
+                            let img = if w.max(h) > 900 {
+                                let scale = 900.0 / w.max(h) as f32;
+                                let nw = (w as f32 * scale).max(1.0) as u32;
+                                let nh = (h as f32 * scale).max(1.0) as u32;
+                                image::imageops::resize(
+                                    &img,
+                                    nw,
+                                    nh,
+                                    image::imageops::FilterType::Triangle,
+                                )
+                            } else {
+                                img
+                            };
+                            let (w, h) = img.dimensions();
+                            let color = egui::ColorImage::from_rgba_unmultiplied(
+                                [w as usize, h as usize],
+                                img.as_raw(),
+                            );
+                            self.media.art = Some(ctx.load_texture(
+                                format!("media-art-{id}"),
+                                color,
+                                egui::TextureOptions::LINEAR,
+                            ));
+                        }
+                        Err(e) => {
+                            self.media.art_error = format!("обложка: {e}");
+                        }
+                    }
+                }
+            }
+        }
+        if self.media.art.is_none() && self.media.art_requested != id {
+            let url = self.media.state.art_url.clone();
+            self.media.art_requested = id.clone();
+            if let Some(c) = self.client() {
+                self.spawn(move || Task::MediaArt {
+                    id,
+                    result: c.media_art(&url).map_err(|e| e.to_string()),
+                });
+            }
+        }
+    }
+
     /// One-tap start/stop for the extra screen, used on the home page.
     pub fn toggle_monitor_default(&mut self) {
         let Some(c) = self.client() else {
@@ -1259,37 +1462,6 @@ impl App {
             self.update.last_check = Instant::now();
             self.check_updates();
         }
-    }
-
-    pub fn ha_rooms_count(&self) -> usize {
-        let mut areas: Vec<&str> = self
-            .ha
-            .areas
-            .iter()
-            .map(String::as_str)
-            .chain(
-                self.ha
-                    .entities
-                    .iter()
-                    .map(|e| e.area.as_str())
-                    .filter(|a| !a.is_empty()),
-            )
-            .collect();
-        areas.sort_unstable();
-        areas.dedup();
-        let mut n = areas.len();
-        if self
-            .status
-            .as_ref()
-            .map(|s| !s.ha.favorites.is_empty())
-            .unwrap_or(false)
-        {
-            n += 1;
-        }
-        if self.ha.entities.iter().any(|e| e.area.is_empty()) {
-            n += 1;
-        }
-        n.max(1)
     }
 
     pub fn ha_call(&mut self, call: HaCall) {
@@ -1526,8 +1698,12 @@ impl App {
 
         self.poll_status();
         self.poll_notifications();
-        if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(8) {
+        if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(6) {
             self.load_ha();
+        }
+        if self.page == Page::Media {
+            self.poll_media();
+            self.ensure_media_art(ctx);
         }
         self.ensure_stream();
         self.pump_frames(ctx);
@@ -1763,11 +1939,60 @@ impl App {
                 self.ha.error.clear();
                 self.ha.entities = states.entities;
                 self.ha.areas = states.areas;
+                self.ha.categories = states.categories;
+                self.ha.optimistic.retain(|id, (state, at)| {
+                    at.elapsed() < Duration::from_secs(6)
+                        && self
+                            .ha
+                            .entities
+                            .iter()
+                            .find(|e| &e.entity_id == id)
+                            .map(|e| &e.state != state)
+                            .unwrap_or(false)
+                });
             }
             Task::Ha(Err(e)) => {
                 self.ha.pending = false;
                 self.ha.error = e;
             }
+            Task::Media(Ok(state)) => {
+                self.media.pending = false;
+                if state.error.is_empty() || state.available {
+                    self.media.error.clear();
+                } else {
+                    self.media.error = state.error.clone();
+                }
+                if let Some(pos) = self.media.seeking {
+                    let mut state = state;
+                    state.position = pos;
+                    self.media.state = state;
+                } else {
+                    self.media.state = state;
+                }
+            }
+            Task::Media(Err(e)) => {
+                self.media.pending = false;
+                self.media.error = e;
+            }
+            Task::MediaArt { id, result } => {
+                match result {
+                    Ok(bytes) => {
+                        if id == self.media.art_id {
+                            self.media.art_error.clear();
+                            self.media.art_bytes = Some((id, bytes));
+                        }
+                    }
+                    Err(e) => {
+                        if id == self.media.art_id {
+                            self.media.art_error = e;
+                        }
+                    }
+                }
+            }
+            Task::Categories(Ok(list)) => {
+                self.ha.categories = list;
+            }
+            Task::Categories(Err(e)) => self.toast(e, false),
             Task::Msg(Ok(message)) => {
                 if !message.is_empty() {
                     self.toast(message, true);
@@ -2081,6 +2306,7 @@ impl App {
             Page::Home => crate::pages::home(self, ui, t),
             Page::Computers => crate::pages::computers(self, ui, t),
             Page::Gamepad => crate::pages::gamepad(self, ui, t),
+            Page::Media => crate::pages::media(self, ui, t),
             Page::Screen => crate::pages::screen(self, ui, t),
             Page::Notifications => crate::pages::notifications(self, ui, t),
             Page::HomeAssistant => crate::pages::home_assistant(self, ui, t),

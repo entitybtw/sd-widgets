@@ -278,8 +278,12 @@ impl Client {
         })
     }
 
-    pub fn notifications(&self, since: u64) -> ApiResult<Vec<Notification>> {
-        self.request("GET", &format!("/api/v1/notifications?since={since}"), None)
+    pub fn notifications(&self, since_id: u64) -> ApiResult<Vec<Notification>> {
+        self.request(
+            "GET",
+            &format!("/api/v1/notifications?after_id={since_id}"),
+            None,
+        )
     }
 
     pub fn clear_notifications(&self) -> ApiResult<Value> {
@@ -292,6 +296,51 @@ impl Client {
 
     pub fn test_notification(&self) -> ApiResult<Value> {
         self.request("POST", "/api/v1/notifications/test", None)
+    }
+
+    /// Current media player, system volume and output list.
+    pub fn media(&self) -> ApiResult<MediaState> {
+        self.request("GET", "/api/v1/media", None)
+    }
+
+    /// `action`: play_pause, play, pause, next, prev, stop, seek, volume, mute,
+    /// volume_up, volume_down, sink.
+    pub fn media_control(&self, action: &str, value: f64, player: &str) -> ApiResult<Value> {
+        let body = serde_json::json!({
+            "action": action,
+            "value": value,
+            "player": player,
+        });
+        self.request("POST", "/api/v1/media/control", Some(&body))
+    }
+
+    /// Cover art bytes for one `mpris:artUrl`. Empty url means the current track.
+    pub fn media_art(&self, url: &str) -> ApiResult<Vec<u8>> {
+        let url = self.url(&format!(
+            "/api/v1/media/art?url={}",
+            urlencoding(url)
+        ));
+        let mut r = self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| ApiError {
+                status: 0,
+                message: e.to_string(),
+            })?;
+        let status = r.status().as_u16();
+        if status != 200 {
+            let text = r.body_mut().read_to_string().unwrap_or_default();
+            return Err(ApiError {
+                status,
+                message: error_from_body(&text),
+            });
+        }
+        r.body_mut().read_to_vec().map_err(|e| ApiError {
+            status,
+            message: e.to_string(),
+        })
     }
 
     /// Run a whitelisted media / desktop command on the computer.
@@ -354,4 +403,27 @@ impl Client {
             message,
         })
     }
+
+    pub fn ha_categories(&self) -> ApiResult<Vec<HaCategory>> {
+        self.request("GET", "/api/v1/ha/categories", None)
+    }
+
+    pub fn set_ha_categories(&self, list: &[HaCategory]) -> ApiResult<Vec<HaCategory>> {
+        let body = serde_json::json!({ "categories": list });
+        self.request("POST", "/api/v1/ha/categories", Some(&body))
+    }
+}
+
+/// Percent-encode a query value (RFC 3986 unreserved characters pass through).
+fn urlencoding(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

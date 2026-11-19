@@ -58,6 +58,9 @@ pub struct MonitorCfg {
 #[serde(default)]
 pub struct NotificationsCfg {
     pub enabled: bool,
+    /// Become `org.freedesktop.Notifications` when no other daemon owns it.
+    /// Apps then deliver notifications straight to sd-widgets.
+    pub own_service: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +69,8 @@ pub struct HaCfg {
     pub url: String,
     pub token: String,
     pub favorites: Vec<String>,
+    /// Custom tabs shared with every deck.
+    pub categories: Vec<sdw_core::model::HaCategory>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,7 +137,10 @@ impl Default for MonitorCfg {
 
 impl Default for NotificationsCfg {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            own_service: true,
+        }
     }
 }
 
@@ -142,6 +150,7 @@ impl Default for HaCfg {
             url: String::new(),
             token: String::new(),
             favorites: Vec::new(),
+            categories: Vec::new(),
         }
     }
 }

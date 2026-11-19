@@ -181,13 +181,15 @@ pub fn show(
 ) -> Option<DeckControl> {
     let avail = ui.available_width();
     let width = (avail * view.cfg.scale.clamp(0.6, 1.4)).min(1120.0);
-    let size = Vec2::new(width, width / 2.28);
+    // The Deck is 298 x 117 mm, so the front is about 2.55:1. A little margin
+    // above the body keeps room for the triggers.
+    let size = Vec2::new(width, width / 2.62);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let p = ui.painter().clone();
     let w = rect.width();
     let h = rect.height();
-    let at = |fx: f32, fy: f32| Pos2::new(rect.left() + w * fx, rect.top() + h * fy);
-    let body = Rect::from_min_max(at(0.012, 0.135), at(0.988, 0.975));
+    let l = deck_layout(rect);
+    let body = l.body;
     let body_fill = if t.dark {
         Color32::from_rgb(0x1a, 0x1a, 0x23)
     } else {
@@ -206,19 +208,19 @@ pub fn show(
 
     // shadow
     p.rect_filled(
-        body.translate(Vec2::new(0.0, h * 0.03)),
+        body.translate(Vec2::new(0.0, h * 0.025)),
         CornerRadius::ZERO,
         Color32::from_black_alpha(if t.dark { 120 } else { 36 }),
     );
-    // grips
-    let grip_r = h * 0.165;
+    // grips bulge out of the lower corners
+    let grip_r = h * 0.20;
     p.circle_filled(
-        Pos2::new(body.left() + w * 0.055, body.bottom() - h * 0.03),
+        Pos2::new(body.left() + w * 0.035, body.bottom() - h * 0.02),
         grip_r,
         body_fill,
     );
     p.circle_filled(
-        Pos2::new(body.right() - w * 0.055, body.bottom() - h * 0.03),
+        Pos2::new(body.right() - w * 0.035, body.bottom() - h * 0.02),
         grip_r,
         body_fill,
     );
@@ -231,13 +233,13 @@ pub fn show(
     );
     // soft top highlight
     p.rect_filled(
-        Rect::from_min_max(body.min, at(0.5, 0.165)),
+        Rect::from_min_max(body.min, Pos2::new(body.center().x, body.top() + h * 0.02)),
         CornerRadius { nw: 58, ne: 2, sw: 0, se: 0 },
         Color32::from_white_alpha(if t.dark { 6 } else { 40 }),
     );
 
-    // screen
-    let screen = Rect::from_center_size(at(0.5, 0.49), Vec2::new(w * 0.455, h * 0.40));
+    // screen: nearly the whole height, controls live in the side bands
+    let screen = l.screen;
     p.rect_filled(screen.expand(3.0), CornerRadius::ZERO, body_line);
     p.rect_filled(screen, CornerRadius::ZERO, Color32::from_rgb(0x04, 0x04, 0x0a));
     screen_content(ui, t, screen, &input, view);
@@ -255,30 +257,24 @@ pub fn show(
         resp.on_hover_text(format!("{} · нажмите, чтобы назначить бинд", control.name()))
     };
 
-    // triggers
-    let lt = Rect::from_min_max(at(0.145, 0.015), at(0.315, 0.085));
-    let rt = Rect::from_min_max(at(0.685, 0.015), at(0.855, 0.085));
-    trigger_bar(ui, t, lt, "LT", input.state.lt, t.accent, "lt", view.cfg.glow);
-    trigger_bar(ui, t, rt, "RT", input.state.rt, t.accent, "rt", view.cfg.glow);
-    hit(ui, DeckControl::Lt, lt);
-    hit(ui, DeckControl::Rt, rt);
+    // triggers, above the body
+    trigger_bar(ui, t, l.lt, "LT", input.state.lt, t.accent, "lt", view.cfg.glow);
+    trigger_bar(ui, t, l.rt, "RT", input.state.rt, t.accent, "rt", view.cfg.glow);
+    hit(ui, DeckControl::Lt, l.lt);
+    hit(ui, DeckControl::Rt, l.rt);
 
-    // bumpers
-    let lb = Rect::from_min_max(at(0.145, 0.095), at(0.315, 0.148));
-    let rb = Rect::from_min_max(at(0.685, 0.095), at(0.855, 0.148));
-    bumper(ui, t, lb, "LB", input.state.buttons & udp::BTN_LB != 0, control_fill, t, "lb");
-    bumper(ui, t, rb, "RB", input.state.buttons & udp::BTN_RB != 0, control_fill, t, "rb");
-    hit(ui, DeckControl::Lb, lb);
-    hit(ui, DeckControl::Rb, rb);
+    // bumpers on the top edge
+    bumper(ui, t, l.lb, "LB", input.state.buttons & udp::BTN_LB != 0, control_fill, t, "lb");
+    bumper(ui, t, l.rb, "RB", input.state.buttons & udp::BTN_RB != 0, control_fill, t, "rb");
+    hit(ui, DeckControl::Lb, l.lb);
+    hit(ui, DeckControl::Rb, l.rb);
 
-    // sticks
-    let lstick = at(0.155, 0.42);
-    let rstick = at(0.845, 0.62);
+    // sticks: left above the left trackpad, right above the right trackpad
     stick(
         ui,
         t,
-        lstick,
-        h * 0.088,
+        l.lstick,
+        l.stick_r,
         input.state.lx,
         input.state.ly,
         input.state.buttons & udp::BTN_L3 != 0,
@@ -289,8 +285,8 @@ pub fn show(
     stick(
         ui,
         t,
-        rstick,
-        h * 0.088,
+        l.rstick,
+        l.stick_r,
         input.state.rx,
         input.state.ry,
         input.state.buttons & udp::BTN_R3 != 0,
@@ -298,18 +294,15 @@ pub fn show(
         "rstick",
         view.cfg.glow,
     );
-    hit(ui, DeckControl::LStick, Rect::from_center_size(lstick, Vec2::splat(h * 0.176)));
-    hit(ui, DeckControl::RStick, Rect::from_center_size(rstick, Vec2::splat(h * 0.176)));
+    hit(ui, DeckControl::LStick, Rect::from_center_size(l.lstick, Vec2::splat(l.stick_r * 2.0)));
+    hit(ui, DeckControl::RStick, Rect::from_center_size(l.rstick, Vec2::splat(l.stick_r * 2.0)));
 
-    // dpad
-    let dpad = at(0.205, 0.72);
-    let arm = h * 0.052;
-    let pad = h * 0.052;
+    // d-pad, outer top-left
     for (control, offset, glyph) in [
-        (DeckControl::DpadUp, Vec2::new(0.0, -arm), crate::theme::icon::ARROW_UP),
-        (DeckControl::DpadDown, Vec2::new(0.0, arm), crate::theme::icon::ARROW_DOWN),
-        (DeckControl::DpadLeft, Vec2::new(-arm, 0.0), crate::theme::icon::ARROW_LEFT),
-        (DeckControl::DpadRight, Vec2::new(arm, 0.0), crate::theme::icon::ARROW_RIGHT),
+        (DeckControl::DpadUp, Vec2::new(0.0, -l.dpad_arm_y), crate::theme::icon::ARROW_UP),
+        (DeckControl::DpadDown, Vec2::new(0.0, l.dpad_arm_y), crate::theme::icon::ARROW_DOWN),
+        (DeckControl::DpadLeft, Vec2::new(-l.dpad_arm_x, 0.0), crate::theme::icon::ARROW_LEFT),
+        (DeckControl::DpadRight, Vec2::new(l.dpad_arm_x, 0.0), crate::theme::icon::ARROW_RIGHT),
     ] {
         let active = match control {
             DeckControl::DpadUp => input.state.buttons & udp::BTN_DPAD_UP != 0,
@@ -317,22 +310,18 @@ pub fn show(
             DeckControl::DpadLeft => input.state.buttons & udp::BTN_DPAD_LEFT != 0,
             _ => input.state.buttons & udp::BTN_DPAD_RIGHT != 0,
         };
-        let c = dpad + offset;
-        let rect = Rect::from_center_size(c, Vec2::splat(pad));
+        let rect = Rect::from_center_size(l.dpad + offset, l.dpad_key);
         let r = dpad_key(ui, t, rect, glyph, active, control_fill, t.accent, view.cfg.glow, control.name());
         hit(ui, control, r.rect);
     }
-    // center of the dpad
-    p.circle_filled(dpad, pad * 0.28, control_fill);
+    p.circle_filled(l.dpad, h * 0.012, control_fill);
 
-    // abxy
-    let abxy = at(0.845, 0.38);
-    let off = h * 0.088;
+    // abxy, outer top-right
     for (control, delta, label, color) in [
-        (DeckControl::Y, Vec2::new(0.0, -off), "Y", Y_COLOR),
-        (DeckControl::A, Vec2::new(0.0, off), "A", A_COLOR),
-        (DeckControl::X, Vec2::new(-off, 0.0), "X", X_COLOR),
-        (DeckControl::B, Vec2::new(off, 0.0), "B", B_COLOR),
+        (DeckControl::Y, Vec2::new(0.0, -l.abxy_off_y), "Y", Y_COLOR),
+        (DeckControl::A, Vec2::new(0.0, l.abxy_off_y), "A", A_COLOR),
+        (DeckControl::X, Vec2::new(-l.abxy_off_x, 0.0), "X", X_COLOR),
+        (DeckControl::B, Vec2::new(l.abxy_off_x, 0.0), "B", B_COLOR),
     ] {
         let bit = match control {
             DeckControl::A => udp::BTN_A,
@@ -341,12 +330,11 @@ pub fn show(
             _ => udp::BTN_Y,
         };
         let active = input.state.buttons & bit != 0;
-        let c = abxy + delta;
         let r = circle_key(
             ui,
             t,
-            c,
-            h * 0.038,
+            l.abxy + delta,
+            l.abxy_r,
             label,
             active,
             color,
@@ -357,13 +345,11 @@ pub fn show(
         hit(ui, control, r);
     }
 
-    // trackpads
-    let ltp = Rect::from_center_size(at(0.345, 0.765), Vec2::splat(h * 0.155));
-    let rtp = Rect::from_center_size(at(0.655, 0.765), Vec2::splat(h * 0.155));
+    // trackpads, under each stick
     trackpad(
         ui,
         t,
-        ltp,
+        l.ltp,
         "L",
         input.pressed.contains(&BTN_LEFT_CLICK),
         control_fill,
@@ -373,25 +359,22 @@ pub fn show(
     trackpad(
         ui,
         t,
-        rtp,
+        l.rtp,
         "R",
         input.pressed.contains(&BTN_RIGHT_CLICK) || input.pressed.contains(&BTN_LEFT_CLICK),
         control_fill,
         "rtp",
         view.cfg.glow,
     );
-    hit(ui, DeckControl::LTrackpad, ltp);
-    hit(ui, DeckControl::RTrackpad, rtp);
+    hit(ui, DeckControl::LTrackpad, l.ltp);
+    hit(ui, DeckControl::RTrackpad, l.rtp);
 
-    // view / menu
-    let view_c = at(0.055, 0.735);
-    let menu_c = at(0.945, 0.735);
-    let r = h * 0.026;
+    // view / menu, top edge beside the screen
     let vr = circle_key(
         ui,
         t,
-        view_c,
-        r,
+        l.view_c,
+        l.small_r,
         crate::theme::icon::VIEW,
         input.state.buttons & udp::BTN_BACK != 0,
         t.accent,
@@ -402,8 +385,8 @@ pub fn show(
     let mr = circle_key(
         ui,
         t,
-        menu_c,
-        r,
+        l.menu_c,
+        l.small_r,
         crate::theme::icon::MENU,
         input.state.buttons & udp::BTN_START != 0,
         t.accent,
@@ -414,41 +397,49 @@ pub fn show(
     hit(ui, DeckControl::View, vr);
     hit(ui, DeckControl::Menu, mr);
 
-    // steam button
-    let steam = Rect::from_center_size(at(0.5, 0.905), Vec2::new(w * 0.075, h * 0.055));
+    // steam button, bottom of the left grip
     let active = input.state.buttons & udp::BTN_GUIDE != 0;
     let k = ui
         .ctx()
         .animate_bool_with_time(ui.id().with("steam"), active, 0.07);
     p.rect_filled(
-        steam,
+        l.steam,
         CornerRadius::ZERO,
         control_fill.lerp_to_gamma(t.accent, k),
     );
     p.rect_stroke(
-        steam,
+        l.steam,
         CornerRadius::ZERO,
         Stroke::new(1.0, if active { t.accent } else { body_line }),
         egui::StrokeKind::Inside,
     );
     p.text(
-        steam.center(),
+        l.steam.center(),
         Align2::CENTER_CENTER,
         "steam",
-        FontId::new(h * 0.027, FontFamily::Proportional),
+        FontId::new(h * 0.023, FontFamily::Proportional),
         if active { Color32::WHITE } else { t.muted },
     );
-    hit(ui, DeckControl::Steam, steam);
+    hit(ui, DeckControl::Steam, l.steam);
 
-    // back buttons
-    for (control, x, y) in [
-        (DeckControl::L4, 0.075, 0.885),
-        (DeckControl::L5, 0.115, 0.935),
-        (DeckControl::R4, 0.925, 0.885),
-        (DeckControl::R5, 0.885, 0.935),
-    ] {
-        let c = at(x, y);
-        let rect = Rect::from_center_size(c, Vec2::new(w * 0.036, h * 0.045));
+    // quick access "..." button, mirroring steam on the right grip
+    p.rect_filled(l.quick, CornerRadius::ZERO, control_fill);
+    p.rect_stroke(
+        l.quick,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, body_line),
+        egui::StrokeKind::Inside,
+    );
+    p.text(
+        l.quick.center(),
+        Align2::CENTER_CENTER,
+        "•••",
+        FontId::new(h * 0.020, FontFamily::Monospace),
+        t.muted,
+    );
+
+    // back grips, shown as small tabs on the outer bottom edge
+    for (control, rect) in l.back {
         let active = input.pressed.contains(&control.code());
         let k = ui
             .ctx()
@@ -469,7 +460,7 @@ pub fn show(
                 rect.center(),
                 Align2::CENTER_CENTER,
                 control.name(),
-                FontId::new(h * 0.022, FontFamily::Monospace),
+                FontId::new(h * 0.020, FontFamily::Monospace),
                 if active { Color32::WHITE } else { t.faint },
             );
         }
@@ -479,16 +470,14 @@ pub fn show(
     // labels for the big pieces
     if view.cfg.labels {
         for (pos, text) in [
-            (at(0.155, 0.535), "L3"),
-            (at(0.845, 0.535), "R3"),
-            (at(0.345, 0.865), "trackpad"),
-            (at(0.655, 0.865), "trackpad"),
+            (Pos2::new(l.lstick.x, l.lstick.y + l.stick_r * 1.5), "L3"),
+            (Pos2::new(l.rstick.x, l.rstick.y + l.stick_r * 1.5), "R3"),
         ] {
             p.text(
                 pos,
                 Align2::CENTER_CENTER,
                 text,
-                FontId::new(h * 0.023, FontFamily::Monospace),
+                FontId::new(h * 0.021, FontFamily::Monospace),
                 t.faint,
             );
         }
@@ -496,7 +485,7 @@ pub fn show(
 
     // selected outline
     if let Some(selected) = view.selected {
-        if let Some(rect) = control_rect(selected, rect, w, h) {
+        if let Some(rect) = control_rect(selected, rect) {
             p.rect_stroke(
                 rect.expand(4.0),
                 CornerRadius::ZERO,
@@ -513,6 +502,88 @@ pub fn show(
     }
 
     clicked
+}
+
+struct DeckLayout {
+    body: Rect,
+    screen: Rect,
+    lt: Rect,
+    rt: Rect,
+    lb: Rect,
+    rb: Rect,
+    lstick: Pos2,
+    rstick: Pos2,
+    stick_r: f32,
+    dpad: Pos2,
+    dpad_arm_x: f32,
+    dpad_arm_y: f32,
+    dpad_key: Vec2,
+    abxy: Pos2,
+    abxy_off_x: f32,
+    abxy_off_y: f32,
+    abxy_r: f32,
+    ltp: Rect,
+    rtp: Rect,
+    view_c: Pos2,
+    menu_c: Pos2,
+    small_r: f32,
+    steam: Rect,
+    quick: Rect,
+    back: [(DeckControl, Rect); 4],
+}
+
+/// Front-view geometry taken from the real Deck: a full-height screen in the
+/// middle, d-pad and left stick at the top-left, ABXY and right stick at the
+/// top-right, a trackpad under each stick, and Steam/Quick Access at the
+/// bottom of the grips.
+fn deck_layout(rect: Rect) -> DeckLayout {
+    let w = rect.width();
+    let h = rect.height();
+    let at = |x: f32, y: f32| Pos2::new(rect.left() + w * x, rect.top() + h * y);
+    let body = Rect::from_min_max(at(0.010, 0.085), at(0.990, 0.985));
+    let screen = Rect::from_center_size(at(0.5, 0.535), Vec2::new(w * 0.55, w * 0.344));
+    let lt = Rect::from_min_max(at(0.105, 0.008), at(0.185, 0.058));
+    let rt = Rect::from_min_max(at(0.815, 0.008), at(0.895, 0.058));
+    let lb = Rect::from_min_max(at(0.100, 0.060), at(0.190, 0.084));
+    let rb = Rect::from_min_max(at(0.810, 0.060), at(0.900, 0.084));
+    let tp = w * 0.11;
+    let ltp = Rect::from_center_size(at(0.125, 0.575), Vec2::splat(tp));
+    let rtp = Rect::from_center_size(at(0.875, 0.575), Vec2::splat(tp));
+    let back = |x: f32, y: f32| {
+        Rect::from_center_size(at(x, y), Vec2::new(w * 0.028, h * 0.038))
+    };
+    DeckLayout {
+        body,
+        screen,
+        lt,
+        rt,
+        lb,
+        rb,
+        lstick: at(0.165, 0.275),
+        rstick: at(0.835, 0.275),
+        stick_r: w * 0.0295,
+        dpad: at(0.078, 0.235),
+        dpad_arm_x: w * 0.0245,
+        dpad_arm_y: h * 0.062,
+        dpad_key: Vec2::new(w * 0.0265, h * 0.066),
+        abxy: at(0.935, 0.235),
+        abxy_off_x: w * 0.031,
+        abxy_off_y: h * 0.066,
+        abxy_r: w * 0.0215,
+        ltp,
+        rtp,
+        view_c: at(0.135, 0.120),
+        menu_c: at(0.865, 0.120),
+        small_r: h * 0.024,
+        steam: Rect::from_center_size(at(0.150, 0.790), Vec2::new(w * 0.095, h * 0.050)),
+        quick: Rect::from_center_size(at(0.850, 0.790), Vec2::new(w * 0.095, h * 0.050)),
+        back: [
+            (DeckControl::L4, back(0.045, 0.900)),
+            (DeckControl::L5, back(0.088, 0.905)),
+            (DeckControl::R4, back(0.955, 0.900)),
+            (DeckControl::R5, back(0.912, 0.905)),
+        ],
+    }
 }
 
 fn screen_content(
@@ -876,38 +947,60 @@ fn trackpad(
     }
 }
 
-fn control_rect(control: DeckControl, rect: Rect, w: f32, h: f32) -> Option<Rect> {
-    let at = |fx: f32, fy: f32| Pos2::new(rect.left() + w * fx, rect.top() + h * fy);
-    let size = Vec2::splat(h * 0.09);
+fn control_rect(control: DeckControl, rect: Rect) -> Option<Rect> {
+    let l = deck_layout(rect);
     Some(match control {
-        DeckControl::A => Rect::from_center_size(at(0.845, 0.38 + 0.088), size),
-        DeckControl::B => Rect::from_center_size(at(0.845 + 0.088 * h / w, 0.38), size),
-        DeckControl::X => Rect::from_center_size(at(0.845 - 0.088 * h / w, 0.38), size),
-        DeckControl::Y => Rect::from_center_size(at(0.845, 0.38 - 0.088), size),
-        DeckControl::DpadUp => Rect::from_center_size(at(0.205, 0.72 - 0.052), size),
-        DeckControl::DpadDown => Rect::from_center_size(at(0.205, 0.72 + 0.052), size),
-        DeckControl::DpadLeft => Rect::from_center_size(at(0.205 - 0.052 * h / w, 0.72), size),
-        DeckControl::DpadRight => Rect::from_center_size(at(0.205 + 0.052 * h / w, 0.72), size),
-        DeckControl::Lb => Rect::from_min_max(at(0.145, 0.095), at(0.315, 0.148)),
-        DeckControl::Rb => Rect::from_min_max(at(0.685, 0.095), at(0.855, 0.148)),
-        DeckControl::Lt => Rect::from_min_max(at(0.145, 0.015), at(0.315, 0.085)),
-        DeckControl::Rt => Rect::from_min_max(at(0.685, 0.015), at(0.855, 0.085)),
-        DeckControl::View => Rect::from_center_size(at(0.055, 0.735), Vec2::splat(h * 0.06)),
-        DeckControl::Menu => Rect::from_center_size(at(0.945, 0.735), Vec2::splat(h * 0.06)),
-        DeckControl::Steam => Rect::from_center_size(at(0.5, 0.905), Vec2::new(w * 0.08, h * 0.06)),
+        DeckControl::A => Rect::from_center_size(
+            l.abxy + Vec2::new(0.0, l.abxy_off_y),
+            Vec2::splat(l.abxy_r * 2.0),
+        ),
+        DeckControl::B => Rect::from_center_size(
+            l.abxy + Vec2::new(l.abxy_off_x, 0.0),
+            Vec2::splat(l.abxy_r * 2.0),
+        ),
+        DeckControl::X => Rect::from_center_size(
+            l.abxy + Vec2::new(-l.abxy_off_x, 0.0),
+            Vec2::splat(l.abxy_r * 2.0),
+        ),
+        DeckControl::Y => Rect::from_center_size(
+            l.abxy + Vec2::new(0.0, -l.abxy_off_y),
+            Vec2::splat(l.abxy_r * 2.0),
+        ),
+        DeckControl::DpadUp => Rect::from_center_size(
+            l.dpad + Vec2::new(0.0, -l.dpad_arm_y),
+            l.dpad_key,
+        ),
+        DeckControl::DpadDown => Rect::from_center_size(
+            l.dpad + Vec2::new(0.0, l.dpad_arm_y),
+            l.dpad_key,
+        ),
+        DeckControl::DpadLeft => Rect::from_center_size(
+            l.dpad + Vec2::new(-l.dpad_arm_x, 0.0),
+            l.dpad_key,
+        ),
+        DeckControl::DpadRight => Rect::from_center_size(
+            l.dpad + Vec2::new(l.dpad_arm_x, 0.0),
+            l.dpad_key,
+        ),
+        DeckControl::Lb => l.lb,
+        DeckControl::Rb => l.rb,
+        DeckControl::Lt => l.lt,
+        DeckControl::Rt => l.rt,
+        DeckControl::View => Rect::from_center_size(l.view_c, Vec2::splat(l.small_r * 2.0)),
+        DeckControl::Menu => Rect::from_center_size(l.menu_c, Vec2::splat(l.small_r * 2.0)),
+        DeckControl::Steam => l.steam,
         DeckControl::L3 | DeckControl::LStick => {
-            Rect::from_center_size(at(0.155, 0.42), Vec2::splat(h * 0.18))
+            Rect::from_center_size(l.lstick, Vec2::splat(l.stick_r * 2.0))
         }
         DeckControl::R3 | DeckControl::RStick => {
-            Rect::from_center_size(at(0.845, 0.62), Vec2::splat(h * 0.18))
+            Rect::from_center_size(l.rstick, Vec2::splat(l.stick_r * 2.0))
         }
-        DeckControl::L4 => Rect::from_center_size(at(0.075, 0.885), Vec2::new(w * 0.04, h * 0.05)),
-        DeckControl::L5 => Rect::from_center_size(at(0.115, 0.935), Vec2::new(w * 0.04, h * 0.05)),
-        DeckControl::R4 => Rect::from_center_size(at(0.925, 0.885), Vec2::new(w * 0.04, h * 0.05)),
-        DeckControl::R5 => Rect::from_center_size(at(0.885, 0.935), Vec2::new(w * 0.04, h * 0.05)),
-        DeckControl::LTrackpad => Rect::from_center_size(at(0.345, 0.765), Vec2::splat(h * 0.16)),
-        DeckControl::RTrackpad => Rect::from_center_size(at(0.655, 0.765), Vec2::splat(h * 0.16)),
-        DeckControl::Screen => Rect::from_center_size(at(0.5, 0.49), Vec2::new(w * 0.455, h * 0.40)),
+        DeckControl::L4 | DeckControl::L5 | DeckControl::R4 | DeckControl::R5 => {
+            l.back.iter().find(|(c, _)| *c == control).map(|(_, r)| *r)?
+        }
+        DeckControl::LTrackpad => l.ltp,
+        DeckControl::RTrackpad => l.rtp,
+        DeckControl::Screen => l.screen,
     })
 }
 

@@ -81,6 +81,7 @@ pub struct HaRuntime {
     pub status: HaStatus,
     pub entities: Vec<HaEntity>,
     pub areas: Vec<String>,
+    pub categories: Vec<HaCategory>,
     pub client: Option<HaClient>,
     pub last_sync: Instant,
 }
@@ -101,6 +102,7 @@ impl HaRuntime {
             },
             entities: Vec::new(),
             areas: Vec::new(),
+            categories: cfg.ha.categories.clone(),
             client,
             last_sync: Instant::now() - Duration::from_secs(3600),
         }
@@ -108,6 +110,28 @@ impl HaRuntime {
 
     pub fn reload(&mut self, cfg: &DaemonConfig) {
         *self = Self::from_config(cfg);
+    }
+
+    /// Clean up and store the categories. Returns what was actually kept.
+    pub fn set_categories(&mut self, mut list: Vec<HaCategory>) -> Vec<HaCategory> {
+        list.truncate(40);
+        for (i, c) in list.iter_mut().enumerate() {
+            c.name = c.name.trim().to_string();
+            if c.name.is_empty() {
+                c.name = format!("Категория {}", i + 1);
+            }
+            if c.id.trim().is_empty() {
+                c.id = random_id(8);
+            }
+            let mut seen = std::collections::HashSet::new();
+            c.entities.retain(|e| {
+                let e = e.trim();
+                !e.is_empty() && seen.insert(e.to_string())
+            });
+            c.entities.truncate(500);
+        }
+        self.categories = list.clone();
+        list
     }
 
     pub fn refresh(&mut self) -> Result<(), String> {
@@ -314,6 +338,7 @@ pub struct AppState {
     pub cfg: Arc<Mutex<DaemonConfig>>,
     pub logger: Logger,
     pub notifications: Arc<NotificationStore>,
+    pub media: Arc<crate::media::MediaService>,
     pub viiper: Arc<ViiperManager>,
     pub monitor: Arc<MonitorManager>,
     pub ha: Arc<Mutex<HaRuntime>>,
@@ -335,6 +360,7 @@ impl AppState {
             sdw_core::util::hostname()
         ));
         let notifications = Arc::new(NotificationStore::new(cfg.notifications.enabled, logger.clone()));
+        let media = Arc::new(crate::media::MediaService::new());
         let viiper = Arc::new(ViiperManager::new(logger.clone()));
         let monitor = Arc::new(MonitorManager::new(logger.clone()));
         let ha = Arc::new(Mutex::new(HaRuntime::from_config(&cfg)));
@@ -344,6 +370,7 @@ impl AppState {
             cfg: Arc::new(Mutex::new(cfg)),
             logger,
             notifications,
+            media,
             viiper,
             monitor,
             ha,
@@ -419,8 +446,13 @@ impl AppState {
             }
         });
 
-        // Notification mirroring (Linux only)
-        self.notifications.clone().start(self.stop.clone());
+        // Notification mirroring (Linux only). When nothing else owns the
+        // notification bus name we become the daemon ourselves, so apps can
+        // finally deliver notifications to the deck.
+        let own_service = cfg.notifications.own_service;
+        self.notifications
+            .clone()
+            .start(self.stop.clone(), own_service);
 
         // Home Assistant polling
         let ha = self.ha.clone();
