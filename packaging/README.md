@@ -1,12 +1,24 @@
 # Packaging
 
-| Folder | Produces |
+| Path | Produces |
 | --- | --- |
-| `linux/` | `.desktop` entries, a systemd user unit, an autostart entry and `build-appimage.sh`. |
+| `install.sh` | The one-command installer for the Deck and the daemon (downloads a release, writes launchers, services and the Steam shortcut). |
+| `linux/` | `.desktop` entries, a systemd user unit, an autostart entry, `build-appimage.sh`, the Steam helper and artwork generator. |
 | `windows/` | `build.ps1` and a short readme for the zip. |
 | `macos/` | `build-dmg.sh`, which builds a `.app` and a DMG per architecture. |
 
-All scripts write to `dist/` in the repository root.
+All build scripts write to `dist/` in the repository root.
+
+## One-command install
+
+```bash
+curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- deck
+curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- daemon
+```
+
+`--local dist/sdw-deck-0.3.1-x86_64.AppImage` installs a build from this checkout
+without downloading. The full list of options is in
+[`docs/INSTALL.md`](../docs/INSTALL.md).
 
 ## Linux
 
@@ -17,6 +29,13 @@ packaging/linux/build-appimage.sh deck
 
 `appimagetool` is taken from `PATH` or downloaded to
 `$XDG_CACHE_HOME/sdw-widgets/tools`.
+
+## Steam artwork and shortcuts
+
+`packaging/linux/make-steam-art.py` redraws `assets/steam/{grid,hero,logo}.png`
+(Pillow is required). `packaging/linux/steam_shortcut.py` writes the non-Steam
+shortcut and copies that artwork into Steam's `config/grid/`; `install.sh`
+calls it and handles closing/restarting Steam.
 
 Install the user unit:
 

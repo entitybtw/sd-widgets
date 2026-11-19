@@ -1,4 +1,16 @@
+<div align="center">
+
+<img src="assets/icons/sdw-widgets-256.png" width="128" alt="sd-widgets icon" />
+
 # sd-widgets
+
+**A Steam Deck control surface and a PC companion daemon**
+
+[Русская версия](./README.ru.md)
+
+<br>
+
+</div>
 
 A **Steam Deck control surface** plus a **PC companion daemon**. It turns the Deck
 into a second screen, a virtual gamepad, a notification panel and a Home Assistant
@@ -11,6 +23,12 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
   theme — go try it, it's great.
 - **Full customisation**: CSS themes, an exact 15-token palette editor, density,
   tile grid, page and tile visibility, interface sounds, per-event sound files.
+- **A clock you own**: Tide, digital, analog and minimal styles, with colours,
+  size, animation, position, 12/24-hour time, caption and optional elements.
+- **Addons on both sides**: declarative packages add themes, clock presets, home
+  tiles, sounds and daemon actions without rebuilding anything.
+- **PC audio on the Deck**: stream the whole computer or picked applications to
+  the Deck speakers, with a configurable number of “are you sure?” steps.
 - **Self-updates**: both applications check the newest release on
   `git.entitybtw.ru`, show the notes and download the matching build.
 - **Bilingual**: English and Russian, dark and light.
@@ -27,9 +45,12 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Computers** | LAN discovery, pairing by password, switching between several computers. |
 | **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control or gesture. |
 | **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality, input forwarding. |
+| **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. |
 | **Notifications** | Mirrored desktop notifications, newest first, unread counters. |
 | **Home Assistant** | Rooms and areas with lights, curtains, climate and media widgets, not a wall of every entity. |
 | **Binds** | Buttons, chords and swipe gestures mapped to actions or remote commands. |
+| **Clock** | A full-screen clock in four styles, each fully configurable and saved as a preset or an addon. |
+| **Addons** | Import, enable, configure and remove packages; save the current look or clock as one. |
 | **Look** | Presets, palette, CSS editor, grid, density, dock/arrows, page visibility, sounds. |
 | **Settings** | Device name, language, theme, UI scale, input devices, updates. |
 
@@ -60,6 +81,10 @@ directional slide; tiles stagger in behind it.
   stream to the Deck.
 - **Home Assistant** — URL + long-lived token, entities proxied through the daemon
   so the token never lives on the Deck.
+- **PC audio** — records the default output or the applications you pick and
+  serves raw PCM to the Deck, which plays it with `pw-play`/`paplay`. The daemon
+  keeps it off until you allow audio, and the Deck can require up to three
+  confirmations before a stream starts.
 - **Setup wizard** — password inputs, dependency detection, install buttons for
   VIIPER and friends, and an explicit line telling you what to add to your
   compositor config when auto-patching is not possible.
@@ -84,6 +109,33 @@ directional slide; tiles stagger in behind it.
   - `pw-play`, `paplay`, `aplay`, `ffplay` or `mpv` on the Deck for interface sounds.
 
 ## Install
+
+### Steam Deck — one command
+
+Open **Desktop Mode → Konsole** and run:
+
+```bash
+curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- deck
+```
+
+It installs `~/.local/bin/sdw-deck`, adds the menu entry and puts **sd-widgets**
+into the Steam library with artwork, so it starts from Game Mode. Steam keeps the
+library in memory, so the script restarts it once to save the new shortcut.
+
+### Computer — one command
+
+```bash
+curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- daemon
+```
+
+It installs `~/.local/bin/sdw-daemon`, enables a systemd user service and starts
+it. Open `http://<computer>:47830` once to finish the setup, then pair the Deck.
+
+Both installers take `--version V` to pin a release, `--local FILE` for an
+AppImage you already downloaded, `--dir DIR` to change the prefix, plus
+`--no-service`, `--no-steam`, `--no-steam-restart` and `--steam-only`. They are
+idempotent: rerunning updates the files and the existing Steam entry instead of
+adding a second one. Details: [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ### Prebuilt
 
@@ -163,6 +215,54 @@ The **Look** page is the whole design system:
 The CSS variables and the full theme model are documented in
 [`docs/THEMES.md`](docs/THEMES.md).
 
+## Clock
+
+The Clock page draws a full-screen clock and keeps the settings next to it:
+
+- four styles: **Tide** (the FLOW · Tide concept, restyled into the grid
+  language), **digital**, **analog** and **minimal**;
+- accent and two background colours, font scale, animation (`drift`, `pulse`,
+  `off`), screen position and a caption;
+- optional seconds, date, weekday, battery, moon, bars and particles;
+- 12/24-hour time and a language-aware day part.
+
+Any configuration can be saved as a clock addon and then reused or shipped.
+
+## PC audio
+
+The **Audio** page turns the Deck into a speaker for the computer:
+
+- **whole computer** or **picked applications** — several at once, each recorded
+  separately on PipeWire and mixed in the daemon; on plain PulseAudio a
+  temporary sink is used and streams are returned on stop;
+- 44.1 or 48 kHz stereo PCM over the authenticated LAN connection, played by
+  `pw-play` (or `paplay`/`aplay`);
+- source list, transfer size, time and clear errors on both sides;
+- a **confirmations** setting (0–3) that asks “are you sure you want to move the
+  sound to the deck?” that many times before streaming.
+
+Audio is off in the daemon until **Audio → allow audio** is on, and
+**start from the deck** can be disabled so only the computer can start a stream.
+Details: [`docs/AUDIO.md`](docs/AUDIO.md).
+
+## Addons
+
+An addon is a folder with `addon.json` and its assets, or a single `.css` /
+`.json` / `.sdwaddon` file. One package can extend both sides:
+
+- a **theme** CSS and extra CSS;
+- a **clock preset** JSON;
+- **home tiles** on the deck;
+- **sound cues** that replace the built-in files;
+- **daemon actions** exposed to the deck as `addon:<id>:<action>` and runnable
+  from both the deck and the daemon GUI;
+- typed **settings** (`text`, `number`, `bool`, `color`, `choice`) rendered by
+  both applications.
+
+Install from **Addons → import** on the deck or in the daemon window. The exact
+format, every field and the security model are in
+[`docs/ADDONS.md`](docs/ADDONS.md).
+
 ## API
 
 The Deck and the daemon speak JSON over HTTP. See [`docs/API.md`](docs/API.md) for
@@ -180,8 +280,8 @@ crates/sdw-deck      the Deck app (egui)
 crates/sdw-daemon    the PC daemon, server and GUI (egui)
 vendor/viiper-client vendored MIT Rust client for VIIPER
 assets               fonts and icons
-packaging            desktop files, systemd unit, AppImage / Windows / macOS scripts
-docs                 architecture, API, themes, monitor notes
+packaging            install.sh, desktop files, systemd unit, AppImage / Windows / macOS scripts
+docs                 architecture, API, themes, monitor notes, addons, audio
 ```
 
 ## Security
@@ -192,6 +292,8 @@ docs                 architecture, API, themes, monitor notes
 - The extra monitor only ever exposes the monitor the daemon created (or the
   selected output in mirror mode).
 - Nothing is executed from untrusted input: remote actions are an enum.
+- Addon actions run only from packages the user installed locally and enabled;
+  disabled addons cannot be triggered over the API.
 
 ## License
 
