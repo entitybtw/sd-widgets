@@ -25,8 +25,10 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 - **Full customisation**: CSS themes, an exact 15-token palette editor, density,
   tile grid, page and tile visibility, interface sounds, per-event sound files.
 - **A clock you own**: a big grid face plus digital, analog and minimal styles,
-  with colours, font, size, animation, position, 12/24-hour time, caption,
-  headset battery and the latest notification.
+  with font, size, animation, position, 12/24-hour time, caption, headset battery
+  and the latest notification. It takes its colours from the active theme, so
+  every preset, palette and CSS file repaints it; custom colours are one switch
+  away.
 - **Addons on both sides**: declarative packages add themes, clock presets, home
   tiles, sounds and daemon actions without rebuilding anything.
 - **PC audio on the Deck**: stream the whole computer or picked applications to
@@ -71,10 +73,13 @@ directional slide, and the tiles stagger in behind it.
   pads, hot-plugged over USBIP. VIIPER can be installed from the GUI.
 - **Extra monitor** — creates a real additional monitor and streams it to the Deck:
   - Hyprland: headless output (`hyprctl output create headless`).
-  - niri: VKMS output + `niri msg output` (niri has no native virtual outputs).
+  - niri: VKMS output + `niri msg output` (niri has no native virtual outputs);
+    one button in the wizard loads VKMS and keeps it loaded after a reboot.
   - KDE: `krfb-virtualmonitor` with a built-in RFB client.
   - X11 and Windows: `ffmpeg` desktop capture.
   - macOS: `screencapture`.
+  - virtual machines: the same VKMS path is picked automatically, with a
+    readiness row for the kernel module, the output and the config.
   - Fallback: mirror an existing output with `grim`/`spectacle`.
 - **Automatic layout** — choose right/left/above/below/auto in the daemon and the
   layout is applied live and written into the compositor config
@@ -88,8 +93,11 @@ directional slide, and the tiles stagger in behind it.
   serves raw PCM to the Deck, which plays it with `pw-play`/`paplay`. The daemon
   keeps it off until you allow audio, and the Deck can require any number of
   confirmations before a stream starts.
-- **Tray icon** — an optional StatusNotifierItem in Settings; the daemon keeps
-  running and stays reachable after every window is closed.
+- **Always in the background** — closing the window does not stop the daemon:
+  it hides (or minimizes on Wayland) while the API and the Deck connection keep
+  running. The tray icon, `sdw-daemon --show` or simply starting the daemon
+  again brings the window back, and `sdw-daemon --quit` (or the tray menu, or a
+  second close press) stops it for real.
 - **Setup wizard** — password inputs, dependency detection, install buttons for
   VIIPER and friends, and an explicit line telling you what to add to your
   compositor config when auto-patching is not possible.
@@ -196,6 +204,10 @@ streams it to the Deck at 1280×800 by default.
 - Choose the backend, size, fps and JPEG quality.
 - The daemon applies the layout immediately and persists it into your compositor
   config.
+- On niri, sway, GNOME and inside a virtual machine it creates a VKMS output and
+  offers a single **prepare vkms** button that loads the module and writes the
+  `modules-load.d`/`modprobe.d` files. The wizard also shows a readiness row:
+  module in the kernel, module loaded, output found, config path.
 - If a compositor cannot be patched automatically, the wizard prints the exact line
   to add.
 

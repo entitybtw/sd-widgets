@@ -50,6 +50,11 @@ It is a very well-made program and well worth a look.
 Rounding is **always zero** in the grid look, even if `--radius` is set: hard
 edges are a product decision, not a theme option.
 
+Every token above also paints the clock. Its accent and background come from the
+active theme by default, so switching a preset, editing the palette or loading a
+CSS file repaints the clock as well. Custom clock colours still exist on the
+clock page once **follow theme** is switched off.
+
 ## Presets
 
 | Key | Name |

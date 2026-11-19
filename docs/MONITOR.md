@@ -24,10 +24,18 @@ The daemon then applies the requested position and size, and writes a matching
 
 niri has no native virtual outputs. The daemon:
 
-1. loads `vkms` (needs root or a udev rule),
-2. reads the new DRM output,
-3. calls `niri msg output <name> …` to enable and position it,
+1. loads `vkms`, trying `modprobe`, passwordless `sudo`, `pkexec` and finally the
+   password typed in the wizard, in that order,
+2. polls `/sys/class/drm` for the new connector (a virtual machine can take a few
+   seconds),
+3. calls `niri msg output <name> …` to enable, size and position it,
 4. writes the output block into `~/.config/niri/config.kdl`.
+
+The wizard shows a **readiness** row (module in the kernel, module loaded, output
+found, config path). The **prepare vkms** button loads the module *and* writes
+`/etc/modules-load.d/sd-widgets.conf` and
+`/etc/modprobe.d/sd-widgets.conf`, so the extra output survives a reboot without
+manual files.
 
 If `vkms` cannot be loaded, the daemon falls back to mirroring an existing niri
 output with `grim`.
@@ -52,6 +60,19 @@ window on the chosen side; true virtual displays depend on the display driver.
 
 `screencapture` of the selected display. macOS does not allow creating virtual
 displays without a kernel extension.
+
+## Virtual machines
+
+A guest usually has one virtual GPU and no spare connector. The daemon detects
+the virtualisation (`systemd-detect-virt`, or the hypervisor flag plus the DMI
+product name) and reports it in the monitor status as `vm`. The automatic backend
+then goes through VKMS for niri, sway, GNOME and an unidentified Wayland session,
+because that path does not depend on the host GPU.
+
+Nothing needs to be prepared by hand: press **prepare vkms** once in the wizard
+(the sudo password is optional if passwordless `sudo` or `pkexec` already works),
+then start the screen. The readiness row turns green as the module, the connector
+and the config are found.
 
 ## Position
 
@@ -103,7 +124,7 @@ xrandr --output VIRTUAL1 --mode 1280x800_60 --right-of eDP-1
 | Backend | Needs |
 | --- | --- |
 | Hyprland | `hyprctl` |
-| niri | `niri`, `vkms` module, write access to the niri config |
+| niri | `niri`, `vkms` module (one-button prepare), write access to the niri config |
 | KDE | `krfb-virtualmonitor`, RFB support |
 | X11 | `ffmpeg`, `xrandr` |
 | Windows | `ffmpeg` |
@@ -111,4 +132,5 @@ xrandr --output VIRTUAL1 --mode 1280x800_60 --right-of eDP-1
 | mirror | `grim` (Wayland) or `spectacle` (KDE) |
 
 The daemon reports which backend it selected and why in its log and in the
-`monitor` block of `/api/v1/status`.
+`monitor` block of `/api/v1/status`. That block also carries `vm`, `vkms` and
+`vkms_loaded`, which is exactly what the readiness row shows.
