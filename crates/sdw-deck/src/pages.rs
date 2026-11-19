@@ -5300,7 +5300,9 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
     ui.add_space(8.0);
     theme::card(ui, t, |ui| {
         ui.label(theme::hud(t!(app.lang, "звуки", "sounds"), t.faint));
-        ui.horizontal(|ui| {
+        // Everything wraps: the Deck has one width and the interface scale can
+        // grow, so no single row is allowed to run past the card.
+        ui.horizontal_wrapped(|ui| {
             let before = snd.enabled;
             theme::switch(ui, &mut snd.enabled, t);
             if snd.enabled != before {
@@ -5314,24 +5316,6 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(13.0)
                     .color(t.muted),
             );
-            ui.add_space(18.0);
-            ui.label(
-                RichText::new(t!(app.lang, "громкость", "volume"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let mut vol = snd.volume as f32;
-            if theme::slider(
-                ui,
-                t,
-                t!(app.lang, "громкость", "volume"),
-                &mut vol,
-                0.0..=100.0,
-                |v| format!("{v:.0}%"),
-            ) {
-                snd.volume = vol.round().clamp(0.0, 100.0) as u8;
-                snd_dirty = true;
-            }
             ui.add_space(18.0);
             ui.label(
                 RichText::new(t!(app.lang, "набор", "pack"))
@@ -5351,6 +5335,19 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 }
             }
         });
+        // The slider needs the whole row: it draws its own label and value.
+        let mut vol = snd.volume as f32;
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "громкость", "volume"),
+            &mut vol,
+            0.0..=100.0,
+            |v| format!("{v:.0}%"),
+        ) {
+            snd.volume = vol.round().clamp(0.0, 100.0) as u8;
+            snd_dirty = true;
+        }
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             for (cue, ru, en) in [
@@ -5392,19 +5389,35 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             crate::sound::Cue::Startup => &mut snd.startup,
                         };
                         ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(t!(app.lang, ru, en))
-                                    .size(12.5)
-                                    .color(t.muted),
+                            // A fixed label column keeps every field aligned,
+                            // and the path field takes whatever is left.
+                            ui.add_sized(
+                                [116.0, 24.0],
+                                egui::Label::new(
+                                    RichText::new(t!(app.lang, ru, en))
+                                        .size(12.5)
+                                        .color(t.muted),
+                                )
+                                .truncate(),
                             );
+                            ui.add_space(4.0);
+                            let room = (ui.available_width() - 52.0).max(80.0);
                             changed = ui
                                 .add(
                                     TextEdit::singleline(buf)
                                         .hint_text("/home/deck/sounds/click.wav")
-                                        .desired_width(360.0),
+                                        .desired_width(room),
                                 )
                                 .changed();
-                            test = theme::ghost(ui, "▶", t).clicked();
+                            test = ui
+                                .add(
+                                    egui::Button::new(RichText::new("▶").size(14.0).color(t.ink))
+                                        .fill(t.card)
+                                        .stroke(Stroke::new(1.0, t.line_strong))
+                                        .corner_radius(0.0)
+                                        .min_size(egui::vec2(40.0, 28.0)),
+                                )
+                                .clicked();
                         });
                     }
                     if changed {
