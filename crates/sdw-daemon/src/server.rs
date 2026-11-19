@@ -365,7 +365,11 @@ fn monitor_start(state: Arc<AppState>, mut req: Request) {
             let _ = state.update_cfg(|c| {
                 c.monitor.mode = body.mode;
                 c.monitor.backend = body.backend;
-                c.monitor.output = status.output.clone();
+                // Keep the requested output when the compositor made us fall
+                // back to a mirror, so extend is retried on the next start.
+                if status.mode == body.mode {
+                    c.monitor.output = status.output.clone();
+                }
                 c.monitor.width = status.width;
                 c.monitor.height = status.height;
                 c.monitor.fps = status.fps;
