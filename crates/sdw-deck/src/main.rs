@@ -4,8 +4,11 @@
 //! home assistant and pairing with the computer daemon.
 
 mod actions;
+mod addons_ui;
 mod app;
+mod audio_ui;
 mod binds;
+mod clock;
 mod deck_view;
 mod input;
 mod pages;
@@ -71,9 +74,7 @@ fn main() -> eframe::Result<()> {
             .hosts
             .iter()
             .find(|h| {
-                h.id == needle
-                    || h.name.eq_ignore_ascii_case(needle)
-                    || h.url.contains(needle)
+                h.id == needle || h.name.eq_ignore_ascii_case(needle) || h.url.contains(needle)
             })
             .map(|h| h.id.clone());
         match found {
@@ -83,10 +84,7 @@ fn main() -> eframe::Result<()> {
     }
 
     if cli.print_config {
-        let path = cli
-            .config
-            .clone()
-            .unwrap_or_else(sdw_core::config::path);
+        let path = cli.config.clone().unwrap_or_else(sdw_core::config::path);
         println!("config: {}", path.display());
         println!("device: {}", cfg.device_name);
         println!("hosts:  {}", cfg.hosts.len());

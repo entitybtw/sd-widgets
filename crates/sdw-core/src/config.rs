@@ -13,7 +13,10 @@ pub fn load() -> DeckConfig {
         Ok(s) => match serde_json::from_str(&s) {
             Ok(cfg) => cfg,
             Err(e) => {
-                eprintln!("sd-widgets: ignoring unreadable config {}: {e}", p.display());
+                eprintln!(
+                    "sd-widgets: ignoring unreadable config {}: {e}",
+                    p.display()
+                );
                 DeckConfig::default()
             }
         },

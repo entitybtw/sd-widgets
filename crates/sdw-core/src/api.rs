@@ -72,7 +72,12 @@ pub fn ping(base: &str) -> ApiResult<Ping> {
     })
 }
 
-pub fn pair(base: &str, password: &str, client_name: &str, client_id: &str) -> ApiResult<PairResponse> {
+pub fn pair(
+    base: &str,
+    password: &str,
+    client_name: &str,
+    client_id: &str,
+) -> ApiResult<PairResponse> {
     let base = normalize_base(base);
     let a = agent(Duration::from_secs(10));
     let body = PairRequest {
@@ -120,6 +125,7 @@ fn error_from_body(text: &str) -> String {
     }
 }
 
+#[derive(Clone)]
 pub struct Client {
     base: String,
     token: String,
@@ -164,7 +170,11 @@ impl Client {
                 let req = self.agent.patch(&url).header("Authorization", &auth);
                 req.send_json(body.unwrap_or(&Value::Null))
             }
-            "DELETE" => self.agent.delete(&url).header("Authorization", &auth).call(),
+            "DELETE" => self
+                .agent
+                .delete(&url)
+                .header("Authorization", &auth)
+                .call(),
             _ => self.agent.get(&url).header("Authorization", &auth).call(),
         }
         .map_err(|e| ApiError {
@@ -248,6 +258,53 @@ impl Client {
         self.request("POST", "/api/v1/monitor/stop", None)
     }
 
+    pub fn audio(&self) -> ApiResult<AudioStatus> {
+        self.request("GET", "/api/v1/audio", None)
+    }
+
+    pub fn audio_sources(&self) -> ApiResult<Vec<AudioApp>> {
+        self.request("GET", "/api/v1/audio/sources", None)
+    }
+
+    pub fn audio_start(&self, start: &AudioStart) -> ApiResult<AudioStatus> {
+        let body = serde_json::to_value(start).unwrap_or_default();
+        self.request("POST", "/api/v1/audio/start", Some(&body))
+    }
+
+    pub fn audio_stop(&self) -> ApiResult<AudioStatus> {
+        self.request("POST", "/api/v1/audio/stop", None)
+    }
+
+    /// A blocking raw-PCM reader for the running stream. No global timeout:
+    /// the connection lives until the daemon stops or the reader is dropped.
+    pub fn audio_stream(&self) -> ApiResult<Box<dyn std::io::Read + Send>> {
+        let url = self.url("/api/v1/audio/stream");
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(None)
+            .http_status_as_error(false)
+            .user_agent(UA)
+            .build()
+            .into();
+        let mut r = agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| ApiError {
+                status: 0,
+                message: e.to_string(),
+            })?;
+        let status = r.status().as_u16();
+        if status != 200 {
+            let text = r.body_mut().read_to_string().unwrap_or_default();
+            return Err(ApiError {
+                status,
+                message: error_from_body(&text),
+            });
+        }
+        let (_, body) = r.into_parts();
+        Ok(Box::new(body.into_reader()))
+    }
+
     pub fn monitor_input(&self, input: &MonitorInput) -> ApiResult<Value> {
         let body = serde_json::to_value(input).unwrap_or_default();
         self.request("POST", "/api/v1/monitor/input", Some(&body))
@@ -316,10 +373,7 @@ impl Client {
 
     /// Cover art bytes for one `mpris:artUrl`. Empty url means the current track.
     pub fn media_art(&self, url: &str) -> ApiResult<Vec<u8>> {
-        let url = self.url(&format!(
-            "/api/v1/media/art?url={}",
-            urlencoding(url)
-        ));
+        let url = self.url(&format!("/api/v1/media/art?url={}", urlencoding(url)));
         let mut r = self
             .agent
             .get(&url)
@@ -398,10 +452,8 @@ impl Client {
     }
 
     pub fn discover(&self) -> ApiResult<Vec<DiscoveryResponse>> {
-        crate::discovery::scan(Duration::from_millis(1200)).map_err(|message| ApiError {
-            status: 0,
-            message,
-        })
+        crate::discovery::scan(Duration::from_millis(1200))
+            .map_err(|message| ApiError { status: 0, message })
     }
 
     pub fn ha_categories(&self) -> ApiResult<Vec<HaCategory>> {
@@ -411,6 +463,15 @@ impl Client {
     pub fn set_ha_categories(&self, list: &[HaCategory]) -> ApiResult<Vec<HaCategory>> {
         let body = serde_json::json!({ "categories": list });
         self.request("POST", "/api/v1/ha/categories", Some(&body))
+    }
+
+    pub fn ha_presets(&self) -> ApiResult<Vec<HaPreset>> {
+        self.request("GET", "/api/v1/ha/presets", None)
+    }
+
+    pub fn set_ha_presets(&self, list: &[HaPreset]) -> ApiResult<Vec<HaPreset>> {
+        let body = serde_json::json!({ "presets": list });
+        self.request("POST", "/api/v1/ha/presets", Some(&body))
     }
 }
 

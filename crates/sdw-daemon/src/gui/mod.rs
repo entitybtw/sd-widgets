@@ -11,9 +11,9 @@ use eframe::egui::{
     Vec2,
 };
 use sdw_core::model::*;
+use sdw_core::update::{self, UpdateInfo};
 use sdw_core::{t, Lang};
 use std::collections::HashSet;
-use sdw_core::update::{self, UpdateInfo};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
@@ -25,8 +25,10 @@ enum Page {
     Overview,
     Gamepads,
     Screen,
+    Audio,
     Notifications,
     HomeAssistant,
+    Addons,
     Security,
     Install,
     Settings,
@@ -34,12 +36,14 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 9] = [
+    const ALL: [Page; 11] = [
         Page::Overview,
         Page::Gamepads,
         Page::Screen,
+        Page::Audio,
         Page::Notifications,
         Page::HomeAssistant,
+        Page::Addons,
         Page::Security,
         Page::Install,
         Page::Settings,
@@ -50,8 +54,10 @@ impl Page {
             Page::Overview => t!(l, "обзор", "overview"),
             Page::Gamepads => t!(l, "геймпады", "gamepads"),
             Page::Screen => t!(l, "экран", "screen"),
+            Page::Audio => t!(l, "звук", "audio"),
             Page::Notifications => t!(l, "уведомления", "notifications"),
             Page::HomeAssistant => t!(l, "home assistant", "home assistant"),
+            Page::Addons => t!(l, "аддоны", "addons"),
             Page::Security => t!(l, "безопасность", "security"),
             Page::Install => t!(l, "установка", "install"),
             Page::Settings => t!(l, "настройки", "settings"),
@@ -63,8 +69,10 @@ impl Page {
             Page::Overview => theme::icon::OVERVIEW,
             Page::Gamepads => theme::icon::GAMEPADS,
             Page::Screen => theme::icon::SCREEN,
+            Page::Audio => theme::icon::AUDIO,
             Page::Notifications => theme::icon::NOTIFICATIONS,
             Page::HomeAssistant => theme::icon::HOME_ASSISTANT,
+            Page::Addons => theme::icon::ADDON,
             Page::Security => theme::icon::SECURITY,
             Page::Install => theme::icon::INSTALL,
             Page::Settings => theme::icon::SETTINGS,
@@ -162,6 +170,12 @@ pub struct App {
     last_frames: u64,
     show_hint: bool,
 
+    // audio
+    audio_source: String,
+    audio_apps: Vec<AudioApp>,
+    audio_app_sel: HashSet<String>,
+    audio_apps_at: Instant,
+
     // notifications
     notif_enabled: bool,
 
@@ -174,6 +188,8 @@ pub struct App {
     ha_categories: Vec<HaCategory>,
     ha_new_category: String,
     ha_pending_category: Option<(String, Option<String>)>,
+    ha_presets: Vec<HaPreset>,
+    ha_new_preset: String,
     last_ha_fetch: Instant,
 
     // security
@@ -184,6 +200,7 @@ pub struct App {
 
     // settings
     name_edit: String,
+    addon_import: String,
 
     // updates
     update_info: Option<UpdateInfo>,
@@ -276,6 +293,10 @@ impl App {
             frame_tex: None,
             last_frames: 0,
             show_hint: false,
+            audio_source: "system".into(),
+            audio_apps: Vec::new(),
+            audio_app_sel: HashSet::new(),
+            audio_apps_at: Instant::now() - Duration::from_secs(60),
             notif_enabled,
             ha_url: cfg.ha.url.clone(),
             ha_token: cfg.ha.token.clone(),
@@ -285,12 +306,15 @@ impl App {
             ha_categories: cfg.ha.categories.clone(),
             ha_new_category: String::new(),
             ha_pending_category: None,
+            ha_presets: cfg.ha.presets.clone(),
+            ha_new_preset: String::new(),
             last_ha_fetch: Instant::now() - Duration::from_secs(60),
             new_pass: String::new(),
             new_pass2: String::new(),
             show_pass: false,
             new_token: None,
             name_edit: cfg.name.clone(),
+            addon_import: String::new(),
             update_info: None,
             update_error: String::new(),
             update_checking: false,
@@ -337,12 +361,15 @@ impl App {
         if self.last_poll.elapsed() >= Duration::from_millis(900) {
             self.last_poll = Instant::now();
             self.status = self.state.status();
-            if self.toast.as_ref().is_some_and(|t| t.at.elapsed() > Duration::from_secs(6)) {
+            if self
+                .toast
+                .as_ref()
+                .is_some_and(|t| t.at.elapsed() > Duration::from_secs(6))
+            {
                 self.toast = None;
             }
         }
-        if !self.update_checking
-            && self.last_update_check.elapsed() > Duration::from_secs(6 * 3600)
+        if !self.update_checking && self.last_update_check.elapsed() > Duration::from_secs(6 * 3600)
         {
             self.last_update_check = Instant::now();
             self.check_updates();
@@ -450,7 +477,14 @@ impl App {
 
     fn start_viiper(&mut self, restart: bool) {
         let state = self.state.clone();
-        self.toast(if restart { "перезапускаю viiper…" } else { "запускаю viiper…" }, true);
+        self.toast(
+            if restart {
+                "перезапускаю viiper…"
+            } else {
+                "запускаю viiper…"
+            },
+            true,
+        );
         self.spawn(move || {
             let cfg = state.cfg();
             let r = if restart {
@@ -537,6 +571,7 @@ impl App {
             }
             self.ha_entities = ha.entities.clone();
             self.ha_categories = ha.categories.clone();
+            self.ha_presets = ha.presets.clone();
         }
         self.last_ha_fetch = Instant::now();
     }
@@ -566,6 +601,19 @@ impl App {
             }
         }
         self.save_ha_categories();
+    }
+
+    fn save_ha_presets(&mut self) {
+        let list = self.ha_presets.clone();
+        let clean = self
+            .state
+            .ha
+            .lock()
+            .map(|mut h| h.set_presets(list))
+            .unwrap_or_default();
+        let saved = clean.clone();
+        let _ = self.state.update_cfg(|c| c.ha.presets = saved);
+        self.ha_presets = clean;
     }
 }
 
@@ -609,7 +657,11 @@ impl eframe::App for App {
                     ui.add_space(14.0);
                     theme::dot(
                         ui,
-                        if self.status.viiper.running { t.good } else { t.warn },
+                        if self.status.viiper.running {
+                            t.good
+                        } else {
+                            t.warn
+                        },
                         true,
                     );
                     ui.label(
@@ -623,7 +675,10 @@ impl eframe::App for App {
                     );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .add(egui::Button::new(hud(if self.dark { "light" } else { "dark" }, t.muted)))
+                            .add(egui::Button::new(hud(
+                                if self.dark { "light" } else { "dark" },
+                                t.muted,
+                            )))
                             .clicked()
                         {
                             self.set_dark(!self.dark);
@@ -640,12 +695,7 @@ impl eframe::App for App {
                             self.set_lang(self.lang.toggle());
                         }
                         ui.add_space(8.0);
-                        let addr = self
-                            .status
-                            .addresses
-                            .first()
-                            .cloned()
-                            .unwrap_or_default();
+                        let addr = self.status.addresses.first().cloned().unwrap_or_default();
                         if !addr.is_empty() {
                             if ui
                                 .add(egui::Button::new(
@@ -658,7 +708,10 @@ impl eframe::App for App {
                                 .clicked()
                             {
                                 ui.ctx().copy_text(addr);
-                                self.toast(t!(self.lang, "адрес скопирован", "address copied"), true);
+                                self.toast(
+                                    t!(self.lang, "адрес скопирован", "address copied"),
+                                    true,
+                                );
                             }
                         }
                     });
@@ -701,7 +754,11 @@ impl eframe::App for App {
                         ));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label(hud(
-                                &format!("{} {}", self.status.pads.len(), t!(self.lang, "падов", "pads")),
+                                &format!(
+                                    "{} {}",
+                                    self.status.pads.len(),
+                                    t!(self.lang, "падов", "pads")
+                                ),
                                 t.faint,
                             ));
                             ui.add_space(10.0);
@@ -717,7 +774,11 @@ impl eframe::App for App {
                     });
                 });
             egui::CentralPanel::default()
-                .frame(egui::Frame::new().fill(t.bg).inner_margin(Margin::symmetric(22, 16)))
+                .frame(
+                    egui::Frame::new()
+                        .fill(t.bg)
+                        .inner_margin(Margin::symmetric(22, 16)),
+                )
                 .show(root, |ui| {
                     ScrollArea::vertical()
                         .auto_shrink([false, false])
@@ -770,10 +831,18 @@ impl App {
             let resp = ui.add_sized(
                 [ui.available_width(), 30.0],
                 egui::Button::new(text)
-                    .fill(if selected { t.well } else { Color32::TRANSPARENT })
+                    .fill(if selected {
+                        t.well
+                    } else {
+                        Color32::TRANSPARENT
+                    })
                     .stroke(Stroke::new(
                         1.0,
-                        if selected { t.line_strong } else { Color32::TRANSPARENT },
+                        if selected {
+                            t.line_strong
+                        } else {
+                            Color32::TRANSPARENT
+                        },
                     ))
                     .corner_radius(0),
             );
@@ -811,9 +880,8 @@ impl App {
                 )
                 .clicked()
             {
-                let _ = sdw_core::util::open_url(
-                    &sdw_core::util::config_dir().display().to_string(),
-                );
+                let _ =
+                    sdw_core::util::open_url(&sdw_core::util::config_dir().display().to_string());
             }
             ui.add_space(4.0);
             if ui
@@ -853,8 +921,10 @@ impl App {
             Page::Overview => self.overview_ui(ui, t),
             Page::Gamepads => self.gamepads_ui(ui, t),
             Page::Screen => self.screen_ui(ui, t),
+            Page::Audio => self.audio_ui(ui, t),
             Page::Notifications => self.notifications_ui(ui, t),
             Page::HomeAssistant => self.ha_ui(ui, t),
+            Page::Addons => self.addons_ui(ui, t),
             Page::Security => self.security_ui(ui, t),
             Page::Install => self.install_ui(ui, t),
             Page::Settings => self.settings_ui(ui, t),
@@ -877,11 +947,17 @@ impl App {
             );
             ui.label(hud(t!(self.lang, "первый запуск", "first run"), t.faint));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new(hud(self.lang.short(), t.muted))).clicked() {
+                if ui
+                    .add(egui::Button::new(hud(self.lang.short(), t.muted)))
+                    .clicked()
+                {
                     self.set_lang(self.lang.toggle());
                 }
                 if ui
-                    .add(egui::Button::new(hud(if self.dark { "light" } else { "dark" }, t.muted)))
+                    .add(egui::Button::new(hud(
+                        if self.dark { "light" } else { "dark" },
+                        t.muted,
+                    )))
                     .clicked()
                 {
                     self.set_dark(!self.dark);
@@ -937,7 +1013,11 @@ impl App {
 
     fn setup_welcome(&mut self, ui: &mut Ui, t: &Tokens) {
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "компьютерная часть", "the computer side")).size(19.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "компьютерная часть", "the computer side"))
+                    .size(19.0)
+                    .strong(),
+            );
             ui.add_space(4.0);
             ui.add(
                 egui::Label::new(
@@ -954,18 +1034,30 @@ impl App {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.label(hud(t!(self.lang, "язык", "language"), t.faint));
-                if ui.selectable_label(self.lang == Lang::Ru, "русский").clicked() {
+                if ui
+                    .selectable_label(self.lang == Lang::Ru, "русский")
+                    .clicked()
+                {
                     self.set_lang(Lang::Ru);
                 }
-                if ui.selectable_label(self.lang == Lang::En, "english").clicked() {
+                if ui
+                    .selectable_label(self.lang == Lang::En, "english")
+                    .clicked()
+                {
                     self.set_lang(Lang::En);
                 }
                 ui.add_space(16.0);
                 ui.label(hud(t!(self.lang, "тема", "theme"), t.faint));
-                if ui.selectable_label(self.dark, t!(self.lang, "тёмная", "dark")).clicked() {
+                if ui
+                    .selectable_label(self.dark, t!(self.lang, "тёмная", "dark"))
+                    .clicked()
+                {
                     self.set_dark(true);
                 }
-                if ui.selectable_label(!self.dark, t!(self.lang, "светлая", "light")).clicked() {
+                if ui
+                    .selectable_label(!self.dark, t!(self.lang, "светлая", "light"))
+                    .clicked()
+                {
                     self.set_dark(false);
                 }
             });
@@ -989,7 +1081,11 @@ impl App {
 
     fn setup_password(&mut self, ui: &mut Ui, t: &Tokens) {
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "имя и пароль", "name and password")).size(18.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "имя и пароль", "name and password"))
+                    .size(18.0)
+                    .strong(),
+            );
             ui.add_space(4.0);
             small(
                 ui,
@@ -1001,7 +1097,10 @@ impl App {
                 t.muted,
             );
             ui.add_space(10.0);
-            ui.label(hud(t!(self.lang, "имя компьютера", "computer name"), t.faint));
+            ui.label(hud(
+                t!(self.lang, "имя компьютера", "computer name"),
+                t.faint,
+            ));
             ui.add(TextEdit::singleline(&mut self.setup_name).desired_width(f32::INFINITY));
             ui.add_space(8.0);
             ui.label(hud(t!(self.lang, "пароль", "password"), t.faint));
@@ -1033,10 +1132,18 @@ impl App {
                     .desired_width(f32::INFINITY),
             );
             if !self.setup_pass.is_empty() && self.setup_pass.len() < 4 {
-                small(ui, t!(self.lang, "минимум 4 символа", "at least 4 characters"), t.bad);
+                small(
+                    ui,
+                    t!(self.lang, "минимум 4 символа", "at least 4 characters"),
+                    t.bad,
+                );
             }
             if !self.setup_pass2.is_empty() && self.setup_pass != self.setup_pass2 {
-                small(ui, t!(self.lang, "пароли не совпадают", "passwords do not match"), t.bad);
+                small(
+                    ui,
+                    t!(self.lang, "пароли не совпадают", "passwords do not match"),
+                    t.bad,
+                );
             }
         });
         ui.add_space(12.0);
@@ -1045,9 +1152,22 @@ impl App {
                 self.setup_step = 0;
             }
             let valid = self.setup_pass.chars().count() >= 4 && self.setup_pass == self.setup_pass2;
-            if ui.add_enabled(valid, egui::Button::new(
-                RichText::new(t!(self.lang, "далее", "next")).size(13.0).strong().color(t.inv_fg),
-            ).fill(t.inv_bg).stroke(Stroke::new(1.0, t.inv_bg)).corner_radius(0).min_size(Vec2::new(0.0,30.0))).clicked() {
+            if ui
+                .add_enabled(
+                    valid,
+                    egui::Button::new(
+                        RichText::new(t!(self.lang, "далее", "next"))
+                            .size(13.0)
+                            .strong()
+                            .color(t.inv_fg),
+                    )
+                    .fill(t.inv_bg)
+                    .stroke(Stroke::new(1.0, t.inv_bg))
+                    .corner_radius(0)
+                    .min_size(Vec2::new(0.0, 30.0)),
+                )
+                .clicked()
+            {
                 let name = self.setup_name.trim().to_string();
                 let pass = self.setup_pass.clone();
                 self.save(|c| {
@@ -1076,7 +1196,13 @@ impl App {
                     } else {
                         t!(self.lang, "не установлен", "not installed")
                     },
-                    if v.running { t.good } else if v.installed { t.warn } else { t.bad },
+                    if v.running {
+                        t.good
+                    } else if v.installed {
+                        t.warn
+                    } else {
+                        t.bad
+                    },
                 );
             });
             ui.add_space(4.0);
@@ -1091,7 +1217,8 @@ impl App {
             );
             ui.add_space(10.0);
             if !v.installed {
-                if primary(ui, t!(self.lang, "установить viiper", "install viiper"), t).clicked() {
+                if primary(ui, t!(self.lang, "установить viiper", "install viiper"), t).clicked()
+                {
                     self.install_sel.insert("viiper".into());
                     self.page = Page::Install;
                 }
@@ -1103,25 +1230,52 @@ impl App {
                 small(ui, &format!("{} · {}", v.version, v.api_addr), t.good);
             }
             ui.add_space(8.0);
-            ui.label(hud(t!(self.lang, "пароль viiper (необязательно)", "viiper password (optional)"), t.faint));
+            ui.label(hud(
+                t!(
+                    self.lang,
+                    "пароль viiper (необязательно)",
+                    "viiper password (optional)"
+                ),
+                t.faint,
+            ));
             ui.horizontal(|ui| {
                 ui.add(
                     TextEdit::singleline(&mut self.setup_viiper_pass)
                         .password(!self.viiper_show)
-                        .hint_text(t!(self.lang, "оставьте пустым, если без пароля", "leave empty for no password"))
+                        .hint_text(t!(
+                            self.lang,
+                            "оставьте пустым, если без пароля",
+                            "leave empty for no password"
+                        ))
                         .desired_width(320.0),
                 );
-                if ui.add(egui::Button::new(hud(
-                    if self.viiper_show { t!(self.lang, "скрыть", "hide") } else { t!(self.lang, "показать", "show") },
-                    t.muted,
-                ))).clicked() {
+                if ui
+                    .add(egui::Button::new(hud(
+                        if self.viiper_show {
+                            t!(self.lang, "скрыть", "hide")
+                        } else {
+                            t!(self.lang, "показать", "show")
+                        },
+                        t.muted,
+                    )))
+                    .clicked()
+                {
                     self.viiper_show = !self.viiper_show;
                 }
-                if ui.add(egui::Button::new(hud(t!(self.lang, "сохранить", "save"), t.muted))).clicked() {
+                if ui
+                    .add(egui::Button::new(hud(
+                        t!(self.lang, "сохранить", "save"),
+                        t.muted,
+                    )))
+                    .clicked()
+                {
                     let pass = self.setup_viiper_pass.trim().to_string();
                     let _ = self.state.viiper.write_key(&pass);
                     self.save(|c| c.viiper.password = pass);
-                    self.toast(t!(self.lang, "пароль viiper сохранён", "viiper password saved"), true);
+                    self.toast(
+                        t!(self.lang, "пароль viiper сохранён", "viiper password saved"),
+                        true,
+                    );
                 }
             });
         });
@@ -1133,7 +1287,13 @@ impl App {
             if primary(ui, t!(self.lang, "далее", "next"), t).clicked() {
                 self.setup_step = 3;
             }
-            if ui.add(egui::Button::new(hud(t!(self.lang, "пропустить", "skip"), t.faint))).clicked() {
+            if ui
+                .add(egui::Button::new(hud(
+                    t!(self.lang, "пропустить", "skip"),
+                    t.faint,
+                )))
+                .clicked()
+            {
                 self.setup_step = 3;
             }
         });
@@ -1141,7 +1301,11 @@ impl App {
 
     fn setup_screen(&mut self, ui: &mut Ui, t: &Tokens) {
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "дополнительный экран", "extra screen")).size(18.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "дополнительный экран", "extra screen"))
+                    .size(18.0)
+                    .strong(),
+            );
             ui.add_space(4.0);
             small(
                 ui,
@@ -1175,7 +1339,10 @@ impl App {
                 .iter()
                 .enumerate()
                 {
-                    if ui.selectable_label(self.setup_preset == i, *label).clicked() {
+                    if ui
+                        .selectable_label(self.setup_preset == i, *label)
+                        .clicked()
+                    {
                         self.setup_preset = i;
                         self.screen.width = *w;
                         self.screen.height = *h;
@@ -1185,7 +1352,11 @@ impl App {
             ui.add_space(8.0);
             ui.checkbox(
                 &mut self.setup_start_screen,
-                t!(self.lang, "запустить экран после настройки", "start the screen after setup"),
+                t!(
+                    self.lang,
+                    "запустить экран после настройки",
+                    "start the screen after setup"
+                ),
             );
         });
         ui.add_space(12.0);
@@ -1201,7 +1372,11 @@ impl App {
 
     fn setup_done(&mut self, ui: &mut Ui, t: &Tokens) {
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "всё готово", "all set")).size(20.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "всё готово", "all set"))
+                    .size(20.0)
+                    .strong(),
+            );
             ui.add_space(4.0);
             small(
                 ui,
@@ -1221,7 +1396,8 @@ impl App {
             }
         });
         ui.add_space(12.0);
-        if primary(ui, t!(self.lang, "открыть панель", "open the panel"), t).clicked() {
+        if primary(ui, t!(self.lang, "открыть панель", "open the panel"), t).clicked()
+        {
             self.save(|c| c.setup_done = true);
             self.status = self.state.status();
             if self.setup_start_screen {
@@ -1311,7 +1487,11 @@ impl App {
                     );
                     tag(
                         ui,
-                        &format!("{} {}", s.connected_clients, t!(self.lang, "клиентов", "clients")),
+                        &format!(
+                            "{} {}",
+                            s.connected_clients,
+                            t!(self.lang, "клиентов", "clients")
+                        ),
                         t.muted,
                     );
                 });
@@ -1373,17 +1553,26 @@ impl App {
                             if ghost(ui, t!(self.lang, "стоп", "stop"), t).clicked() {
                                 self.stop_viiper();
                             }
-                            if ghost(ui, t!(self.lang, "перезапуск", "restart"), t).clicked() {
+                            if ghost(ui, t!(self.lang, "перезапуск", "restart"), t).clicked()
+                            {
                                 self.start_viiper(true);
                             }
                         } else if s.viiper.installed {
-                            if primary(ui, t!(self.lang, "запустить", "start"), t).clicked() {
+                            if primary(ui, t!(self.lang, "запустить", "start"), t).clicked()
+                            {
                                 self.start_viiper(false);
                             }
-                        } else if primary(ui, t!(self.lang, "установить", "install"), t).clicked() {
+                        } else if primary(ui, t!(self.lang, "установить", "install"), t).clicked()
+                        {
                             go = Some(Page::Install);
                         }
-                        if ui.add(egui::Button::new(hud(t!(self.lang, "подробнее", "details"), t.faint))).clicked() {
+                        if ui
+                            .add(egui::Button::new(hud(
+                                t!(self.lang, "подробнее", "details"),
+                                t.faint,
+                            )))
+                            .clicked()
+                        {
                             go = Some(Page::Gamepads);
                         }
                     });
@@ -1392,7 +1581,11 @@ impl App {
                 // screen
                 card(ui, t, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(t!(self.lang, "экран", "screen")).size(15.0).strong());
+                        ui.label(
+                            RichText::new(t!(self.lang, "экран", "screen"))
+                                .size(15.0)
+                                .strong(),
+                        );
                         tag(
                             ui,
                             if s.monitor.running {
@@ -1408,7 +1601,10 @@ impl App {
                         &if s.monitor.running {
                             format!(
                                 "{} · {}×{} · {}",
-                                s.monitor.backend_label, s.monitor.width, s.monitor.height, s.monitor.output
+                                s.monitor.backend_label,
+                                s.monitor.width,
+                                s.monitor.height,
+                                s.monitor.output
                             )
                         } else {
                             t!(
@@ -1437,13 +1633,21 @@ impl App {
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if s.monitor.running {
-                            if ghost(ui, t!(self.lang, "остановить", "stop"), t).clicked() {
+                            if ghost(ui, t!(self.lang, "остановить", "stop"), t).clicked()
+                            {
                                 self.state.monitor.stop();
                             }
-                        } else if primary(ui, t!(self.lang, "настроить", "set up"), t).clicked() {
+                        } else if primary(ui, t!(self.lang, "настроить", "set up"), t).clicked()
+                        {
                             go = Some(Page::Screen);
                         }
-                        if ui.add(egui::Button::new(hud(t!(self.lang, "открыть", "open"), t.faint))).clicked() {
+                        if ui
+                            .add(egui::Button::new(hud(
+                                t!(self.lang, "открыть", "open"),
+                                t.faint,
+                            )))
+                            .clicked()
+                        {
                             go = Some(Page::Screen);
                         }
                     });
@@ -1453,11 +1657,19 @@ impl App {
                 // notifications
                 card(ui, t, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(t!(self.lang, "уведомления", "notifications")).size(15.0).strong());
+                        ui.label(
+                            RichText::new(t!(self.lang, "уведомления", "notifications"))
+                                .size(15.0)
+                                .strong(),
+                        );
                         tag(
                             ui,
                             &format!("{}", s.notifications.count),
-                            if s.notifications.listening { t.good } else { t.warn },
+                            if s.notifications.listening {
+                                t.good
+                            } else {
+                                t.warn
+                            },
                         );
                     });
                     small(
@@ -1465,20 +1677,31 @@ impl App {
                         if s.notifications.listening {
                             t!(self.lang, "зеркалирование включено", "mirroring is on")
                         } else {
-                            t!(self.lang, "ожидает демон уведомлений", "waiting for a notification daemon")
+                            t!(
+                                self.lang,
+                                "ожидает демон уведомлений",
+                                "waiting for a notification daemon"
+                            )
                         },
                         t.muted,
                     );
                     ui.add_space(6.0);
                     for n in s.notifications.recent.iter().take(2) {
-                        small(ui, &format!("{} · {}", n.app, sdw_core::util::truncate(&n.summary, 44)), t.ink);
+                        small(
+                            ui,
+                            &format!("{} · {}", n.app, sdw_core::util::truncate(&n.summary, 44)),
+                            t.ink,
+                        );
                     }
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
                         if ghost(ui, t!(self.lang, "проверить", "test"), t).clicked() {
                             self.state.notifications.add_test();
                         }
-                        if ui.add(egui::Button::new(hud(t!(self.lang, "все", "all"), t.faint))).clicked() {
+                        if ui
+                            .add(egui::Button::new(hud(t!(self.lang, "все", "all"), t.faint)))
+                            .clicked()
+                        {
                             go = Some(Page::Notifications);
                         }
                     });
@@ -1497,15 +1720,31 @@ impl App {
                             } else {
                                 t!(self.lang, "не настроен", "not set")
                             },
-                            if s.ha.connected { t.good } else if s.ha.configured { t.bad } else { t.muted },
+                            if s.ha.connected {
+                                t.good
+                            } else if s.ha.configured {
+                                t.bad
+                            } else {
+                                t.muted
+                            },
                         );
                     });
                     small(
                         ui,
                         &if s.ha.configured {
-                            format!("{} · {} {}", s.ha.url, s.ha.entities, t!(self.lang, "сущностей", "entities"))
+                            format!(
+                                "{} · {} {}",
+                                s.ha.url,
+                                s.ha.entities,
+                                t!(self.lang, "сущностей", "entities")
+                            )
                         } else {
-                            t!(self.lang, "свет, сцены и датчики на деке", "lights, scenes and sensors on the deck").to_string()
+                            t!(
+                                self.lang,
+                                "свет, сцены и датчики на деке",
+                                "lights, scenes and sensors on the deck"
+                            )
+                            .to_string()
                         },
                         t.muted,
                     );
@@ -1520,9 +1759,19 @@ impl App {
         ui.add_space(10.0);
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(self.lang, "подключённые клиенты", "paired clients")).size(15.0).strong());
+                ui.label(
+                    RichText::new(t!(self.lang, "подключённые клиенты", "paired clients"))
+                        .size(15.0)
+                        .strong(),
+                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new(hud(t!(self.lang, "безопасность", "security"), t.faint))).clicked() {
+                    if ui
+                        .add(egui::Button::new(hud(
+                            t!(self.lang, "безопасность", "security"),
+                            t.faint,
+                        )))
+                        .clicked()
+                    {
                         go = Some(Page::Security);
                     }
                 });
@@ -1586,7 +1835,11 @@ impl App {
                     } else {
                         t!(self.lang, "без пароля", "no key")
                     },
-                    if s.viiper.password_set { t.good } else { t.muted },
+                    if s.viiper.password_set {
+                        t.good
+                    } else {
+                        t.muted
+                    },
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if s.viiper.running {
@@ -1607,7 +1860,22 @@ impl App {
                 ui.add_space(10.0);
                 mono(ui, &format!("usb {}", s.viiper.usb_addr), t.muted);
                 ui.add_space(10.0);
-                mono(ui, &format!("usbip {}", if s.viiper.usbip_installed { "ok" } else { "missing" }), if s.viiper.usbip_installed { t.good } else { t.bad });
+                mono(
+                    ui,
+                    &format!(
+                        "usbip {}",
+                        if s.viiper.usbip_installed {
+                            "ok"
+                        } else {
+                            "missing"
+                        }
+                    ),
+                    if s.viiper.usbip_installed {
+                        t.good
+                    } else {
+                        t.bad
+                    },
+                );
                 if !s.viiper.version.is_empty() {
                     ui.add_space(10.0);
                     mono(ui, &s.viiper.version, t.faint);
@@ -1617,21 +1885,39 @@ impl App {
                 small(ui, &s.viiper.error, t.bad);
             }
             ui.add_space(8.0);
-            ui.label(hud(t!(self.lang, "пароль viiper", "viiper password"), t.faint));
+            ui.label(hud(
+                t!(self.lang, "пароль viiper", "viiper password"),
+                t.faint,
+            ));
             ui.horizontal(|ui| {
                 ui.add(
                     TextEdit::singleline(&mut self.viiper_pass)
                         .password(!self.viiper_show)
                         .desired_width(280.0),
                 );
-                if ui.add(egui::Button::new(hud(if self.viiper_show { "hide" } else { "show" }, t.muted))).clicked() {
+                if ui
+                    .add(egui::Button::new(hud(
+                        if self.viiper_show { "hide" } else { "show" },
+                        t.muted,
+                    )))
+                    .clicked()
+                {
                     self.viiper_show = !self.viiper_show;
                 }
-                if ui.add(egui::Button::new(hud(t!(self.lang, "сохранить", "save"), t.muted))).clicked() {
+                if ui
+                    .add(egui::Button::new(hud(
+                        t!(self.lang, "сохранить", "save"),
+                        t.muted,
+                    )))
+                    .clicked()
+                {
                     let pass = self.viiper_pass.trim().to_string();
                     let _ = self.state.viiper.write_key(&pass);
                     self.save(|c| c.viiper.password = pass);
-                    self.toast(t!(self.lang, "пароль viiper сохранён", "viiper password saved"), true);
+                    self.toast(
+                        t!(self.lang, "пароль viiper сохранён", "viiper password saved"),
+                        true,
+                    );
                 }
                 small(
                     ui,
@@ -1655,7 +1941,11 @@ impl App {
         ui.add_space(10.0);
 
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "новый пад", "new pad")).size(15.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "новый пад", "new pad"))
+                    .size(15.0)
+                    .strong(),
+            );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.add(
@@ -1679,7 +1969,9 @@ impl App {
                     let kind = self.pad_kind;
                     let state = self.state.clone();
                     self.toast(t!(self.lang, "создаю пад…", "creating pad…"), true);
-                    self.spawn(move || TaskResult::Pad(state.viiper.create_pad(&state.cfg(), &name, kind)));
+                    self.spawn(move || {
+                        TaskResult::Pad(state.viiper.create_pad(&state.cfg(), &name, kind))
+                    });
                 }
             });
             small(ui, pad_hint(self.lang, self.pad_kind), t.faint);
@@ -1689,14 +1981,36 @@ impl App {
             ui.add_space(10.0);
             card(ui, t, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(t!(self.lang, "пад создан", "pad created")).size(15.0).strong().color(t.good));
+                    ui.label(
+                        RichText::new(t!(self.lang, "пад создан", "pad created"))
+                            .size(15.0)
+                            .strong()
+                            .color(t.good),
+                    );
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(egui::Button::new(theme::icon(theme::icon::CLOSE, 13.0, t.muted))).clicked() {
+                        if ui
+                            .add(egui::Button::new(theme::icon(
+                                theme::icon::CLOSE,
+                                13.0,
+                                t.muted,
+                            )))
+                            .clicked()
+                        {
                             self.created_pad = None;
                         }
                     });
                 });
-                mono(ui, &format!("{} · {} · bus {} · {}", p.pad.name, p.pad.kind.label(), p.pad.bus_id, p.pad.dev_id), t.ink);
+                mono(
+                    ui,
+                    &format!(
+                        "{} · {} · bus {} · {}",
+                        p.pad.name,
+                        p.pad.kind.label(),
+                        p.pad.bus_id,
+                        p.pad.dev_id
+                    ),
+                    t.ink,
+                );
                 ui.add_space(4.0);
                 small(
                     ui,
@@ -1708,9 +2022,19 @@ impl App {
                     t.muted,
                 );
                 ui.horizontal(|ui| {
-                    let secret = if self.show_pad_secret { p.udp_secret.clone() } else { "••••••••••••".into() };
+                    let secret = if self.show_pad_secret {
+                        p.udp_secret.clone()
+                    } else {
+                        "••••••••••••".into()
+                    };
                     mono(ui, &secret, t.accent_ink);
-                    if ui.add(egui::Button::new(hud(if self.show_pad_secret { "hide" } else { "show" }, t.muted))).clicked() {
+                    if ui
+                        .add(egui::Button::new(hud(
+                            if self.show_pad_secret { "hide" } else { "show" },
+                            t.muted,
+                        )))
+                        .clicked()
+                    {
                         self.show_pad_secret = !self.show_pad_secret;
                     }
                     theme::copy_button(ui, &p.udp_secret, t);
@@ -1744,11 +2068,19 @@ impl App {
                             tag(ui, t!(self.lang, "онлайн", "online"), t.good);
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(egui::Button::new(hud(t!(self.lang, "удалить", "remove"), t.bad))).clicked() {
+                            if ui
+                                .add(egui::Button::new(hud(
+                                    t!(self.lang, "удалить", "remove"),
+                                    t.bad,
+                                )))
+                                .clicked()
+                            {
                                 let id = pad.id.clone();
                                 let state = self.state.clone();
                                 self.spawn(move || {
-                                    TaskResult::Msg(state.viiper.delete_pad(&id).map(|_| "пад удалён".into()))
+                                    TaskResult::Msg(
+                                        state.viiper.delete_pad(&id).map(|_| "пад удалён".into()),
+                                    )
                                 });
                             }
                         });
@@ -1772,11 +2104,17 @@ impl App {
                         ui.horizontal(|ui| {
                             ui.label(hud("rumble", t.faint));
                             for v in pad.rumble {
-                                let (rect, _) = ui.allocate_exact_size(egui::vec2(60.0, 8.0), egui::Sense::hover());
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(60.0, 8.0),
+                                    egui::Sense::hover(),
+                                );
                                 ui.painter().rect_filled(rect, 0.0, t.well);
                                 let w = rect.width() * (v as f32 / 255.0);
                                 ui.painter().rect_filled(
-                                    egui::Rect::from_min_size(rect.min, egui::vec2(w, rect.height())),
+                                    egui::Rect::from_min_size(
+                                        rect.min,
+                                        egui::vec2(w, rect.height()),
+                                    ),
                                     0.0,
                                     t.accent,
                                 );
@@ -1823,7 +2161,12 @@ impl App {
         if s.monitor.running {
             card(ui, t, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(t!(self.lang, "в эфире", "live")).size(16.0).strong().color(t.good));
+                    ui.label(
+                        RichText::new(t!(self.lang, "в эфире", "live"))
+                            .size(16.0)
+                            .strong()
+                            .color(t.good),
+                    );
                     tag(ui, &s.monitor.backend_label, t.muted);
                     tag(ui, &s.monitor.output, t.muted);
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1867,27 +2210,53 @@ impl App {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
                         Color32::WHITE,
                     );
-                    ui.painter().rect_stroke(rect, 0.0, t.hairline(), egui::StrokeKind::Inside);
+                    ui.painter()
+                        .rect_stroke(rect, 0.0, t.hairline(), egui::StrokeKind::Inside);
                     if s.monitor.input_enabled && resp.clicked() {
                         if let Some(pos) = resp.interact_pointer_pos() {
                             let x = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
                             let y = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
                             let state = self.state.clone();
-                            let input = MonitorInput { x, y, action: "click".into(), amount: 0 };
-                            self.spawn(move || TaskResult::Msg(state.monitor.input(&input).map(|_| "клик отправлен".into())));
+                            let input = MonitorInput {
+                                x,
+                                y,
+                                action: "click".into(),
+                                amount: 0,
+                            };
+                            self.spawn(move || {
+                                TaskResult::Msg(
+                                    state.monitor.input(&input).map(|_| "клик отправлен".into()),
+                                )
+                            });
                         }
                     }
                     small(
                         ui,
                         if s.monitor.input_enabled {
-                            t!(self.lang, "клик по превью = клик на компьютере", "click the preview = click on the computer")
+                            t!(
+                                self.lang,
+                                "клик по превью = клик на компьютере",
+                                "click the preview = click on the computer"
+                            )
                         } else {
-                            t!(self.lang, "управление мышью выключено", "pointer control is off")
+                            t!(
+                                self.lang,
+                                "управление мышью выключено",
+                                "pointer control is off"
+                            )
                         },
                         t.faint,
                     );
                 } else {
-                    small(ui, t!(self.lang, "ждём первый кадр…", "waiting for the first frame…"), t.muted);
+                    small(
+                        ui,
+                        t!(
+                            self.lang,
+                            "ждём первый кадр…",
+                            "waiting for the first frame…"
+                        ),
+                        t.muted,
+                    );
                 }
             });
             ui.add_space(10.0);
@@ -1896,7 +2265,11 @@ impl App {
         // questionnaire
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(self.lang, "мастер", "wizard")).size(16.0).strong());
+                ui.label(
+                    RichText::new(t!(self.lang, "мастер", "wizard"))
+                        .size(16.0)
+                        .strong(),
+                );
                 for i in 0..4 {
                     let active = self.screen.step == i;
                     ui.label(
@@ -1910,30 +2283,55 @@ impl App {
             divider(ui);
             match self.screen.step {
                 0 => {
-                    small(ui, t!(self.lang, "что нужно сделать?", "what should the extra screen do?"), t.muted);
+                    small(
+                        ui,
+                        t!(
+                            self.lang,
+                            "что нужно сделать?",
+                            "what should the extra screen do?"
+                        ),
+                        t.muted,
+                    );
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         for (mode, title, hint) in [
                             (
                                 MonitorMode::Extend,
                                 t!(self.lang, "дополнительный монитор", "extra monitor"),
-                                t!(self.lang, "второй рабочий стол справа от основного", "a second desktop to the right"),
+                                t!(
+                                    self.lang,
+                                    "второй рабочий стол справа от основного",
+                                    "a second desktop to the right"
+                                ),
                             ),
                             (
                                 MonitorMode::Mirror,
                                 t!(self.lang, "зеркало", "mirror"),
-                                t!(self.lang, "копия основного экрана", "a copy of the main screen"),
+                                t!(
+                                    self.lang,
+                                    "копия основного экрана",
+                                    "a copy of the main screen"
+                                ),
                             ),
                         ] {
                             let selected = self.screen.mode == mode;
                             egui::Frame::new()
                                 .fill(if selected { t.well } else { t.bg })
-                                .stroke(Stroke::new(1.0, if selected { t.line_strong } else { t.line }))
+                                .stroke(Stroke::new(
+                                    1.0,
+                                    if selected { t.line_strong } else { t.line },
+                                ))
                                 .inner_margin(Margin::same(12))
                                 .show(ui, |ui| {
                                     ui.set_width(260.0);
                                     ui.vertical(|ui| {
-                                        if ui.selectable_label(selected, RichText::new(title).size(14.0).strong()).clicked() {
+                                        if ui
+                                            .selectable_label(
+                                                selected,
+                                                RichText::new(title).size(14.0).strong(),
+                                            )
+                                            .clicked()
+                                        {
                                             self.screen.mode = mode;
                                         }
                                         small(ui, hint, t.muted);
@@ -1955,7 +2353,10 @@ impl App {
                         .iter()
                         .enumerate()
                         {
-                            if ui.selectable_label(self.screen.preset == i, *label).clicked() {
+                            if ui
+                                .selectable_label(self.screen.preset == i, *label)
+                                .clicked()
+                            {
                                 self.screen.preset = i;
                                 self.screen.width = *w;
                                 self.screen.height = *h;
@@ -1990,7 +2391,11 @@ impl App {
                                         MonitorBackend::Gdigrab,
                                         MonitorBackend::MacCapture,
                                     ] {
-                                        ui.selectable_value(&mut self.screen.backend, b, backend_label(self.lang, b));
+                                        ui.selectable_value(
+                                            &mut self.screen.backend,
+                                            b,
+                                            backend_label(self.lang, b),
+                                        );
                                     }
                                 });
                         });
@@ -2004,7 +2409,11 @@ impl App {
                                     self.screen.output.clone()
                                 })
                                 .show_ui(ui, |ui| {
-                                    ui.selectable_value(&mut self.screen.output, String::new(), t!(self.lang, "авто", "auto"));
+                                    ui.selectable_value(
+                                        &mut self.screen.output,
+                                        String::new(),
+                                        t!(self.lang, "авто", "auto"),
+                                    );
                                     for o in &s.monitor.outputs {
                                         ui.selectable_value(
                                             &mut self.screen.output,
@@ -2040,20 +2449,38 @@ impl App {
                         ui.add(egui::Slider::new(&mut self.screen.fps, 5..=30).show_value(true));
                         ui.add_space(14.0);
                         ui.label(hud(t!(self.lang, "качество", "quality"), t.faint));
-                        ui.add(egui::Slider::new(&mut self.screen.quality, 30..=95).show_value(true));
+                        ui.add(
+                            egui::Slider::new(&mut self.screen.quality, 30..=95).show_value(true),
+                        );
                     });
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.screen.input, t!(self.lang, "управление мышью с дека", "pointer control from the deck"));
+                        ui.checkbox(
+                            &mut self.screen.input,
+                            t!(
+                                self.lang,
+                                "управление мышью с дека",
+                                "pointer control from the deck"
+                            ),
+                        );
                     });
-                    if matches!(self.screen.backend, MonitorBackend::Vkms | MonitorBackend::Auto)
-                        && s.monitor.compositor == "niri"
+                    if matches!(
+                        self.screen.backend,
+                        MonitorBackend::Vkms | MonitorBackend::Auto
+                    ) && s.monitor.compositor == "niri"
                     {
                         ui.add_space(6.0);
-                        ui.label(hud(t!(self.lang, "пароль sudo для vkms", "sudo password for vkms"), t.faint));
+                        ui.label(hud(
+                            t!(self.lang, "пароль sudo для vkms", "sudo password for vkms"),
+                            t.faint,
+                        ));
                         ui.add(
                             TextEdit::singleline(&mut self.screen.sudo)
                                 .password(true)
-                                .hint_text(t!(self.lang, "нужен для modprobe vkms", "needed for modprobe vkms"))
+                                .hint_text(t!(
+                                    self.lang,
+                                    "нужен для modprobe vkms",
+                                    "needed for modprobe vkms"
+                                ))
                                 .desired_width(300.0),
                         );
                     }
@@ -2091,15 +2518,32 @@ impl App {
                         small(ui, &s.monitor.note, t.warn);
                     }
                     ui.horizontal(|ui| {
-                        if primary(ui, t!(self.lang, "запустить экран", "start the screen"), t).clicked() {
+                        if primary(ui, t!(self.lang, "запустить экран", "start the screen"), t)
+                            .clicked()
+                        {
                             self.start_screen();
                         }
-                        if ui.add(egui::Button::new(hud(t!(self.lang, "подсказка по конфигу", "config hint"), t.faint))).clicked() {
+                        if ui
+                            .add(egui::Button::new(hud(
+                                t!(self.lang, "подсказка по конфигу", "config hint"),
+                                t.faint,
+                            )))
+                            .clicked()
+                        {
                             self.show_hint = !self.show_hint;
                         }
-                        if ui.add(egui::Button::new(hud(t!(self.lang, "обновить выходы", "refresh outputs"), t.faint))).clicked() {
+                        if ui
+                            .add(egui::Button::new(hud(
+                                t!(self.lang, "обновить выходы", "refresh outputs"),
+                                t.faint,
+                            )))
+                            .clicked()
+                        {
                             self.state.monitor.refresh();
-                            self.toast(t!(self.lang, "выходы обновлены", "outputs refreshed"), true);
+                            self.toast(
+                                t!(self.lang, "выходы обновлены", "outputs refreshed"),
+                                true,
+                            );
                         }
                     });
                     if self.show_hint {
@@ -2110,7 +2554,14 @@ impl App {
                             .inner_margin(Margin::same(10))
                             .show(ui, |ui| {
                                 ui.horizontal(|ui| {
-                                    ui.label(hud(t!(self.lang, "что добавить в конфиг", "what to add to the config"), t.muted));
+                                    ui.label(hud(
+                                        t!(
+                                            self.lang,
+                                            "что добавить в конфиг",
+                                            "what to add to the config"
+                                        ),
+                                        t.muted,
+                                    ));
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         theme::copy_button(ui, &s.monitor.config_hint, t);
                                     });
@@ -2134,12 +2585,16 @@ impl App {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if self.screen.step > 0
-                    && ui.add(egui::Button::new(hud(t!(self.lang, "назад", "back"), t.muted))).clicked()
+                    && ui
+                        .add(egui::Button::new(hud(
+                            t!(self.lang, "назад", "back"),
+                            t.muted,
+                        )))
+                        .clicked()
                 {
                     self.screen.step -= 1;
                 }
-                if self.screen.step < 3
-                    && primary(ui, t!(self.lang, "далее", "next"), t).clicked()
+                if self.screen.step < 3 && primary(ui, t!(self.lang, "далее", "next"), t).clicked()
                 {
                     self.screen.step += 1;
                 }
@@ -2148,22 +2603,38 @@ impl App {
 
         ui.add_space(10.0);
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "инструменты", "tools")).size(15.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "инструменты", "tools"))
+                    .size(15.0)
+                    .strong(),
+            );
             ui.add_space(4.0);
-            egui::Grid::new("tools").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
-                for tool in &s.monitor.tools {
-                    ui.horizontal(|ui| {
-                        theme::dot(ui, if tool.installed { t.good } else { t.bad }, tool.installed);
-                        ui.label(RichText::new(&tool.name).family(FontFamily::Monospace).size(12.0).color(t.ink));
-                    });
-                    if tool.installed {
-                        small(ui, &tool.purpose, t.muted);
-                    } else {
-                        small(ui, &tool.install_hint, t.faint);
+            egui::Grid::new("tools")
+                .num_columns(2)
+                .spacing([16.0, 4.0])
+                .show(ui, |ui| {
+                    for tool in &s.monitor.tools {
+                        ui.horizontal(|ui| {
+                            theme::dot(
+                                ui,
+                                if tool.installed { t.good } else { t.bad },
+                                tool.installed,
+                            );
+                            ui.label(
+                                RichText::new(&tool.name)
+                                    .family(FontFamily::Monospace)
+                                    .size(12.0)
+                                    .color(t.ink),
+                            );
+                        });
+                        if tool.installed {
+                            small(ui, &tool.purpose, t.muted);
+                        } else {
+                            small(ui, &tool.install_hint, t.faint);
+                        }
+                        ui.end_row();
                     }
-                    ui.end_row();
-                }
-            });
+                });
         });
     }
 }
@@ -2235,7 +2706,11 @@ impl App {
             card(ui, t, |ui| {
                 small(
                     ui,
-                    t!(self.lang, "пока пусто. уведомления появятся здесь.", "nothing yet. notifications will appear here."),
+                    t!(
+                        self.lang,
+                        "пока пусто. уведомления появятся здесь.",
+                        "nothing yet. notifications will appear here."
+                    ),
                     t.muted,
                 );
             });
@@ -2247,13 +2722,26 @@ impl App {
                     ui.horizontal(|ui| {
                         theme::dot(
                             ui,
-                            if n.urgency >= 2 { t.bad } else if n.urgency == 1 { t.warn } else { t.accent },
+                            if n.urgency >= 2 {
+                                t.bad
+                            } else if n.urgency == 1 {
+                                t.warn
+                            } else {
+                                t.accent
+                            },
                             true,
                         );
                         ui.label(RichText::new(&n.app).size(12.5).strong().color(t.strong));
                         small(ui, &ago(n.ts), t.faint);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(egui::Button::new(theme::icon(theme::icon::CLOSE, 13.0, t.muted))).clicked() {
+                            if ui
+                                .add(egui::Button::new(theme::icon(
+                                    theme::icon::CLOSE,
+                                    13.0,
+                                    t.muted,
+                                )))
+                                .clicked()
+                            {
                                 self.state.notifications.dismiss(n.id);
                             }
                         });
@@ -2298,7 +2786,13 @@ impl App {
                     } else {
                         t!(self.lang, "не настроен", "not set")
                     },
-                    if s.ha.connected { t.good } else if s.ha.configured { t.bad } else { t.muted },
+                    if s.ha.connected {
+                        t.good
+                    } else if s.ha.configured {
+                        t.bad
+                    } else {
+                        t.muted
+                    },
                 );
             });
             ui.add_space(6.0);
@@ -2309,14 +2803,23 @@ impl App {
                     .desired_width(f32::INFINITY),
             );
             ui.add_space(6.0);
-            ui.label(hud(t!(self.lang, "долгоживущий токен", "long-lived token"), t.faint));
+            ui.label(hud(
+                t!(self.lang, "долгоживущий токен", "long-lived token"),
+                t.faint,
+            ));
             ui.horizontal(|ui| {
                 ui.add(
                     TextEdit::singleline(&mut self.ha_token)
                         .password(!self.ha_show_token)
                         .desired_width(420.0),
                 );
-                if ui.add(egui::Button::new(hud(if self.ha_show_token { "hide" } else { "show" }, t.muted))).clicked() {
+                if ui
+                    .add(egui::Button::new(hud(
+                        if self.ha_show_token { "hide" } else { "show" },
+                        t.muted,
+                    )))
+                    .clicked()
+                {
                     self.ha_show_token = !self.ha_show_token;
                 }
             });
@@ -2326,7 +2829,14 @@ impl App {
                     let state = self.state.clone();
                     let url = self.ha_url.trim().to_string();
                     let token = self.ha_token.trim().to_string();
-                    self.toast(t!(self.lang, "проверяю home assistant…", "checking home assistant…"), true);
+                    self.toast(
+                        t!(
+                            self.lang,
+                            "проверяю home assistant…",
+                            "checking home assistant…"
+                        ),
+                        true,
+                    );
                     self.spawn(move || {
                         let mut cfg = state.cfg();
                         let fav = cfg.ha.favorites.clone();
@@ -2349,7 +2859,11 @@ impl App {
                 if ghost(ui, t!(self.lang, "проверить", "test"), t).clicked() {
                     let state = self.state.clone();
                     self.spawn(move || {
-                        let res = state.ha.lock().map(|mut h| h.refresh()).unwrap_or(Err("lock".into()));
+                        let res = state
+                            .ha
+                            .lock()
+                            .map(|mut h| h.refresh())
+                            .unwrap_or(Err("lock".into()));
                         TaskResult::Msg(res.map(|_| "home assistant отвечает".into()))
                     });
                 }
@@ -2470,17 +2984,218 @@ impl App {
             self.save_ha_categories();
         }
 
+        // Presets are shared with every deck through the daemon config, so a
+        // preset created here shows up on the deck (and the other way round).
+        ui.add_space(10.0);
+        let mut preset_changed = false;
+        let mut preset_remove: Option<usize> = None;
+        let mut preset_swap: Option<(usize, usize)> = None;
+        let mut preset_apply: Option<Vec<HaPresetAction>> = None;
+        let mut preset_capture: Option<usize> = None;
+        let mut add_from_lights = false;
+        let preset_count = self.ha_presets.len();
+        let mut new_preset = self.ha_new_preset.clone();
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(t!(self.lang, "пресеты света", "light presets"))
+                        .size(15.0)
+                        .strong(),
+                );
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "яркость, температура и цвет всех включённых ламп одним нажатием",
+                        "brightness, temperature and colour of every lit lamp in one tap"
+                    ),
+                    t.faint,
+                );
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut new_preset)
+                        .hint_text(t!(self.lang, "имя пресета", "preset name"))
+                        .desired_width(220.0),
+                );
+                if ghost(
+                    ui,
+                    t!(self.lang, "снять текущий свет", "capture current lights"),
+                    t,
+                )
+                .on_hover_text(t!(
+                    self.lang,
+                    "снимок яркости и цвета всех включённых ламп",
+                    "snapshot of brightness and colour of every lamp that is on"
+                ))
+                .clicked()
+                {
+                    add_from_lights = true;
+                }
+            });
+            if self.ha_presets.is_empty() {
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "пока нет пресетов. включите лампы и снимите текущий свет.",
+                        "no presets yet. turn lamps on and capture the current lights."
+                    ),
+                    t.muted,
+                );
+            }
+            for (i, p) in self.ha_presets.iter_mut().enumerate() {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(TextEdit::singleline(&mut p.name).desired_width(180.0))
+                        .lost_focus()
+                    {
+                        preset_changed = true;
+                    }
+                    tag(ui, &format!("{}", p.actions.len()), t.muted);
+                    if ui
+                        .add(egui::Button::new(hud(
+                            t!(self.lang, "применить", "apply"),
+                            t.muted,
+                        )))
+                        .clicked()
+                    {
+                        preset_apply = Some(p.actions.clone());
+                    }
+                    if ui
+                        .add_enabled(
+                            i > 0,
+                            egui::Button::new(hud(theme::icon::ARROW_LEFT, t.muted)),
+                        )
+                        .clicked()
+                    {
+                        preset_swap = Some((i, i - 1));
+                    }
+                    if ui
+                        .add_enabled(
+                            i + 1 < preset_count,
+                            egui::Button::new(hud(theme::icon::ARROW_RIGHT, t.muted)),
+                        )
+                        .clicked()
+                    {
+                        preset_swap = Some((i, i + 1));
+                    }
+                    if ui
+                        .add(egui::Button::new(hud(
+                            t!(self.lang, "снять", "recapture"),
+                            t.faint,
+                        )))
+                        .on_hover_text(t!(
+                            self.lang,
+                            "заменить содержимое текущим светом",
+                            "replace the contents with the current lights"
+                        ))
+                        .clicked()
+                    {
+                        preset_capture = Some(i);
+                    }
+                    if ui
+                        .add(egui::Button::new(hud(theme::icon::CLOSE, t.bad)))
+                        .on_hover_text(t!(self.lang, "удалить пресет", "delete preset"))
+                        .clicked()
+                    {
+                        preset_remove = Some(i);
+                    }
+                });
+            }
+        });
+        if add_from_lights {
+            let actions = sdw_core::ha::capture_light_preset(&self.ha_entities);
+            if actions.is_empty() {
+                self.toast(
+                    t!(
+                        self.lang,
+                        "нет включённых ламп — пресет пустой",
+                        "no lights are on — the preset would be empty"
+                    ),
+                    false,
+                );
+            } else {
+                let mut preset = HaPreset::new(&new_preset);
+                preset.actions = actions;
+                self.ha_presets.push(preset);
+                new_preset.clear();
+                preset_changed = true;
+            }
+        }
+        if let Some((a, b)) = preset_swap {
+            if a < self.ha_presets.len() && b < self.ha_presets.len() {
+                self.ha_presets.swap(a, b);
+                preset_changed = true;
+            }
+        }
+        if let Some(i) = preset_capture {
+            let actions = sdw_core::ha::capture_light_preset(&self.ha_entities);
+            if !actions.is_empty() {
+                if let Some(p) = self.ha_presets.get_mut(i) {
+                    p.actions = actions;
+                    preset_changed = true;
+                }
+            }
+        }
+        if let Some(i) = preset_remove {
+            if i < self.ha_presets.len() {
+                self.ha_presets.remove(i);
+                preset_changed = true;
+            }
+        }
+        self.ha_new_preset = new_preset;
+        if preset_changed {
+            self.save_ha_presets();
+        }
+        if let Some(actions) = preset_apply {
+            let state = self.state.clone();
+            self.spawn(move || {
+                let res = state
+                    .ha
+                    .lock()
+                    .map(|h| {
+                        for a in &actions {
+                            let call = HaCall {
+                                domain: "light".into(),
+                                service: a.service.clone(),
+                                target: serde_json::json!({ "entity_id": a.entity_id }),
+                                data: a.data.clone(),
+                            };
+                            if let Err(e) = h.call(&call) {
+                                return Err(e);
+                            }
+                        }
+                        Ok(())
+                    })
+                    .unwrap_or(Err("home assistant lock".into()));
+                TaskResult::Msg(res.map(|_| "пресет применён".into()))
+            });
+        }
+
         ui.add_space(10.0);
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(self.lang, "сущности", "entities")).size(15.0).strong());
+                ui.label(
+                    RichText::new(t!(self.lang, "сущности", "entities"))
+                        .size(15.0)
+                        .strong(),
+                );
                 ui.add(
                     TextEdit::singleline(&mut self.ha_search)
                         .hint_text(t!(self.lang, "поиск", "search"))
                         .desired_width(220.0),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.add(egui::Button::new(hud(t!(self.lang, "обновить", "refresh"), t.faint))).clicked() {
+                    if ui
+                        .add(egui::Button::new(hud(
+                            t!(self.lang, "обновить", "refresh"),
+                            t.faint,
+                        )))
+                        .clicked()
+                    {
                         self.last_ha_fetch = Instant::now() - Duration::from_secs(60);
                     }
                 });
@@ -2514,7 +3229,10 @@ impl App {
                     shown += 1;
                 }
                 ui.add_space(6.0);
-                ui.label(hud(t!(self.lang, "всё остальное", "everything else"), t.faint));
+                ui.label(hud(
+                    t!(self.lang, "всё остальное", "everything else"),
+                    t.faint,
+                ));
             }
             let mut all: Vec<HaEntity> = self
                 .ha_entities
@@ -2569,30 +3287,27 @@ impl App {
                         .iter()
                         .find(|c| c.entities.iter().any(|x| x == &e.entity_id))
                         .map(|c| c.id.clone());
-                    ui.menu_button(
-                        theme::icon(theme::icon::DRAG, 16.0, t.faint),
-                        |ui| {
-                            ui.label(hud(t!(self.lang, "категория", "category"), t.faint));
-                            for c in &cats {
-                                let inside = current.as_deref() == Some(c.id.as_str());
-                                if ui.selectable_label(inside, &c.name).clicked() {
-                                    self.ha_pending_category =
-                                        Some((e.entity_id.clone(), Some(c.id.clone())));
-                                }
+                    ui.menu_button(theme::icon(theme::icon::DRAG, 16.0, t.faint), |ui| {
+                        ui.label(hud(t!(self.lang, "категория", "category"), t.faint));
+                        for c in &cats {
+                            let inside = current.as_deref() == Some(c.id.as_str());
+                            if ui.selectable_label(inside, &c.name).clicked() {
+                                self.ha_pending_category =
+                                    Some((e.entity_id.clone(), Some(c.id.clone())));
                             }
-                            if current.is_some()
-                                && ui
-                                    .button(t!(
-                                        self.lang,
-                                        "убрать из категории",
-                                        "remove from category"
-                                    ))
-                                    .clicked()
-                            {
-                                self.ha_pending_category = Some((e.entity_id.clone(), None));
-                            }
-                        },
-                    );
+                        }
+                        if current.is_some()
+                            && ui
+                                .button(t!(
+                                    self.lang,
+                                    "убрать из категории",
+                                    "remove from category"
+                                ))
+                                .clicked()
+                        {
+                            self.ha_pending_category = Some((e.entity_id.clone(), None));
+                        }
+                    });
                 }
                 if ui
                     .add(egui::Button::new(theme::icon(
@@ -2635,7 +3350,17 @@ impl App {
                             });
                         }
                     } else {
-                        if ghost(ui, if on { t!(self.lang, "выкл", "off") } else { t!(self.lang, "вкл", "on") }, t).clicked() {
+                        if ghost(
+                            ui,
+                            if on {
+                                t!(self.lang, "выкл", "off")
+                            } else {
+                                t!(self.lang, "вкл", "on")
+                            },
+                            t,
+                        )
+                        .clicked()
+                        {
                             let entity = e.entity_id.clone();
                             let state = self.state.clone();
                             self.spawn(move || {
@@ -2656,7 +3381,10 @@ impl App {
         if e.domain() == "light" {
             if let Some(b) = e.brightness() {
                 let mut v = b as f32 / 255.0 * 100.0;
-                if ui.add(egui::Slider::new(&mut v, 0.0..=100.0).show_value(false)).changed() {
+                if ui
+                    .add(egui::Slider::new(&mut v, 0.0..=100.0).show_value(false))
+                    .changed()
+                {
                     let entity = e.entity_id.clone();
                     let state = self.state.clone();
                     let pct = v.round() as u8;
@@ -2692,7 +3420,11 @@ impl App {
             ),
         );
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "сменить пароль", "change password")).size(15.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "сменить пароль", "change password"))
+                    .size(15.0)
+                    .strong(),
+            );
             ui.add_space(6.0);
             ui.label(hud(t!(self.lang, "новый пароль", "new password"), t.faint));
             ui.add(
@@ -2709,15 +3441,25 @@ impl App {
             ui.horizontal(|ui| {
                 ui.checkbox(&mut self.show_pass, t!(self.lang, "показать", "show"));
                 let valid = self.new_pass.chars().count() >= 4 && self.new_pass == self.new_pass2;
-                if ui.add_enabled(
-                    valid,
-                    egui::Button::new(hud(t!(self.lang, "сменить", "change"), t.muted)),
-                ).clicked() {
+                if ui
+                    .add_enabled(
+                        valid,
+                        egui::Button::new(hud(t!(self.lang, "сменить", "change"), t.muted)),
+                    )
+                    .clicked()
+                {
                     let pass = self.new_pass.clone();
                     self.save(|c| c.set_password(&pass));
                     self.new_pass.clear();
                     self.new_pass2.clear();
-                    self.toast(t!(self.lang, "пароль изменён. клиенты должны спариться заново.", "password changed. clients must pair again."), true);
+                    self.toast(
+                        t!(
+                            self.lang,
+                            "пароль изменён. клиенты должны спариться заново.",
+                            "password changed. clients must pair again."
+                        ),
+                        true,
+                    );
                 }
             });
             ui.add_space(8.0);
@@ -2725,7 +3467,11 @@ impl App {
             row(
                 ui,
                 t,
-                t!(self.lang, "доступ из публичных сетей", "public network access"),
+                t!(
+                    self.lang,
+                    "доступ из публичных сетей",
+                    "public network access"
+                ),
                 t!(
                     self.lang,
                     "по умолчанию только локальная сеть. включайте только с vpn.",
@@ -2741,9 +3487,14 @@ impl App {
             ui.add_space(8.0);
             divider(ui);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(self.lang, "токен api", "api token")).size(15.0).strong());
+                ui.label(
+                    RichText::new(t!(self.lang, "токен api", "api token"))
+                        .size(15.0)
+                        .strong(),
+                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ghost(ui, t!(self.lang, "создать новый", "rotate"), t).clicked() {
+                    if ghost(ui, t!(self.lang, "создать новый", "rotate"), t).clicked()
+                    {
                         let mut token = String::new();
                         self.save(|c| token = c.rotate_token());
                         self.new_token = Some(token);
@@ -2769,7 +3520,11 @@ impl App {
         });
         ui.add_space(10.0);
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "клиенты", "clients")).size(15.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "клиенты", "clients"))
+                    .size(15.0)
+                    .strong(),
+            );
             if cfg.clients.is_empty() {
                 small(ui, t!(self.lang, "никого", "none"), t.muted);
             } else {
@@ -2778,7 +3533,13 @@ impl App {
                         ui.label(RichText::new(&c.name).size(13.0).color(t.ink));
                         small(ui, &format!("{} · {}", c.id, ago(c.last_seen_ms)), t.faint);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(egui::Button::new(hud(t!(self.lang, "забыть", "forget"), t.bad))).clicked() {
+                            if ui
+                                .add(egui::Button::new(hud(
+                                    t!(self.lang, "забыть", "forget"),
+                                    t.bad,
+                                )))
+                                .clicked()
+                            {
                                 let id = c.id.clone();
                                 self.save(|cfg| cfg.clients.retain(|x| x.id != id));
                             }
@@ -2789,7 +3550,11 @@ impl App {
         });
         ui.add_space(10.0);
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "сброс настройки", "reset setup")).size(15.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "сброс настройки", "reset setup"))
+                    .size(15.0)
+                    .strong(),
+            );
             small(
                 ui,
                 t!(
@@ -2799,7 +3564,8 @@ impl App {
                 ),
                 t.muted,
             );
-            if ghost(ui, t!(self.lang, "сбросить пароль", "reset password"), t).clicked() {
+            if ghost(ui, t!(self.lang, "сбросить пароль", "reset password"), t).clicked()
+            {
                 self.save(|c| {
                     c.api_password_hash.clear();
                     c.api_token = random_id(24);
@@ -2827,7 +3593,11 @@ impl App {
             self.last_job = job.id;
         }
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "компоненты", "components")).size(15.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "компоненты", "components"))
+                    .size(15.0)
+                    .strong(),
+            );
             ui.add_space(4.0);
             for c in self.install_components.clone() {
                 let mut checked = self.install_sel.contains(&c.id);
@@ -2854,18 +3624,35 @@ impl App {
                 });
             }
             ui.add_space(8.0);
-            ui.label(hud(t!(self.lang, "пароль sudo (для пакетов)", "sudo password (for packages)"), t.faint));
+            ui.label(hud(
+                t!(
+                    self.lang,
+                    "пароль sudo (для пакетов)",
+                    "sudo password (for packages)"
+                ),
+                t.faint,
+            ));
             ui.add(
                 TextEdit::singleline(&mut self.install_sudo)
                     .password(true)
-                    .hint_text(t!(self.lang, "нужен для pacman/apt", "needed for pacman/apt"))
+                    .hint_text(t!(
+                        self.lang,
+                        "нужен для pacman/apt",
+                        "needed for pacman/apt"
+                    ))
                     .desired_width(320.0),
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if job.running {
                     small(ui, &format!("{}…", job.name), t.warn);
-                } else if primary(ui, t!(self.lang, "установить выбранное", "install selected"), t).clicked() {
+                } else if primary(
+                    ui,
+                    t!(self.lang, "установить выбранное", "install selected"),
+                    t,
+                )
+                .clicked()
+                {
                     let components: Vec<String> = self.install_sel.iter().cloned().collect();
                     let sudo = self.install_sudo.clone();
                     let logger = self.state.logger.clone();
@@ -2874,7 +3661,13 @@ impl App {
                         let _ = install::install(&components, &sudo, &ctx, &logger);
                     });
                 }
-                if ui.add(egui::Button::new(hud(t!(self.lang, "обновить", "refresh"), t.faint))).clicked() {
+                if ui
+                    .add(egui::Button::new(hud(
+                        t!(self.lang, "обновить", "refresh"),
+                        t.faint,
+                    )))
+                    .clicked()
+                {
                     self.install_components = install::component_status();
                 }
             });
@@ -2882,7 +3675,11 @@ impl App {
         ui.add_space(10.0);
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(self.lang, "журнал установки", "install log")).size(15.0).strong());
+                ui.label(
+                    RichText::new(t!(self.lang, "журнал установки", "install log"))
+                        .size(15.0)
+                        .strong(),
+                );
                 if job.running {
                     tag(ui, t!(self.lang, "идёт", "running"), t.warn);
                 } else if job.done.is_some() {
@@ -2892,11 +3689,22 @@ impl App {
             if job.lines.is_empty() {
                 small(ui, t!(self.lang, "пока пусто", "empty"), t.muted);
             } else {
-                ScrollArea::vertical().max_height(300.0).stick_to_bottom(true).show(ui, |ui| {
-                    for line in &job.lines {
-                        mono(ui, line, if line.starts_with("Ошибка") { t.bad } else { t.muted });
-                    }
-                });
+                ScrollArea::vertical()
+                    .max_height(300.0)
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        for line in &job.lines {
+                            mono(
+                                ui,
+                                line,
+                                if line.starts_with("Ошибка") {
+                                    t.bad
+                                } else {
+                                    t.muted
+                                },
+                            );
+                        }
+                    });
             }
             if let Some(e) = &job.error {
                 small(ui, e, t.bad);
@@ -2907,7 +3715,11 @@ impl App {
     fn updates_card(&mut self, ui: &mut Ui, t: &Tokens) {
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(self.lang, "обновления", "updates")).size(15.0).strong());
+                ui.label(
+                    RichText::new(t!(self.lang, "обновления", "updates"))
+                        .size(15.0)
+                        .strong(),
+                );
                 tag(ui, &format!("v{}", VERSION), t.muted);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ghost(ui, t!(self.lang, "проверить", "check"), t).clicked() {
@@ -2923,7 +3735,11 @@ impl App {
             if self.update_checking {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    small(ui, t!(self.lang, "проверяю релизы…", "checking releases…"), t.muted);
+                    small(
+                        ui,
+                        t!(self.lang, "проверяю релизы…", "checking releases…"),
+                        t.muted,
+                    );
                 });
             }
             if !self.update_error.is_empty() {
@@ -2938,7 +3754,11 @@ impl App {
                     } else {
                         tag(ui, t!(self.lang, "последняя версия", "up to date"), t.good);
                     }
-                    small(ui, &info.published.chars().take(10).collect::<String>(), t.faint);
+                    small(
+                        ui,
+                        &info.published.chars().take(10).collect::<String>(),
+                        t.faint,
+                    );
                 });
                 if info.newer {
                     if !info.notes.is_empty() {
@@ -2954,9 +3774,11 @@ impl App {
                             let done = self.update_progress.load(Ordering::Relaxed);
                             let total = self.update_total.max(1);
                             ui.add(
-                                egui::ProgressBar::new((done as f32 / total as f32).clamp(0.0, 1.0))
-                                    .desired_width(260.0)
-                                    .text(format!("{}%", done * 100 / total)),
+                                egui::ProgressBar::new(
+                                    (done as f32 / total as f32).clamp(0.0, 1.0),
+                                )
+                                .desired_width(260.0)
+                                .text(format!("{}%", done * 100 / total)),
                             );
                         } else if primary(
                             ui,
@@ -2967,7 +3789,8 @@ impl App {
                         {
                             self.download_update();
                         }
-                        if ghost(ui, t!(self.lang, "страница релиза", "release page"), t).clicked() {
+                        if ghost(ui, t!(self.lang, "страница релиза", "release page"), t).clicked()
+                        {
                             let _ = sdw_core::util::open_url(&info.page);
                         }
                     });
@@ -2975,13 +3798,15 @@ impl App {
                 if !self.update_path.is_empty() {
                     mono(ui, &self.update_path, t.muted);
                     ui.horizontal(|ui| {
-                        if ghost(ui, t!(self.lang, "установить", "install"), t).clicked() {
+                        if ghost(ui, t!(self.lang, "установить", "install"), t).clicked()
+                        {
                             let path = self.update_path.clone();
                             self.spawn(move || {
                                 TaskResult::Installed(update::install(std::path::Path::new(&path)))
                             });
                         }
-                        if ghost(ui, t!(self.lang, "открыть папку", "open folder"), t).clicked() {
+                        if ghost(ui, t!(self.lang, "открыть папку", "open folder"), t).clicked()
+                        {
                             let _ = sdw_core::util::open_url(
                                 &update::updates_dir().display().to_string(),
                             );
@@ -2993,21 +3818,563 @@ impl App {
         ui.add_space(10.0);
     }
 
+    fn addons_ui(&mut self, ui: &mut Ui, t: &Tokens) {
+        self.page_header(
+            ui,
+            t,
+            t!(self.lang, "аддоны", "addons"),
+            t!(
+                self.lang,
+                "пакеты расширяют деку и демон: действия здесь, темы и часы на деке",
+                "packages extend the deck and the daemon: actions here, themes and clocks on the deck"
+            ),
+        );
+
+        card(ui, t, |ui| {
+            ui.label(hud(t!(self.lang, "импорт", "import"), t.faint));
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.addon_import)
+                        .hint_text(t!(
+                            self.lang,
+                            "путь к папке, addon.json, .css или .sdwaddon",
+                            "a folder, addon.json, .css or .sdwaddon"
+                        ))
+                        .desired_width(360.0),
+                );
+                if primary(ui, t!(self.lang, "установить", "install"), t).clicked() {
+                    let raw = expand_path(&self.addon_import);
+                    match sdw_core::addons::install(&raw) {
+                        Ok(addon) => {
+                            let id = addon.id().to_string();
+                            self.save(|c| c.addons.set(&id, true));
+                            self.addon_import.clear();
+                            for field in &addon.manifest.settings {
+                                let key = field.key.clone();
+                                let value = field.default.clone();
+                                self.save(|c| {
+                                    if c.addons.value(&id, &key).is_null() {
+                                        c.addons.set_value(&id, &key, value);
+                                    }
+                                });
+                            }
+                            self.toast(
+                                format!(
+                                    "{}: {}",
+                                    t!(self.lang, "аддон установлен", "addon installed"),
+                                    addon.manifest.name
+                                ),
+                                true,
+                            );
+                            self.status = self.state.status();
+                        }
+                        Err(e) => self.toast(e, false),
+                    }
+                }
+                if ghost(ui, t!(self.lang, "папка", "folder"), t).clicked() {
+                    let _ =
+                        sdw_core::util::open_url(&sdw_core::addons::root().display().to_string());
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ghost(ui, t!(self.lang, "пример", "example"), t).clicked() {
+                    let dir = sdw_core::addons::root().join("example");
+                    let _ = std::fs::create_dir_all(&dir);
+                    let text = serde_json::to_string_pretty(&sdw_core::addons::example_manifest())
+                        .unwrap_or_default();
+                    match std::fs::write(dir.join(sdw_core::addons::MANIFEST), text) {
+                        Ok(()) => self.toast(
+                            format!("{}: {}", t!(self.lang, "пример", "example"), dir.display()),
+                            true,
+                        ),
+                        Err(e) => self.toast(e.to_string(), false),
+                    }
+                }
+                let path = sdw_core::addons::root();
+                small(ui, &path.display().to_string(), t.faint);
+            });
+        });
+        ui.add_space(10.0);
+
+        let cfg = self.state.cfg();
+        if self.status.addons.is_empty() {
+            card(ui, t, |ui| {
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "пока нет аддонов. установите папку, addon.json или .sdwaddon.",
+                        "no addons yet. install a folder, addon.json or .sdwaddon."
+                    ),
+                    t.muted,
+                );
+            });
+            return;
+        }
+
+        for info in self.status.addons.clone() {
+            let mut on = info.enabled;
+            let id = info.id.clone();
+            let full = sdw_core::addons::find(&info.id);
+            let mut remove = false;
+            card(ui, t, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(&info.name)
+                                .size(17.0)
+                                .strong()
+                                .color(t.strong),
+                        );
+                        let meta = [info.version.as_str(), info.scope.as_str()]
+                            .into_iter()
+                            .filter(|x| !x.trim().is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" · ");
+                        if !meta.is_empty() {
+                            small(ui, &meta, t.faint);
+                        }
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(hud(t!(self.lang, "удалить", "remove"), t.bad))
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::new(1.0, t.bad.gamma_multiply(0.4)))
+                                    .corner_radius(0),
+                            )
+                            .clicked()
+                        {
+                            remove = true;
+                        }
+                        switch(ui, &mut on, t);
+                        small(
+                            ui,
+                            if on {
+                                t!(self.lang, "включён", "on")
+                            } else {
+                                t!(self.lang, "выключен", "off")
+                            },
+                            if on { t.good } else { t.faint },
+                        );
+                    });
+                });
+                if !info.description.is_empty() {
+                    small(ui, &info.description, t.muted);
+                }
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    if info.has_theme {
+                        tag(ui, "theme", t.accent);
+                    }
+                    if info.has_clock {
+                        tag(ui, "clock", t.accent);
+                    }
+                    if info.tiles > 0 {
+                        tag(ui, &format!("{} tiles", info.tiles), t.accent);
+                    }
+                    for action in &info.actions {
+                        let label = if action.label.is_empty() {
+                            action.id.clone()
+                        } else {
+                            action.label.clone()
+                        };
+                        if ghost(ui, &label, t).clicked() {
+                            let state = self.state.clone();
+                            let id = id.clone();
+                            let aid = action.id.clone();
+                            self.spawn(move || {
+                                TaskResult::Msg(crate::server::run_addon_action(&state, &id, &aid))
+                            });
+                        }
+                    }
+                });
+                if let Some(addon) = &full {
+                    if !addon.manifest.settings.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(hud(
+                            t!(self.lang, "настройки аддона", "addon settings"),
+                            t.faint,
+                        ));
+                        for field in &addon.manifest.settings {
+                            let key = field.key.clone();
+                            let value = cfg.addons.value(&id, &key);
+                            let value = if value.is_null() {
+                                field.default.clone()
+                            } else {
+                                value
+                            };
+                            let label = if field.label.is_empty() {
+                                key.clone()
+                            } else {
+                                field.label.clone()
+                            };
+                            ui.horizontal_wrapped(|ui| {
+                                small(ui, &label, t.muted);
+                                match field.kind.as_str() {
+                                    "bool" => {
+                                        let mut b = value.as_bool().unwrap_or(false);
+                                        if switch(ui, &mut b, t).changed() {
+                                            self.save(|c| {
+                                                c.addons.set_value(&id, &key, serde_json::json!(b))
+                                            });
+                                        }
+                                    }
+                                    "number" => {
+                                        let mut n = value.as_f64().unwrap_or(0.0);
+                                        let mut drag = egui::DragValue::new(&mut n);
+                                        if let Some(min) = field.min {
+                                            drag = drag.range(min..=field.max.unwrap_or(f64::MAX));
+                                        }
+                                        if ui.add(drag).changed() {
+                                            self.save(|c| {
+                                                c.addons.set_value(&id, &key, serde_json::json!(n))
+                                            });
+                                        }
+                                    }
+                                    "color" => {
+                                        let raw = value.as_str().unwrap_or("#3fd2ff");
+                                        let mut c = Color32::from_hex(raw).unwrap_or(t.accent);
+                                        if ui.color_edit_button_srgba(&mut c).changed() {
+                                            let raw =
+                                                format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b());
+                                            self.save(|c| {
+                                                c.addons.set_value(
+                                                    &id,
+                                                    &key,
+                                                    serde_json::json!(raw),
+                                                )
+                                            });
+                                        }
+                                    }
+                                    "choice" => {
+                                        let current = value.as_str().unwrap_or("").to_string();
+                                        for opt in &field.options {
+                                            if ui
+                                                .selectable_label(
+                                                    &current == opt,
+                                                    RichText::new(opt).size(12.0),
+                                                )
+                                                .clicked()
+                                            {
+                                                let opt = opt.clone();
+                                                self.save(|c| {
+                                                    c.addons.set_value(
+                                                        &id,
+                                                        &key,
+                                                        serde_json::json!(opt),
+                                                    )
+                                                });
+                                            }
+                                        }
+                                    }
+                                    _ => {
+                                        let mut text = value.as_str().unwrap_or("").to_string();
+                                        if ui
+                                            .add(
+                                                TextEdit::singleline(&mut text)
+                                                    .desired_width(220.0),
+                                            )
+                                            .changed()
+                                        {
+                                            self.save(|c| {
+                                                c.addons.set_value(
+                                                    &id,
+                                                    &key,
+                                                    serde_json::json!(text),
+                                                )
+                                            });
+                                        }
+                                    }
+                                }
+                                if !field.hint.is_empty() {
+                                    small(ui, &field.hint, t.faint);
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            if on != info.enabled {
+                self.save(|c| c.addons.set(&id, on));
+                self.status = self.state.status();
+            }
+            if remove {
+                let _ = sdw_core::addons::remove(&id);
+                self.save(|c| {
+                    c.addons.set(&id, false);
+                    c.addons.values.remove(&id);
+                });
+                self.toast(t!(self.lang, "аддон удалён", "addon removed"), true);
+                self.status = self.state.status();
+            }
+        }
+    }
+
+    fn audio_ui(&mut self, ui: &mut Ui, t: &Tokens) {
+        self.page_header(
+            ui,
+            t,
+            t!(self.lang, "звук", "audio"),
+            t!(
+                self.lang,
+                "трансляция звука компьютера или выбранных приложений на steam deck",
+                "stream the computer's sound, or picked applications, to the steam deck"
+            ),
+        );
+        let status = self.status.audio.clone();
+        let cfg = self.state.cfg();
+
+        card(ui, t, |ui| {
+            row(
+                ui,
+                t,
+                t!(self.lang, "разрешить звук", "allow audio"),
+                t!(
+                    self.lang,
+                    "без этого демон не отдаёт ни одного сэмпла",
+                    "without this the daemon never sends a sample"
+                ),
+                |ui| {
+                    let mut on = cfg.audio.enabled;
+                    if switch(ui, &mut on, t).changed() {
+                        self.save(|c| c.audio.enabled = on);
+                        if !on {
+                            self.state.audio.stop();
+                            self.status = self.state.status();
+                        }
+                    }
+                },
+            );
+            row(
+                ui,
+                t,
+                t!(self.lang, "запуск с деки", "start from the deck"),
+                t!(
+                    self.lang,
+                    "если выключено, звук запускается только из этого окна",
+                    "when off, only this window can start the stream"
+                ),
+                |ui| {
+                    let mut on = cfg.audio.allow_remote;
+                    if switch(ui, &mut on, t).changed() {
+                        self.save(|c| c.audio.allow_remote = on);
+                    }
+                },
+            );
+            small(
+                ui,
+                t!(
+                    self.lang,
+                    "нужны pipewire или pulseaudio и pactl; при выборе приложений создаётся временный выход sdw_audio, а при остановке звук возвращается на прежнее устройство.",
+                    "pipewire or pulseaudio and pactl are required; picking applications creates a temporary sdw_audio sink, and stopping moves the sound back."
+                ),
+                t.faint,
+            );
+        });
+        ui.add_space(10.0);
+
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                theme::dot(
+                    ui,
+                    if status.running { t.good } else { t.faint },
+                    status.running,
+                );
+                ui.label(
+                    RichText::new(if status.running {
+                        t!(self.lang, "идёт на деку", "streaming to the deck")
+                    } else {
+                        t!(self.lang, "выключено", "off")
+                    })
+                    .size(17.0)
+                    .strong()
+                    .color(t.strong),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if status.running {
+                        if ghost(ui, t!(self.lang, "остановить", "stop"), t).clicked() {
+                            self.state.audio.stop();
+                            self.status = self.state.status();
+                        }
+                    } else {
+                        if primary(ui, t!(self.lang, "запустить", "start"), t).clicked() {
+                            self.start_audio();
+                        }
+                    }
+                });
+            });
+            if status.running {
+                small(
+                    ui,
+                    &format!(
+                        "{} · {} · {} {} · {} {} · {:.1} MB · {} s",
+                        status.backend,
+                        if status.source == "apps" {
+                            t!(self.lang, "приложения", "applications")
+                        } else {
+                            t!(self.lang, "весь пк", "whole pc")
+                        },
+                        status.rate,
+                        t!(self.lang, "гц", "hz"),
+                        status.channels,
+                        t!(self.lang, "кан", "ch"),
+                        status.bytes as f64 / 1_048_576.0,
+                        status.seconds
+                    ),
+                    t.muted,
+                );
+            } else if !status.available {
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "в системе нет pactl/parec — установите pipewire-pulse или pulseaudio-utils.",
+                        "pactl/parec are missing — install pipewire-pulse or pulseaudio-utils."
+                    ),
+                    t.warn,
+                );
+            }
+            if !status.error.is_empty() {
+                small(ui, &status.error, t.bad);
+            }
+        });
+        ui.add_space(10.0);
+
+        card(ui, t, |ui| {
+            ui.label(hud(t!(self.lang, "источник", "source"), t.faint));
+            ui.horizontal_wrapped(|ui| {
+                for (key, ru, en) in [
+                    ("system", "весь компьютер", "whole computer"),
+                    ("apps", "приложения", "applications"),
+                ] {
+                    let active = self.audio_source == key;
+                    if ui
+                        .add(
+                            egui::Button::new(theme::nav_text(
+                                "",
+                                t!(self.lang, ru, en),
+                                12.0,
+                                if active { t.strong } else { t.muted },
+                            ))
+                            .fill(if active {
+                                t.accent.gamma_multiply(0.22)
+                            } else {
+                                t.well
+                            })
+                            .stroke(Stroke::new(1.0, if active { t.accent } else { t.line }))
+                            .corner_radius(0),
+                        )
+                        .clicked()
+                    {
+                        self.audio_source = key.to_string();
+                    }
+                }
+                if ghost(ui, t!(self.lang, "обновить", "refresh"), t).clicked() {
+                    self.audio_apps = self.state.audio.list_apps();
+                    self.audio_apps_at = Instant::now();
+                }
+            });
+            if self.audio_source == "apps" {
+                if self.audio_apps_at.elapsed() > Duration::from_secs(10) {
+                    self.audio_apps = self.state.audio.list_apps();
+                    self.audio_apps_at = Instant::now();
+                }
+                ui.add_space(4.0);
+                if self.audio_apps.is_empty() {
+                    small(
+                        ui,
+                        t!(
+                            self.lang,
+                            "сейчас никто не играет звук.",
+                            "nothing is playing right now."
+                        ),
+                        t.muted,
+                    );
+                } else {
+                    for app in self.audio_apps.clone() {
+                        let mut on = self.audio_app_sel.contains(&app.name);
+                        if ui
+                            .add(
+                                egui::Button::new(RichText::new(format!(
+                                    "{}  {}",
+                                    app.name, app.binary
+                                )))
+                                .fill(if on {
+                                    t.accent.gamma_multiply(0.22)
+                                } else {
+                                    Color32::TRANSPARENT
+                                })
+                                .stroke(Stroke::new(1.0, if on { t.accent } else { t.line }))
+                                .corner_radius(0),
+                            )
+                            .clicked()
+                        {
+                            on = !on;
+                            if on {
+                                self.audio_app_sel.insert(app.name.clone());
+                            } else {
+                                self.audio_app_sel.remove(&app.name);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    fn start_audio(&mut self) {
+        let cfg = self.state.cfg();
+        let apps: Vec<String> = self.audio_app_sel.iter().cloned().collect();
+        let req = AudioStart {
+            source: self.audio_source.clone(),
+            apps,
+            rate: cfg.audio.rate,
+            channels: cfg.audio.channels,
+        };
+        match self.state.audio.start(&cfg.audio, &req, false) {
+            Ok(_) => {
+                self.toast(
+                    t!(self.lang, "звук идёт на деку", "audio is on the deck"),
+                    true,
+                );
+                self.status = self.state.status();
+            }
+            Err(e) => self.toast(e, false),
+        }
+    }
+
     fn settings_ui(&mut self, ui: &mut Ui, t: &Tokens) {
         let cfg = self.state.cfg();
         self.page_header(
             ui,
             t,
             t!(self.lang, "настройки", "settings"),
-            t!(self.lang, "имя, язык, тема и запуск", "name, language, theme and startup"),
+            t!(
+                self.lang,
+                "имя, язык, тема и запуск",
+                "name, language, theme and startup"
+            ),
         );
         card(ui, t, |ui| {
-            ui.label(RichText::new(t!(self.lang, "компьютер", "computer")).size(15.0).strong());
+            ui.label(
+                RichText::new(t!(self.lang, "компьютер", "computer"))
+                    .size(15.0)
+                    .strong(),
+            );
             ui.add_space(4.0);
             ui.label(hud(t!(self.lang, "имя в сети", "network name"), t.faint));
             ui.horizontal(|ui| {
                 ui.add(TextEdit::singleline(&mut self.name_edit).desired_width(320.0));
-                if ui.add(egui::Button::new(hud(t!(self.lang, "сохранить", "save"), t.muted))).clicked() {
+                if ui
+                    .add(egui::Button::new(hud(
+                        t!(self.lang, "сохранить", "save"),
+                        t.muted,
+                    )))
+                    .clicked()
+                {
                     let name = self.name_edit.trim().to_string();
                     if !name.is_empty() {
                         self.save(|c| c.name = name);
@@ -3017,38 +4384,42 @@ impl App {
             });
             ui.add_space(8.0);
             divider(ui);
+            row(ui, t, t!(self.lang, "язык", "language"), "", |ui| {
+                if ui
+                    .selectable_label(self.lang == Lang::Ru, "русский")
+                    .clicked()
+                {
+                    self.set_lang(Lang::Ru);
+                }
+                if ui
+                    .selectable_label(self.lang == Lang::En, "english")
+                    .clicked()
+                {
+                    self.set_lang(Lang::En);
+                }
+            });
+            row(ui, t, t!(self.lang, "тема", "theme"), "", |ui| {
+                if ui
+                    .selectable_label(self.dark, t!(self.lang, "тёмная", "dark"))
+                    .clicked()
+                {
+                    self.set_dark(true);
+                }
+                if ui
+                    .selectable_label(!self.dark, t!(self.lang, "светлая", "light"))
+                    .clicked()
+                {
+                    self.set_dark(false);
+                }
+            });
             row(
                 ui,
                 t,
-                t!(self.lang, "язык", "language"),
-                "",
-                |ui| {
-                    if ui.selectable_label(self.lang == Lang::Ru, "русский").clicked() {
-                        self.set_lang(Lang::Ru);
-                    }
-                    if ui.selectable_label(self.lang == Lang::En, "english").clicked() {
-                        self.set_lang(Lang::En);
-                    }
-                },
-            );
-            row(
-                ui,
-                t,
-                t!(self.lang, "тема", "theme"),
-                "",
-                |ui| {
-                    if ui.selectable_label(self.dark, t!(self.lang, "тёмная", "dark")).clicked() {
-                        self.set_dark(true);
-                    }
-                    if ui.selectable_label(!self.dark, t!(self.lang, "светлая", "light")).clicked() {
-                        self.set_dark(false);
-                    }
-                },
-            );
-            row(
-                ui,
-                t,
-                t!(self.lang, "запускать viiper автоматически", "start viiper automatically"),
+                t!(
+                    self.lang,
+                    "запускать viiper автоматически",
+                    "start viiper automatically"
+                ),
                 "",
                 |ui| {
                     let mut on = cfg.viiper.auto_start;
@@ -3060,17 +4431,34 @@ impl App {
             ui.add_space(8.0);
             divider(ui);
             ui.horizontal(|ui| {
-                ui.label(hud(t!(self.lang, "папка конфига", "config folder"), t.faint));
-                mono(ui, &sdw_core::util::config_dir().display().to_string(), t.muted);
+                ui.label(hud(
+                    t!(self.lang, "папка конфига", "config folder"),
+                    t.faint,
+                ));
+                mono(
+                    ui,
+                    &sdw_core::util::config_dir().display().to_string(),
+                    t.muted,
+                );
             });
             ui.horizontal(|ui| {
-                if ghost(ui, t!(self.lang, "открыть папку", "open folder"), t).clicked() {
-                    let _ = sdw_core::util::open_url(&sdw_core::util::config_dir().display().to_string());
+                if ghost(ui, t!(self.lang, "открыть папку", "open folder"), t).clicked()
+                {
+                    let _ = sdw_core::util::open_url(
+                        &sdw_core::util::config_dir().display().to_string(),
+                    );
                 }
-                if ghost(ui, t!(self.lang, "открыть журнал", "open log"), t).clicked() {
+                if ghost(ui, t!(self.lang, "открыть журнал", "open log"), t).clicked()
+                {
                     let _ = sdw_core::util::open_url(&config::log_path().display().to_string());
                 }
-                if ghost(ui, t!(self.lang, "перезапустить viiper", "restart viiper"), t).clicked() {
+                if ghost(
+                    ui,
+                    t!(self.lang, "перезапустить viiper", "restart viiper"),
+                    t,
+                )
+                .clicked()
+                {
                     self.start_viiper(true);
                 }
             });
@@ -3093,7 +4481,13 @@ impl App {
                 t.faint,
             );
             ui.add_space(4.0);
-            if ui.add(egui::Button::new(hud(t!(self.lang, "страница проекта", "project page"), t.faint))).clicked() {
+            if ui
+                .add(egui::Button::new(hud(
+                    t!(self.lang, "страница проекта", "project page"),
+                    t.faint,
+                )))
+                .clicked()
+            {
                 let _ = sdw_core::util::open_url("https://git.entitybtw.ru/entitybtw/sd-widgets");
             }
         });
@@ -3105,10 +4499,17 @@ impl App {
             ui,
             t,
             t!(self.lang, "журнал", "log"),
-            t!(self.lang, "последние события демона", "recent daemon events"),
+            t!(
+                self.lang,
+                "последние события демона",
+                "recent daemon events"
+            ),
         );
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.logs_follow, t!(self.lang, "следовать за концом", "follow the end"));
+            ui.checkbox(
+                &mut self.logs_follow,
+                t!(self.lang, "следовать за концом", "follow the end"),
+            );
             if ghost(ui, t!(self.lang, "обновить", "refresh"), t).clicked() {
                 self.last_poll = Instant::now() - Duration::from_secs(2);
             }
@@ -3190,9 +4591,21 @@ fn pad_hint(l: Lang, k: PadKind) -> &'static str {
             "самый совместимый: xinput, steam и почти все игры.",
             "the most compatible: xinput, steam and almost every game."
         ),
-        PadKind::DualShock4 => t!(l, "ps4-пад, гироскоп и тачпад.", "ps4 pad, gyro and touchpad."),
-        PadKind::DualSense => t!(l, "ps5-пад, гироскоп и тачпад.", "ps5 pad, gyro and touchpad."),
-        PadKind::SwitchPro => t!(l, "nintendo switch 2 pro, гироскоп.", "nintendo switch 2 pro, gyro."),
+        PadKind::DualShock4 => t!(
+            l,
+            "ps4-пад, гироскоп и тачпад.",
+            "ps4 pad, gyro and touchpad."
+        ),
+        PadKind::DualSense => t!(
+            l,
+            "ps5-пад, гироскоп и тачпад.",
+            "ps5 pad, gyro and touchpad."
+        ),
+        PadKind::SwitchPro => t!(
+            l,
+            "nintendo switch 2 pro, гироскоп.",
+            "nintendo switch 2 pro, gyro."
+        ),
     }
 }
 
@@ -3215,4 +4628,14 @@ fn state_label(e: &HaEntity, l: Lang) -> String {
             }
         }
     }
+}
+
+fn expand_path(raw: &str) -> std::path::PathBuf {
+    let raw = raw.trim();
+    if let Some(rest) = raw.strip_prefix("~/") {
+        return std::env::var_os("HOME")
+            .map(|h| std::path::PathBuf::from(h).join(rest))
+            .unwrap_or_else(|| std::path::PathBuf::from(raw));
+    }
+    std::path::PathBuf::from(raw)
 }

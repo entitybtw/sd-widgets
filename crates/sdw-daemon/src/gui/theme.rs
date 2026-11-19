@@ -144,11 +144,23 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         s.spacing.button_padding = Vec2::new(12.0, 6.0);
         s.spacing.interact_size.y = 30.0;
         s.text_styles = [
-            (TextStyle::Heading, FontId::new(22.0, FontFamily::Proportional)),
+            (
+                TextStyle::Heading,
+                FontId::new(22.0, FontFamily::Proportional),
+            ),
             (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(13.0, FontFamily::Proportional)),
-            (TextStyle::Small, FontId::new(11.5, FontFamily::Proportional)),
-            (TextStyle::Monospace, FontId::new(12.5, FontFamily::Monospace)),
+            (
+                TextStyle::Button,
+                FontId::new(13.0, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Small,
+                FontId::new(11.5, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Monospace,
+                FontId::new(12.5, FontFamily::Monospace),
+            ),
         ]
         .into();
     });
@@ -172,11 +184,16 @@ pub mod icon {
     pub const ARROW_RIGHT: &str = "\u{e5c8}";
     pub const DRAG: &str = "\u{e25d}";
     pub const CHECK_BOX: &str = "\u{e86c}";
+    pub const ADDON: &str = "\u{e87b}";
+    pub const AUDIO: &str = "\u{e32d}";
 }
 
 /// One Material symbol, sized and coloured like body text.
 pub fn icon(text: &str, size: f32, color: Color32) -> RichText {
-    RichText::new(text).family(icon_family()).size(size).color(color)
+    RichText::new(text)
+        .family(icon_family())
+        .size(size)
+        .color(color)
 }
 
 pub fn icon_family() -> FontFamily {
@@ -341,8 +358,7 @@ pub fn dot(ui: &mut Ui, color: Color32, filled: bool) {
     if filled {
         ui.painter().circle_filled(c, 4.5, color);
     } else {
-        ui.painter()
-            .circle_stroke(c, 4.0, Stroke::new(1.2, color));
+        ui.painter().circle_stroke(c, 4.0, Stroke::new(1.2, color));
     }
 }
 
@@ -352,9 +368,7 @@ pub fn row(ui: &mut Ui, t: &Tokens, title: &str, hint: &str, control: impl FnOnc
             ui.set_max_width((ui.available_width() - 170.0).max(160.0));
             ui.label(RichText::new(title).size(14.0).color(t.strong));
             if !hint.is_empty() {
-                ui.add(
-                    egui::Label::new(RichText::new(hint).size(12.0).color(t.muted)).wrap(),
-                );
+                ui.add(egui::Label::new(RichText::new(hint).size(12.0).color(t.muted)).wrap());
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), control);

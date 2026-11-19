@@ -78,7 +78,7 @@ pub enum DeckEvent {
         device: String,
         pressed: bool,
     },
-    Devices(Vec<String>),
+    Devices(Vec<String>, bool),
     Error(String),
 }
 
@@ -87,6 +87,7 @@ pub struct InputHandle {
     pub evt_rx: Receiver<DeckEvent>,
     pub devices: Vec<String>,
     pub errors: Vec<String>,
+    pub has_gamepad: bool,
 }
 
 impl InputHandle {
@@ -133,67 +134,14 @@ pub fn start() -> InputHandle {
     let (raw_tx, raw_rx) = channel();
 
     #[cfg(target_os = "linux")]
-    let (devices, errors) = {
-        let mut devices = Vec::new();
-        let mut errors = Vec::new();
-        let mut touch_taken = false;
-        let mut motion_taken = false;
-        for (path, dev) in evdev::enumerate() {
-            let name = dev.name().unwrap_or("input").to_string();
-            let keys = dev.supported_keys();
-            let axes = dev.supported_absolute_axes();
-            let has = |k: u16| keys.map(|s| s.contains(evdev::KeyCode(k))).unwrap_or(false);
-            let has_ax = |a: u16| axes.map(|s| s.contains(evdev::AbsoluteAxisCode(a))).unwrap_or(false);
-
-            let is_touch = has_ax(ABS_MT_POSITION_X) || (has(BTN_TOUCH) && has_ax(ABS_X));
-            let is_gamepad = has(BTN_SOUTH) || has(BTN_EAST) || has(BTN_MODE);
-            let lower = name.to_lowercase();
-            let is_motion = !is_gamepad
-                && !is_touch
-                && (lower.contains("motion") || lower.contains("gyro") || lower.contains("accel"));
-
-            let role = if is_touch && !touch_taken {
-                touch_taken = true;
-                Role::Touch
-            } else if is_gamepad {
-                Role::Gamepad
-            } else if is_motion && !motion_taken {
-                motion_taken = true;
-                Role::Motion
-            } else {
-                Role::Keys
-            };
-
-            // ignore devices that cannot produce anything we understand
-            if role == Role::Keys && !keys.map(|k| !k.iter().next().is_none()).unwrap_or(false) {
-                continue;
-            }
-
-            devices.push(format!("{} · {}", name, path.display()));
-            let label = name.clone();
-            let tx = raw_tx.clone();
-            std::thread::Builder::new()
-                .name(format!("sdw-input-{}", path.display()))
-                .spawn(move || {
-                    if let Err(e) = read_device(dev, role, label, tx) {
-                        // device removal or permission loss: the app keeps running
-                        let _ = e;
-                    }
-                })
-                .ok();
-        }
-        if devices.is_empty() {
-            errors.push(
-                "не найдено доступных устройств ввода. добавьте пользователя в группу input."
-                    .to_string(),
-            );
-        }
-        (devices, errors)
-    };
+    let mut scan = ScanState::default();
+    #[cfg(target_os = "linux")]
+    let (devices, has_gamepad, errors) = scan_into(&raw_tx, &mut scan);
 
     #[cfg(not(target_os = "linux"))]
-    let (devices, errors): (Vec<String>, Vec<String>) = (
+    let (devices, has_gamepad, errors): (Vec<String>, bool, Vec<String>) = (
         Vec::new(),
+        false,
         vec!["чтение контроллера steam deck доступно только в linux".into()],
     );
 
@@ -202,17 +150,119 @@ pub fn start() -> InputHandle {
     std::thread::Builder::new()
         .name("sdw-input-coordinator".into())
         .spawn(move || {
-            let _ = evt_tx2.send(DeckEvent::Devices(device_list));
+            let _ = evt_tx2.send(DeckEvent::Devices(device_list, has_gamepad));
             coordinate(raw_rx, cmd_rx, evt_tx2);
         })
         .ok();
+
+    // Steam Input and USB pads can appear long after the app started, and a
+    // pad that is unplugged comes back on a new event node. Re-scan forever so
+    // the Deck controls never need a restart to work.
+    #[cfg(target_os = "linux")]
+    {
+        let evt = evt_tx.clone();
+        let tx = raw_tx.clone();
+        std::thread::Builder::new()
+            .name("sdw-input-scan".into())
+            .spawn(move || {
+                let mut last: Option<Vec<String>> = None;
+                loop {
+                    std::thread::sleep(Duration::from_secs(3));
+                    let (list, pad, _errors) = scan_into(&tx, &mut scan);
+                    if last.as_ref() != Some(&list) {
+                        let _ = evt.send(DeckEvent::Devices(list.clone(), pad));
+                        last = Some(list);
+                    }
+                }
+            })
+            .ok();
+    }
 
     InputHandle {
         cmd_tx,
         evt_rx,
         devices,
         errors,
+        has_gamepad,
     }
+}
+
+/// What the rescan thread remembers: which event nodes already have a reader.
+#[cfg(target_os = "linux")]
+#[derive(Default)]
+struct ScanState {
+    seen: HashSet<std::path::PathBuf>,
+    touch_taken: bool,
+    motion_taken: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn scan_into(raw_tx: &Sender<Raw>, st: &mut ScanState) -> (Vec<String>, bool, Vec<String>) {
+    let mut devices = Vec::new();
+    let mut errors = Vec::new();
+    let mut has_gamepad = false;
+    let mut current = HashSet::new();
+    for (path, dev) in evdev::enumerate() {
+        current.insert(path.clone());
+        let name = dev.name().unwrap_or("input").to_string();
+        let keys = dev.supported_keys();
+        let axes = dev.supported_absolute_axes();
+        let has = |k: u16| keys.map(|s| s.contains(evdev::KeyCode(k))).unwrap_or(false);
+        let has_ax = |a: u16| {
+            axes.map(|s| s.contains(evdev::AbsoluteAxisCode(a)))
+                .unwrap_or(false)
+        };
+
+        let is_touch = has_ax(ABS_MT_POSITION_X) || (has(BTN_TOUCH) && has_ax(ABS_X));
+        let is_gamepad = has(BTN_SOUTH) || has(BTN_EAST) || has(BTN_MODE);
+        let lower = name.to_lowercase();
+        let is_motion = !is_gamepad
+            && !is_touch
+            && (lower.contains("motion") || lower.contains("gyro") || lower.contains("accel"));
+
+        let role = if is_touch && !st.touch_taken {
+            st.touch_taken = true;
+            Role::Touch
+        } else if is_gamepad {
+            has_gamepad = true;
+            Role::Gamepad
+        } else if is_motion && !st.motion_taken {
+            st.motion_taken = true;
+            Role::Motion
+        } else {
+            Role::Keys
+        };
+
+        // ignore devices that cannot produce anything we understand
+        if role == Role::Keys && !keys.map(|k| !k.iter().next().is_none()).unwrap_or(false) {
+            continue;
+        }
+
+        devices.push(format!("{} · {}", name, path.display()));
+        if st.seen.contains(&path) {
+            continue;
+        }
+        st.seen.insert(path.clone());
+        let label = name.clone();
+        let tx = raw_tx.clone();
+        std::thread::Builder::new()
+            .name(format!("sdw-input-{}", path.display()))
+            .spawn(move || {
+                if let Err(e) = read_device(dev, role, label, tx) {
+                    // device removal or permission loss: the app keeps running
+                    let _ = e;
+                }
+            })
+            .ok();
+    }
+    st.seen.retain(|p| current.contains(p));
+    if devices.is_empty() {
+        errors.push(
+            "не найдено доступных устройств ввода. добавьте пользователя в группу input."
+                .to_string(),
+        );
+    }
+    (devices, has_gamepad, errors)
 }
 
 #[cfg(target_os = "linux")]
@@ -374,6 +424,9 @@ struct Tracker {
     start: Vec<(f32, f32)>,
     last: Vec<(f32, f32)>,
     single_down: bool,
+    /// Waiting for the first ABS_X/Y after BTN_TOUCH: the press position must
+    /// not be taken from the previous touch, or every swipe looks the same.
+    single_await: bool,
     single_started: Option<Instant>,
     single_start: (f32, f32),
     single_last: (f32, f32),
@@ -392,13 +445,21 @@ impl Tracker {
             start: Vec::new(),
             last: Vec::new(),
             single_down: false,
+            single_await: false,
             single_started: None,
             single_start: (0.0, 0.0),
             single_last: (0.0, 0.0),
         }
     }
 
-    fn touch(&mut self, slot: u8, x: Option<f32>, y: Option<f32>, tracking: Option<i32>, now: Instant) {
+    fn touch(
+        &mut self,
+        slot: u8,
+        x: Option<f32>,
+        y: Option<f32>,
+        tracking: Option<i32>,
+        now: Instant,
+    ) {
         let i = slot as usize % 10;
         if let Some(id) = tracking {
             if id < 0 {
@@ -471,8 +532,8 @@ impl Tracker {
     fn down(&mut self, down: bool, now: Instant) {
         if down && !self.single_down {
             self.single_down = true;
+            self.single_await = true;
             self.single_started = Some(now);
-            self.single_start = self.single_last;
             self.start.clear();
             self.last.clear();
             self.active = 0;
@@ -484,6 +545,7 @@ impl Tracker {
             }
         } else if !down && self.single_down {
             self.single_down = false;
+            self.single_await = false;
             if self.slots[0].idx.is_none() {
                 self.start.push(self.single_start);
                 self.last.push(self.single_last);
@@ -500,6 +562,11 @@ impl Tracker {
             self.single_last.1 = y;
         }
         if self.single_down {
+            if self.single_await {
+                // First coordinates of this touch: this is where it started.
+                self.single_start = self.single_last;
+                self.single_await = false;
+            }
             self.slots[0].active = true;
             self.update_pos(0, self.single_last.0, self.single_last.1);
         }
@@ -518,28 +585,15 @@ impl Tracker {
         let dur = now.saturating_duration_since(started);
         let start = centroid(&self.start);
         let end = centroid(&self.last);
-        let dx = end.0 - start.0;
-        let dy = end.1 - start.1;
-        let dist = (dx * dx + dy * dy).sqrt();
-        let result = if self.start.len() >= 2 {
-            let d0 = distance(self.start[0], self.start[1]);
-            let d1 = distance(self.last[0], self.last[1]);
-            if d0 > 0.01 && (d1 - d0).abs() / d0 > 0.30 && (d1 - d0).abs() > 0.05 {
-                Some(GestureSpec {
-                    kind: if d1 > d0 {
-                        GestureKind::PinchOut
-                    } else {
-                        GestureKind::PinchIn
-                    },
-                    fingers,
-                    dir: None,
-                })
-            } else {
-                swipe_or_tap(fingers, dur, dist, dx, dy)
-            }
+        let pinch = if self.start.len() >= 2 {
+            Some((
+                distance(self.start[0], self.start[1]),
+                distance(self.last[0], self.last[1]),
+            ))
         } else {
-            swipe_or_tap(fingers, dur, dist, dx, dy)
+            None
         };
+        let result = gesture_from(fingers, dur, start, end, pinch);
         self.start.clear();
         self.last.clear();
         self.active = 0;
@@ -550,6 +604,34 @@ impl Tracker {
         }
         result
     }
+}
+
+/// Build a gesture from a completed touch/trackpad movement. Coordinates are
+/// normalised to 0..1 so the same thresholds work on any panel size.
+pub(crate) fn gesture_from(
+    fingers: u8,
+    dur: Duration,
+    start: (f32, f32),
+    end: (f32, f32),
+    pinch: Option<(f32, f32)>,
+) -> Option<GestureSpec> {
+    let dx = end.0 - start.0;
+    let dy = end.1 - start.1;
+    let dist = (dx * dx + dy * dy).sqrt();
+    if let Some((d0, d1)) = pinch {
+        if d0 > 0.01 && (d1 - d0).abs() / d0 > 0.30 && (d1 - d0).abs() > 0.05 {
+            return Some(GestureSpec {
+                kind: if d1 > d0 {
+                    GestureKind::PinchOut
+                } else {
+                    GestureKind::PinchIn
+                },
+                fingers,
+                dir: None,
+            });
+        }
+    }
+    swipe_or_tap(fingers, dur, dist, dx, dy)
 }
 
 fn centroid(points: &[(f32, f32)]) -> (f32, f32) {
@@ -570,13 +652,7 @@ fn distance(a: (f32, f32), b: (f32, f32)) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
-fn swipe_or_tap(
-    fingers: u8,
-    dur: Duration,
-    dist: f32,
-    dx: f32,
-    dy: f32,
-) -> Option<GestureSpec> {
+fn swipe_or_tap(fingers: u8, dur: Duration, dist: f32, dx: f32, dy: f32) -> Option<GestureSpec> {
     if dist > 0.055 {
         let dir = if dx.abs() > dy.abs() {
             if dx > 0.0 {
@@ -627,7 +703,15 @@ fn coordinate(raw_rx: Receiver<Raw>, cmd_rx: Receiver<InputCmd>, evt_tx: Sender<
         let mut got = false;
         match raw_rx.recv_timeout(Duration::from_millis(6)) {
             Ok(first) => {
-                handle_raw(first, &mut state, &mut gyro, &mut accel, &mut tracker, &evt_tx, &mut pressed);
+                handle_raw(
+                    first,
+                    &mut state,
+                    &mut gyro,
+                    &mut accel,
+                    &mut tracker,
+                    &evt_tx,
+                    &mut pressed,
+                );
                 got = true;
                 for _ in 0..128 {
                     match raw_rx.try_recv() {

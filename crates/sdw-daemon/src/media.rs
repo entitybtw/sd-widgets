@@ -39,11 +39,7 @@ impl MediaService {
 
     pub fn snapshot(&self) -> MediaState {
         let players = players();
-        let selected = self
-            .selected
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
+        let selected = self.selected.lock().map(|s| s.clone()).unwrap_or_default();
         let mut state = MediaState {
             players: players.clone(),
             updated_ms: now_ms(),
@@ -171,11 +167,7 @@ impl MediaService {
         if !player.trim().is_empty() {
             self.remember_player(player.trim());
         }
-        let selected = self
-            .selected
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
+        let selected = self.selected.lock().map(|s| s.clone()).unwrap_or_default();
         let player = if player.trim().is_empty() {
             selected
         } else {
@@ -275,7 +267,11 @@ fn read_volume() -> Result<(u8, bool, String), String> {
             .find_map(|w| w.parse::<f64>().ok())
             .unwrap_or(0.0);
         let sink = current_sink();
-        return Ok(((number * 100.0).round().clamp(0.0, 150.0) as u8, muted, sink));
+        return Ok((
+            (number * 100.0).round().clamp(0.0, 150.0) as u8,
+            muted,
+            sink,
+        ));
     }
     if cfg!(target_os = "linux") && sdw_core::util::has("pactl") {
         let raw = sdw_core::util::run("pactl", &["get-sink-volume", "@DEFAULT_SINK@"])?;
@@ -294,7 +290,11 @@ fn read_volume() -> Result<(u8, bool, String), String> {
         let raw = sdw_core::util::run("amixer", &["get", "Master"])?;
         let pct = raw
             .split('[')
-            .find_map(|s| s.split('%').next().and_then(|n| n.trim().parse::<u8>().ok()))
+            .find_map(|s| {
+                s.split('%')
+                    .next()
+                    .and_then(|n| n.trim().parse::<u8>().ok())
+            })
             .unwrap_or(0);
         let muted = raw.contains("[off]");
         return Ok((pct, muted, "Master".into()));

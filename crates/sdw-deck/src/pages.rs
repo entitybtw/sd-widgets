@@ -3,27 +3,26 @@
 //! the home page is a grid-style grid of big touch tiles; the gamepad page is the
 //! drawn steam deck; the rest are focused panels that stay readable at 1280×800.
 
-use crate::app::{App, Page, Task, notification_color};
+use crate::app::{notification_color, App, Page, Task};
 use crate::binds::BindEditor;
 use crate::deck_view::{self, DeckInput, DeckViewState};
 use crate::theme::{self, Tile, Tokens};
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, FontFamily, Layout, Margin, RichText, Stroke,
-    TextEdit, Ui, Vec2,
+    self, Align, Align2, Color32, CornerRadius, FontFamily, Layout, Margin, RichText, Sense,
+    Stroke, TextEdit, Ui, Vec2,
 };
 use sdw_core::model::*;
 use sdw_core::util;
 use sdw_core::{t, Lang};
 use serde_json::json;
+use std::time::Duration;
 
 // ---------------------------------------------------------------- shared bits
 
 fn page_title(ui: &mut Ui, t: &Tokens, title: &str, subtitle: &str) {
     ui.label(RichText::new(title).size(28.0).strong().color(t.strong));
     if !subtitle.is_empty() {
-        ui.add(
-            egui::Label::new(RichText::new(subtitle).size(13.5).color(t.muted)).wrap(),
-        );
+        ui.add(egui::Label::new(RichText::new(subtitle).size(13.5).color(t.muted)).wrap());
     }
     ui.add_space(4.0);
 }
@@ -160,7 +159,8 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     if theme::ghost(ui, sc, t).clicked() {
                         app.toggle_monitor_default();
                     }
-                    if theme::ghost(ui, t!(app.lang, "компьютеры", "computers"), t).clicked() {
+                    if theme::ghost(ui, t!(app.lang, "компьютеры", "computers"), t).clicked()
+                    {
                         app.set_page(Page::Computers);
                     }
                 });
@@ -182,7 +182,11 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     ));
                 }
                 facts.push((
-                    format!("{} {}", app.cfg.binds.len(), t!(app.lang, "биндов", "binds")),
+                    format!(
+                        "{} {}",
+                        app.cfg.binds.len(),
+                        t!(app.lang, "биндов", "binds")
+                    ),
                     t.faint,
                 ));
                 for (text, color) in facts.into_iter().rev() {
@@ -262,7 +266,11 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 } else {
                     "0".into()
                 },
-                if app.notif_unread > 0 { t.warn } else { t.faint },
+                if app.notif_unread > 0 {
+                    t.warn
+                } else {
+                    t.faint
+                },
             ));
             for (label, value, color) in items {
                 stat(ui, t, &label, &value, color);
@@ -341,7 +349,13 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
     // The grid: big landscape tiles on a deck-sized screen.
     let st = theme::style();
     let width = ui.available_width();
-    let cols = st.tile_columns.clamp(1, 4) as usize;
+    // The Deck screen is wide enough for three tiles per row; never fall back
+    // to two there just because an old config saved a smaller value.
+    let cols = if crate::app::deck_mode() {
+        st.tile_columns.clamp(3, 4) as usize
+    } else {
+        st.tile_columns.clamp(1, 4) as usize
+    };
     let cols = if width < 720.0 { cols.min(2) } else { cols };
     let gap = 14.0;
     let tile_w = ((width - gap * (cols as f32 - 1.0)) / cols as f32).max(160.0);
@@ -385,13 +399,20 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
             Tile {
                 title: t!(app.lang, "экран", "screen").into(),
                 subtitle: if monitor.running {
-                    format!("{}×{} · {}", monitor.width, monitor.height, monitor.backend_label)
+                    format!(
+                        "{}×{} · {}",
+                        monitor.width, monitor.height, monitor.backend_label
+                    )
                 } else {
                     t!(app.lang, "дополнительный монитор", "extra monitor").into()
                 },
                 glyph: theme::icon::SCREEN.into(),
                 accent: Color32::from_rgb(0x3d, 0xd6, 0xcf),
-                badge: Some(if monitor.running { "live".into() } else { "off".into() }),
+                badge: Some(if monitor.running {
+                    "live".into()
+                } else {
+                    "off".into()
+                }),
                 badge_color: if monitor.running { t.good } else { t.faint },
                 dim: !monitor.running,
                 reveal: 1.0,
@@ -435,7 +456,11 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .as_ref()
                     .map(|s| {
                         if s.ha.connected {
-                            format!("{} {}", s.ha.entities, t!(app.lang, "сущностей", "entities"))
+                            format!(
+                                "{} {}",
+                                s.ha.entities,
+                                t!(app.lang, "сущностей", "entities")
+                            )
                         } else if s.ha.configured {
                             t!(app.lang, "настроен", "configured").to_string()
                         } else {
@@ -499,6 +524,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
             Page::Computers,
             5.0,
         );
+        addon_tiles(app, ui, t, size);
     });
 
     // A quiet stream of the newest notifications, one line each.
@@ -516,13 +542,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
             });
         });
         ui.add_space(2.0);
-        let recent: Vec<Notification> = app
-            .notifications
-            .iter()
-            .rev()
-            .take(3)
-            .cloned()
-            .collect();
+        let recent: Vec<Notification> = app.notifications.iter().rev().take(3).cloned().collect();
         for n in recent {
             let color = notification_color(t, &n);
             ui.horizontal(|ui| {
@@ -554,7 +574,59 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
 }
 
+/// Tiles contributed by enabled addons. They run any action, local or remote.
+fn addon_tiles(app: &mut App, ui: &mut Ui, t: &Tokens, size: Vec2) {
+    let cfg = app.cfg.addons.clone();
+    let mut items: Vec<(f32, Tile, sdw_core::model::Action)> = Vec::new();
+    let mut index = 6.0;
+    for addon in sdw_core::addons::list() {
+        if !cfg.is_on(addon.id()) {
+            continue;
+        }
+        for tile in &addon.manifest.deck.tiles {
+            let color = theme::parse_color(&tile.accent).unwrap_or(t.accent);
+            let glyph = if tile.icon.trim().is_empty() {
+                theme::icon::ADDON.to_string()
+            } else {
+                tile.icon.clone()
+            };
+            items.push((
+                index,
+                Tile {
+                    title: tile.title.clone(),
+                    subtitle: tile.subtitle.clone(),
+                    glyph,
+                    accent: color,
+                    badge: Some(addon.manifest.name.clone()),
+                    badge_color: color,
+                    dim: false,
+                    reveal: 1.0,
+                },
+                tile.action.clone(),
+            ));
+            index += 1.0;
+        }
+    }
+    for (i, mut tile, action) in items {
+        tile.reveal = app.reveal(i);
+        if tile.reveal < 1.0 {
+            ui.ctx().request_repaint();
+        }
+        if theme::tile(ui, t, &tile, size).clicked() {
+            app.execute_action(&action);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- computers
+
+pub fn clock(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    crate::clock::ui(app, ui, t);
+}
+
+pub fn audio(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    crate::audio_ui::page(app, ui, t);
+}
 
 pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
     page_title(
@@ -578,7 +650,8 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
         {
             app.add_open = !app.add_open;
         }
-        if theme::ghost(ui, t!(app.lang, "искать в сети", "scan the network"), t).clicked() {
+        if theme::ghost(ui, t!(app.lang, "искать в сети", "scan the network"), t).clicked()
+        {
             app.scan_lan();
         }
         if app.discovering {
@@ -697,16 +770,13 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if is_active {
-                            if theme::ghost(ui, t!(app.lang, "забыть", "forget"), t).clicked() {
+                            if theme::ghost(ui, t!(app.lang, "забыть", "forget"), t).clicked()
+                            {
                                 forget = Some(host.id.clone());
                             }
                             theme::chip(ui, t!(app.lang, "выбран", "selected"), t.accent);
-                        } else if theme::primary(
-                            ui,
-                            t!(app.lang, "переключиться", "switch"),
-                            t,
-                        )
-                        .clicked()
+                        } else if theme::primary(ui, t!(app.lang, "переключиться", "switch"), t)
+                            .clicked()
                         {
                             activate = Some(host.id.clone());
                         }
@@ -720,15 +790,15 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
     if let Some(id) = forget {
         app.forget_host(&id);
-        app.toast(
-            t!(app.lang, "компьютер забыт", "computer forgotten"),
-            true,
-        );
+        app.toast(t!(app.lang, "компьютер забыт", "computer forgotten"), true);
     }
 
     if !app.discovery.is_empty() {
         ui.add_space(4.0);
-        ui.label(theme::hud(t!(app.lang, "найдено в сети", "found on the network"), t.faint));
+        ui.label(theme::hud(
+            t!(app.lang, "найдено в сети", "found on the network"),
+            t.faint,
+        ));
         ui.add_space(4.0);
         let found = app.discovery.clone();
         for d in found {
@@ -743,12 +813,7 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     ui.horizontal(|ui| {
                         theme::dot(ui, t.good, true);
                         ui.vertical(|ui| {
-                            ui.label(
-                                RichText::new(&d.name)
-                                    .size(15.0)
-                                    .strong()
-                                    .color(t.strong),
-                            );
+                            ui.label(RichText::new(&d.name).size(15.0).strong().color(t.strong));
                             ui.label(
                                 RichText::new(format!("{base} · sd-widgets {}", d.version))
                                     .family(FontFamily::Monospace)
@@ -758,7 +823,11 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if already {
-                                theme::chip(ui, t!(app.lang, "уже добавлен", "already added"), t.faint);
+                                theme::chip(
+                                    ui,
+                                    t!(app.lang, "уже добавлен", "already added"),
+                                    t.faint,
+                                );
                             } else if theme::ghost(ui, t!(app.lang, "выбрать", "choose"), t)
                                 .clicked()
                             {
@@ -768,7 +837,11 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                 app.pair_error.clear();
                             }
                             if !d.setup_done {
-                                theme::chip(ui, t!(app.lang, "нужна настройка", "setup needed"), t.warn);
+                                theme::chip(
+                                    ui,
+                                    t!(app.lang, "нужна настройка", "setup needed"),
+                                    t.warn,
+                                );
                             }
                         });
                     });
@@ -781,10 +854,14 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ui.add_space(4.0);
         theme::card(ui, t, |ui| {
             ui.label(
-                RichText::new(t!(app.lang, "подключение по паролю", "pair with a password"))
-                    .size(18.0)
-                    .strong()
-                    .color(t.strong),
+                RichText::new(t!(
+                    app.lang,
+                    "подключение по паролю",
+                    "pair with a password"
+                ))
+                .size(18.0)
+                .strong()
+                .color(t.strong),
             );
             ui.label(
                 RichText::new(t!(
@@ -797,7 +874,11 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
             );
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(app.lang, "адрес", "address")).size(13.0).color(t.muted));
+                ui.label(
+                    RichText::new(t!(app.lang, "адрес", "address"))
+                        .size(13.0)
+                        .color(t.muted),
+                );
                 ui.add(
                     TextEdit::singleline(&mut app.pair_url)
                         .hint_text("http://192.168.1.20:47830")
@@ -805,7 +886,11 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 );
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(app.lang, "имя", "name")).size(13.0).color(t.muted));
+                ui.label(
+                    RichText::new(t!(app.lang, "имя", "name"))
+                        .size(13.0)
+                        .color(t.muted),
+                );
                 ui.add(
                     TextEdit::singleline(&mut app.pair_name)
                         .hint_text(app.cfg.device_name.clone())
@@ -813,7 +898,11 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 );
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new(t!(app.lang, "пароль", "password")).size(13.0).color(t.muted));
+                ui.label(
+                    RichText::new(t!(app.lang, "пароль", "password"))
+                        .size(13.0)
+                        .color(t.muted),
+                );
                 ui.add(
                     TextEdit::singleline(&mut app.pair_pass)
                         .password(!app.pair_show)
@@ -839,12 +928,7 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             .size(13.0)
                             .color(t.muted),
                     );
-                } else if theme::primary(
-                    ui,
-                    t!(app.lang, "подключить", "connect"),
-                    t,
-                )
-                .clicked()
+                } else if theme::primary(ui, t!(app.lang, "подключить", "connect"), t).clicked()
                 {
                     app.start_pair();
                 }
@@ -862,7 +946,11 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
     theme::card(ui, t, |ui| {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new(&app.cfg.device_name).size(16.0).color(t.strong));
+                ui.label(
+                    RichText::new(&app.cfg.device_name)
+                        .size(16.0)
+                        .color(t.strong),
+                );
                 ui.label(
                     RichText::new(format!(
                         "{} {} · {} {}",
@@ -910,12 +998,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 if let Some(pad) = &app.gamepad_pad {
-                    ui.label(
-                        RichText::new(&pad.name)
-                            .size(18.0)
-                            .strong()
-                            .color(t.strong),
-                    );
+                    ui.label(RichText::new(&pad.name).size(18.0).strong().color(t.strong));
                     let live = status_pads.iter().find(|p| p.id == pad.id);
                     ui.label(
                         RichText::new(format!(
@@ -971,7 +1054,11 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             t!(app.lang, "off", "off")
                         })
                         .size(12.5)
-                        .color(if app.gamepad_on { t.good } else { t.faint }),
+                        .color(if app.gamepad_on {
+                            t.good
+                        } else {
+                            t.faint
+                        }),
                     );
                     if ui
                         .add(
@@ -1018,12 +1105,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 );
                 if app.gamepad_pending {
                     ui.spinner();
-                } else if theme::primary(
-                    ui,
-                    t!(app.lang, "создать пад", "create pad"),
-                    t,
-                )
-                .clicked()
+                } else if theme::primary(ui, t!(app.lang, "создать пад", "create pad"), t).clicked()
                 {
                     app.create_pad();
                 }
@@ -1033,7 +1115,99 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.add_space(10.0);
 
-    // the drawing
+    // the live bar: one obvious button that starts or stops sending the pad
+    let last = app.last_button.clone();
+    let devices = app.input_devices.len();
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            let (dot, label) = if app.gamepad_on {
+                (
+                    t.good,
+                    t!(
+                        app.lang,
+                        "live · ввод идёт на компьютер",
+                        "live · input goes to the computer"
+                    ),
+                )
+            } else if has_pad {
+                (t.warn, t!(app.lang, "пад на паузе", "pad paused"))
+            } else {
+                (t.faint, t!(app.lang, "пад не создан", "pad not created"))
+            };
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(10.0), Sense::hover());
+            ui.painter().circle_filled(rect.center(), 4.5, dot);
+            ui.label(RichText::new(label).size(13.5).color(t.muted));
+            if let Some((code, name, at)) = &last {
+                if at.elapsed() < Duration::from_secs(6) {
+                    ui.add_space(12.0);
+                    ui.label(
+                        RichText::new(format!("{name} · {code:#x}"))
+                            .family(FontFamily::Monospace)
+                            .size(11.5)
+                            .color(t.faint),
+                    );
+                }
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let text = if app.gamepad_on {
+                    t!(app.lang, "остановить", "stop")
+                } else if has_pad {
+                    t!(app.lang, "выйти в live", "go live")
+                } else {
+                    t!(app.lang, "создать и включить", "create and go live")
+                };
+                let fill = if app.gamepad_on { t.bad } else { t.accent };
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(text)
+                                .size(15.5)
+                                .strong()
+                                .color(Color32::WHITE),
+                        )
+                        .fill(fill)
+                        .stroke(Stroke::new(1.0, fill))
+                        .corner_radius(CornerRadius::ZERO)
+                        .min_size(Vec2::new(210.0, 48.0)),
+                    )
+                    .clicked()
+                {
+                    if app.gamepad_on {
+                        app.set_gamepad_on(false);
+                    } else if has_pad {
+                        app.set_gamepad_on(true);
+                    } else {
+                        app.create_pad();
+                    }
+                }
+            });
+        });
+        ui.label(
+            RichText::new(format!(
+                "{} {} · {}",
+                t!(app.lang, "устройств ввода", "input devices"),
+                devices,
+                if app.gamepad_on {
+                    t!(
+                        app.lang,
+                        "стики и кнопки рисуются вживую",
+                        "sticks and buttons are live"
+                    )
+                } else {
+                    t!(
+                        app.lang,
+                        "нажатия только подсвечиваются",
+                        "presses are only highlighted"
+                    )
+                }
+            ))
+            .family(FontFamily::Monospace)
+            .size(11.0)
+            .color(t.faint),
+        );
+    });
+
+    ui.add_space(10.0);
     let state = app.gamepad.clone();
     let pressed = app.pressed.clone();
     let host = app.active_host_name();
@@ -1096,7 +1270,11 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         RichText::new(format!(
                             "{} {code} · {}",
                             t!(app.lang, "код кнопки", "button code"),
-                            t!(app.lang, "нажмите кнопку на деке, чтобы увидеть её здесь", "press a button on the deck to see it here")
+                            t!(
+                                app.lang,
+                                "нажмите кнопку на деке, чтобы увидеть её здесь",
+                                "press a button on the deck to see it here"
+                            )
                         ))
                         .family(FontFamily::Monospace)
                         .size(11.5)
@@ -1114,12 +1292,8 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     {
                         app.deck_view.selected = None;
                     }
-                    if theme::ghost(
-                        ui,
-                        t!(app.lang, "снять выделение", "clear selection"),
-                        t,
-                    )
-                    .clicked()
+                    if theme::ghost(ui, t!(app.lang, "снять выделение", "clear selection"), t)
+                        .clicked()
                     {
                         app.deck_view.selected = None;
                     }
@@ -1127,35 +1301,25 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if theme::primary(
-                    ui,
-                    t!(app.lang, "назначить бинд", "assign a bind"),
-                    t,
-                )
-                .clicked()
+                if theme::primary(ui, t!(app.lang, "назначить бинд", "assign a bind"), t).clicked()
                 {
-                    app.binds.editor = Some(BindEditor::for_trigger(
-                        control.name(),
-                        control.trigger(),
-                    ));
+                    app.binds.editor =
+                        Some(BindEditor::for_trigger(control.name(), control.trigger()));
                     app.binds.capture = false;
                 }
-                if theme::ghost(
-                    ui,
-                    t!(app.lang, "записать с деки", "capture from deck"),
-                    t,
-                )
-                .clicked()
+                if theme::ghost(ui, t!(app.lang, "записать с деки", "capture from deck"), t)
+                    .clicked()
                 {
-                    let mut editor =
-                        BindEditor::for_trigger(control.name(), control.trigger());
+                    let mut editor = BindEditor::for_trigger(control.name(), control.trigger());
                     editor.name = control.name().to_string();
                     app.binds.editor = Some(editor);
                     app.binds.capture = true;
                 }
                 if ui
                     .selectable_label(
-                        !app.cfg.binds.iter().any(|b| matches!(&b.trigger, Trigger::Button { code: c, .. } if c == &code)),
+                        !app.cfg.binds.iter().any(
+                            |b| matches!(&b.trigger, Trigger::Button { code: c, .. } if c == &code),
+                        ),
                         t!(app.lang, "свободна", "unbound"),
                     )
                     .clicked()
@@ -1177,18 +1341,15 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 ui.add_space(4.0);
                 for bind in matching {
                     ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(&bind.name)
-                                .size(14.5)
-                                .color(if bind.enabled { t.strong } else { t.muted }),
-                        );
-                        ui.label(
-                            RichText::new(bind.action.label())
-                                .size(12.5)
-                                .color(t.muted),
-                        );
+                        ui.label(RichText::new(&bind.name).size(14.5).color(if bind.enabled {
+                            t.strong
+                        } else {
+                            t.muted
+                        }));
+                        ui.label(RichText::new(bind.action.label()).size(12.5).color(t.muted));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if theme::ghost(ui, t!(app.lang, "изменить", "edit"), t).clicked() {
+                            if theme::ghost(ui, t!(app.lang, "изменить", "edit"), t).clicked()
+                            {
                                 app.binds.editor = Some(BindEditor::from_bind(&bind));
                             }
                         });
@@ -1209,19 +1370,29 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(13.0)
                     .color(t.muted),
             );
-            let r = ui.add(
-                egui::Slider::new(&mut app.deck_view.cfg.scale, 0.6..=1.4)
-                    .show_value(false),
-            );
+            let r = ui
+                .add(egui::Slider::new(&mut app.deck_view.cfg.scale, 0.6..=1.4).show_value(false));
             if r.drag_stopped() || r.lost_focus() {
                 app.save();
             }
             theme::switch(ui, &mut app.deck_view.cfg.labels, t);
-            ui.label(RichText::new(t!(app.lang, "подписи", "labels")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "подписи", "labels"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             theme::switch(ui, &mut app.deck_view.cfg.glow, t);
-            ui.label(RichText::new(t!(app.lang, "свечение", "glow")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "свечение", "glow"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             theme::switch(ui, &mut app.deck_view.cfg.sticks, t);
-            ui.label(RichText::new(t!(app.lang, "стики", "sticks")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "стики", "sticks"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
         });
     });
 
@@ -1230,7 +1401,10 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
     if !devices.is_empty() || !errors.is_empty() {
         ui.add_space(8.0);
         theme::card(ui, t, |ui| {
-            ui.label(theme::hud(t!(app.lang, "ввод с деки", "deck input"), t.faint));
+            ui.label(theme::hud(
+                t!(app.lang, "ввод с деки", "deck input"),
+                t.faint,
+            ));
             for d in &devices {
                 ui.label(
                     RichText::new(d)
@@ -1288,12 +1462,7 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.horizontal(|ui| {
         if monitor.running {
-            if theme::primary(
-                ui,
-                t!(app.lang, "остановить экран", "stop the screen"),
-                t,
-            )
-            .clicked()
+            if theme::primary(ui, t!(app.lang, "остановить экран", "stop the screen"), t).clicked()
             {
                 if let Some(c) = app.client() {
                     app.spawn(move || {
@@ -1301,12 +1470,8 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     });
                 }
             }
-        } else if theme::primary(
-            ui,
-            t!(app.lang, "запустить экран", "start the screen"),
-            t,
-        )
-        .clicked()
+        } else if theme::primary(ui, t!(app.lang, "запустить экран", "start the screen"), t)
+            .clicked()
         {
             let req = MonitorStart {
                 mode: app.stream.mode,
@@ -1356,12 +1521,12 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     let area = ui.available_rect_before_wrap();
     let stream_h = (area.width() / 1.6).clamp(240.0, 520.0);
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(area.width(), stream_h),
-        egui::Sense::hover(),
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(area.width(), stream_h), egui::Sense::hover());
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::ZERO,
+        Color32::from_rgb(0x02, 0x02, 0x06),
     );
-    ui.painter()
-        .rect_filled(rect, CornerRadius::ZERO, Color32::from_rgb(0x02, 0x02, 0x06));
     ui.painter().rect_stroke(
         rect,
         CornerRadius::ZERO,
@@ -1484,21 +1649,25 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
         });
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(t!(app.lang, "fps", "fps")).size(12.5).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "fps", "fps"))
+                    .size(12.5)
+                    .color(t.muted),
+            );
             ui.add(egui::Slider::new(&mut app.stream.fps, 5..=60).show_value(true));
             ui.add_space(12.0);
-            ui.label(RichText::new(t!(app.lang, "качество", "quality")).size(12.5).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "качество", "quality"))
+                    .size(12.5)
+                    .color(t.muted),
+            );
             ui.add(egui::Slider::new(&mut app.stream.quality, 30..=95).suffix("%"));
             ui.add_space(12.0);
             theme::switch(ui, &mut app.stream.input, t);
             ui.label(
-                RichText::new(t!(
-                    app.lang,
-                    "мышь и клавиатура",
-                    "mouse and keyboard"
-                ))
-                .size(12.5)
-                .color(t.muted),
+                RichText::new(t!(app.lang, "мышь и клавиатура", "mouse and keyboard"))
+                    .size(12.5)
+                    .color(t.muted),
             );
         });
         if !monitor.config_hint.is_empty() {
@@ -1538,15 +1707,17 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.horizontal(|ui| {
         if theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked() {
-            app.last_notif =
-                std::time::Instant::now() - std::time::Duration::from_secs(5);
+            app.last_notif = std::time::Instant::now() - std::time::Duration::from_secs(5);
         }
         if theme::ghost(ui, t!(app.lang, "проверить", "test"), t).clicked() {
             if let Some(c) = app.client() {
                 app.spawn(move || {
                     Task::Msg(
                         c.test_notification()
-                            .map(|_| t!(Lang::Ru, "тестовое уведомление", "test notification").to_string())
+                            .map(|_| {
+                                t!(Lang::Ru, "тестовое уведомление", "test notification")
+                                    .to_string()
+                            })
                             .map_err(|e| e.to_string()),
                     )
                 });
@@ -1589,14 +1760,10 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
     if app.notifications.is_empty() {
         theme::card(ui, t, |ui| {
             ui.label(
-                RichText::new(t!(
-                    app.lang,
-                    "пока тихо",
-                    "all quiet"
-                ))
-                .size(18.0)
-                .strong()
-                .color(t.strong),
+                RichText::new(t!(app.lang, "пока тихо", "all quiet"))
+                    .size(18.0)
+                    .strong()
+                    .color(t.strong),
             );
             ui.label(
                 RichText::new(t!(
@@ -1625,14 +1792,10 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new(if n.app.is_empty() {
-                                    "system"
-                                } else {
-                                    &n.app
-                                })
-                                .family(FontFamily::Monospace)
-                                .size(11.0)
-                                .color(color),
+                                RichText::new(if n.app.is_empty() { "system" } else { &n.app })
+                                    .family(FontFamily::Monospace)
+                                    .size(11.0)
+                                    .color(color),
                             );
                             ui.label(
                                 RichText::new(age(n.ts, app.lang))
@@ -1652,10 +1815,8 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         );
                         if !n.body.is_empty() {
                             ui.add(
-                                egui::Label::new(
-                                    RichText::new(&n.body).size(13.0).color(t.muted),
-                                )
-                                .wrap(),
+                                egui::Label::new(RichText::new(&n.body).size(13.0).color(t.muted))
+                                    .wrap(),
                             );
                         }
                     });
@@ -1690,7 +1851,6 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
 }
 
-
 // ---------------------------------------------------------------- media
 
 fn media_time(seconds: f64) -> String {
@@ -1709,7 +1869,10 @@ fn media_button(ui: &mut Ui, t: &Tokens, glyph: &str, size: f32, active: bool) -
     ui.add(
         egui::Button::new(theme::icon(glyph, size * 0.44, color))
             .fill(fill)
-            .stroke(Stroke::new(1.0, if active { t.accent } else { t.line_strong }))
+            .stroke(Stroke::new(
+                1.0,
+                if active { t.accent } else { t.line_strong },
+            ))
             .corner_radius(CornerRadius::ZERO)
             .min_size(Vec2::splat(size)),
     )
@@ -1721,12 +1884,7 @@ fn media_cover(ui: &mut Ui, t: &Tokens, side: f32, art: Option<&egui::TextureHan
     match art {
         Some(tex) => {
             let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-            ui.painter().image(
-                tex.id(),
-                rect,
-                uv,
-                Color32::WHITE,
-            );
+            ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
         }
         None => {
             ui.painter().rect_filled(rect, CornerRadius::ZERO, t.well);
@@ -1789,12 +1947,15 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
             .color(if connected { t.strong } else { t.bad }),
         );
         if st.available && !st.status.is_empty() {
-            theme::chip(ui, &st.status.to_lowercase(), if st.playing() { t.good } else { t.faint });
+            theme::chip(
+                ui,
+                &st.status.to_lowercase(),
+                if st.playing() { t.good } else { t.faint },
+            );
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked() {
-                app.media.last_poll =
-                    std::time::Instant::now() - std::time::Duration::from_secs(5);
+                app.media.last_poll = std::time::Instant::now() - std::time::Duration::from_secs(5);
             }
         });
     });
@@ -1808,11 +1969,22 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui.add_space(18.0);
             ui.vertical(|ui| {
                 ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(theme::icon::MUSIC, 17.0, t.faint));
+                    ui.label(theme::hud(
+                        t!(app.lang, "сейчас играет", "now playing"),
+                        t.faint,
+                    ));
+                });
                 let title = if st.title.trim().is_empty() {
                     if st.available {
                         t!(app.lang, "ничего не играет", "nothing playing")
                     } else {
-                        t!(app.lang, "запустите музыку на пк", "start something on the PC")
+                        t!(
+                            app.lang,
+                            "запустите музыку на пк",
+                            "start something on the PC"
+                        )
                     }
                 } else {
                     &st.title
@@ -1828,31 +2000,21 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 );
                 if !st.artist.is_empty() {
                     ui.add(
-                        egui::Label::new(
-                            RichText::new(&st.artist).size(18.0).color(t.ink),
-                        )
-                        .truncate(),
+                        egui::Label::new(RichText::new(&st.artist).size(18.0).color(t.ink))
+                            .truncate(),
                     );
                 }
                 if !st.album.is_empty() {
                     ui.add(
-                        egui::Label::new(
-                            RichText::new(&st.album)
-                                .size(13.0)
-                                .color(t.muted),
-                        )
-                        .truncate(),
+                        egui::Label::new(RichText::new(&st.album).size(13.0).color(t.muted))
+                            .truncate(),
                     );
                 }
                 ui.add_space(10.0);
 
                 // position
                 let length = if st.length > 1.0 { st.length } else { 1.0 };
-                let mut pos = app
-                    .media
-                    .seeking
-                    .unwrap_or(st.position)
-                    .clamp(0.0, length);
+                let mut pos = app.media.seeking.unwrap_or(st.position).clamp(0.0, length);
                 ui.spacing_mut().interact_size.y = 30.0;
                 let r = ui.add_sized(
                     [ui.available_width(), 30.0],
@@ -1889,34 +2051,35 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
                     if media_button(ui, t, theme::icon::PREV, 52.0, false) {
                         app.media_command("prev", 0.0);
                     }
-                    ui.add_space(4.0);
                     let playing = st.playing();
-                    if media_button(ui, t, theme::icon::PLAY_PAUSE, 64.0, playing) {
+                    if media_button(ui, t, theme::icon::PLAY_PAUSE, 66.0, playing) {
                         app.media_command("play_pause", 0.0);
                     }
-                    ui.add_space(4.0);
                     if media_button(ui, t, theme::icon::NEXT, 52.0, false) {
                         app.media_command("next", 0.0);
                     }
-                    ui.add_space(4.0);
                     if media_button(ui, t, theme::icon::STOP, 52.0, false) {
                         app.media_command("stop", 0.0);
                     }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(if st.error.is_empty() {
-                                util::truncate(&st.player, 30)
-                            } else {
-                                util::truncate(&st.error, 44)
-                            })
-                            .family(FontFamily::Monospace)
-                            .size(10.5)
-                            .color(if st.error.is_empty() { t.faint } else { t.warn }),
-                        );
-                    });
+                    ui.add_space(10.0);
+                    ui.label(
+                        RichText::new(if st.error.is_empty() {
+                            util::truncate(&st.player, 34)
+                        } else {
+                            util::truncate(&st.error, 44)
+                        })
+                        .family(FontFamily::Monospace)
+                        .size(10.5)
+                        .color(if st.error.is_empty() {
+                            t.faint
+                        } else {
+                            t.warn
+                        }),
+                    );
                 });
             });
         });
@@ -1928,7 +2091,11 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
     theme::card(ui, t, |ui| {
         ui.horizontal(|ui| {
             ui.label(theme::icon(
-                if st.muted { theme::icon::VOLUME_OFF } else { theme::icon::VOLUME_UP },
+                if st.muted {
+                    theme::icon::VOLUME_OFF
+                } else {
+                    theme::icon::VOLUME_UP
+                },
                 22.0,
                 if st.muted { t.warn } else { t.accent },
             ));
@@ -1994,10 +2161,11 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
         if st.sinks.len() > 1 {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
+                ui.label(theme::icon(theme::icon::SPEAKER, 17.0, t.faint));
                 ui.label(theme::hud(t!(app.lang, "выход", "output"), t.faint));
                 egui::ComboBox::from_id_salt("media-sink")
-                    .selected_text(util::truncate(&st.sink, 46))
-                    .width(360.0)
+                    .selected_text(util::truncate(&st.sink, 40))
+                    .width((ui.available_width() - 90.0).clamp(160.0, 420.0))
                     .show_ui(ui, |ui| {
                         for sink in &st.sinks {
                             if ui
@@ -2018,6 +2186,11 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui.label(theme::hud(t!(app.lang, "плееры", "players"), t.faint));
             for p in &st.players {
                 let selected = p == &st.player;
+                ui.label(theme::icon(
+                    theme::icon::SPEAKER,
+                    16.0,
+                    if selected { t.accent } else { t.faint },
+                ));
                 let resp = ui.add(
                     egui::Button::new(
                         RichText::new(util::truncate(p, 34))
@@ -2053,6 +2226,18 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
 }
 
 // ---------------------------------------------------------------- home assistant
+
+/// Seven quick colours for RGB lamps: warm white, neutral, cool, then the
+/// usual saturated ones. `light.turn_on` takes the array as-is.
+const LIGHT_COLORS: &[(&str, [u8; 3])] = &[
+    ("тёплый", [255, 180, 110]),
+    ("нейтральный", [255, 235, 210]),
+    ("холодный", [205, 225, 255]),
+    ("красный", [255, 70, 60]),
+    ("зелёный", [80, 220, 120]),
+    ("синий", [70, 120, 255]),
+    ("фиолетовый", [170, 90, 255]),
+];
 
 fn ha_glyph(domain: &str) -> &'static str {
     match domain {
@@ -2097,10 +2282,18 @@ fn ha_icon_button(ui: &mut Ui, t: &Tokens, glyph: &str, active: bool, tip: &str)
     let color = if active { t.accent } else { t.muted };
     let resp = ui.add(
         egui::Button::new(theme::icon(glyph, 19.0, color))
-            .fill(if active { t.accent.gamma_multiply(0.14) } else { t.well })
+            .fill(if active {
+                t.accent.gamma_multiply(0.14)
+            } else {
+                t.well
+            })
             .stroke(Stroke::new(
                 1.0,
-                if active { t.accent.gamma_multiply(0.5) } else { t.line },
+                if active {
+                    t.accent.gamma_multiply(0.5)
+                } else {
+                    t.line
+                },
             ))
             .corner_radius(CornerRadius::ZERO)
             .min_size(Vec2::splat(34.0)),
@@ -2123,7 +2316,10 @@ fn ha_toggle(e: &HaEntity, on: bool) -> HaCall {
     let (domain, service) = match e.domain() {
         "scene" | "script" => (e.domain().to_string(), "turn_on".to_string()),
         "button" => ("button".to_string(), "press".to_string()),
-        _ => ("homeassistant".to_string(), if on { "turn_on" } else { "turn_off" }.to_string()),
+        _ => (
+            "homeassistant".to_string(),
+            if on { "turn_on" } else { "turn_off" }.to_string(),
+        ),
     };
     HaCall {
         domain,
@@ -2206,12 +2402,11 @@ fn ha_power_button(ui: &mut Ui, t: &Tokens, on: bool, lang: Lang, width: f32) ->
     };
     ui.add_sized(
         [width.max(120.0), 46.0],
-        egui::Button::new(
-            RichText::new(label)
-                .size(15.5)
-                .strong()
-                .color(if on { t.accent } else { t.ink }),
-        )
+        egui::Button::new(RichText::new(label).size(15.5).strong().color(if on {
+            t.accent
+        } else {
+            t.ink
+        }))
         .fill(if on {
             t.accent.gamma_multiply(0.16)
         } else {
@@ -2219,7 +2414,11 @@ fn ha_power_button(ui: &mut Ui, t: &Tokens, on: bool, lang: Lang, width: f32) ->
         })
         .stroke(Stroke::new(
             1.0,
-            if on { t.accent.gamma_multiply(0.55) } else { t.line_strong },
+            if on {
+                t.accent.gamma_multiply(0.55)
+            } else {
+                t.line_strong
+            },
         ))
         .corner_radius(CornerRadius::ZERO),
     )
@@ -2259,7 +2458,11 @@ fn ha_card(
         .fill(t.card)
         .stroke(Stroke::new(
             1.0,
-            if on { accent.gamma_multiply(0.45) } else { t.line },
+            if on {
+                accent.gamma_multiply(0.45)
+            } else {
+                t.line
+            },
         ))
         .corner_radius(CornerRadius::ZERO)
         .inner_margin(Margin::same(14))
@@ -2268,25 +2471,29 @@ fn ha_card(
             ui.horizontal(|ui| {
                 ui.label(theme::icon(ha_glyph(e.domain()), 22.0, accent));
                 ui.vertical(|ui| {
+                    ui.set_max_width((ui.available_width() - 196.0).max(60.0));
                     ui.add(
                         egui::Label::new(
                             RichText::new(e.name()).size(15.0).strong().color(t.strong),
                         )
                         .truncate(),
                     );
-                    ui.label(
-                        RichText::new(format!(
-                            "{} · {}",
-                            if e.area.is_empty() {
-                                t!(lang, "дом", "home")
-                            } else {
-                                &e.area
-                            },
-                            ha_state_text(e, lang)
-                        ))
-                        .family(FontFamily::Monospace)
-                        .size(10.0)
-                        .color(t.faint),
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!(
+                                "{} · {}",
+                                if e.area.is_empty() {
+                                    t!(lang, "дом", "home")
+                                } else {
+                                    &e.area
+                                },
+                                ha_state_text(e, lang)
+                            ))
+                            .family(FontFamily::Monospace)
+                            .size(10.0)
+                            .color(t.faint),
+                        )
+                        .truncate(),
                     );
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2369,31 +2576,36 @@ fn ha_card(
 
             match e.domain() {
                 "light" => {
-                    if ha_power_button(ui, t, on, lang, width) {
-                        actions.push(HaAction {
-                            call: ha_toggle(e, !on),
-                            entity: e.entity_id.clone(),
-                            state: Some(if on { "off" } else { "on" }.into()),
-                        });
-                    }
-                    let mut pct = e
-                        .brightness()
-                        .map(|b| (b as u32 * 100 / 255) as i32)
-                        .unwrap_or(if on { 100 } else { 0 });
                     ui.horizontal(|ui| {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::POWER,
+                            on,
+                            t!(lang, "вкл/выкл", "on/off"),
+                        ) {
+                            actions.push(HaAction {
+                                call: ha_toggle(e, !on),
+                                entity: e.entity_id.clone(),
+                                state: Some(if on { "off" } else { "on" }.into()),
+                            });
+                        }
+                        let mut pct =
+                            i32::from(e.brightness_pct().unwrap_or(if on { 100 } else { 0 }));
+                        let slider_w = (width - 96.0).max(90.0);
                         ui.spacing_mut().interact_size.y = 34.0;
                         let r = ui.add_sized(
-                            [(width - 58.0).max(100.0), 34.0],
+                            [slider_w, 34.0],
                             egui::Slider::new(&mut pct, 1..=100)
                                 .show_value(false)
                                 .trailing_fill(true),
                         );
-                        if r.drag_stopped() {
+                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
                             actions.push(HaAction {
                                 call: ha_service(
                                     e,
                                     "turn_on",
-                                    json!({ "brightness": (pct as u32 * 255 / 100).min(255) }),
+                                    json!({ "brightness_pct": pct.clamp(1, 100) }),
                                 ),
                                 entity: e.entity_id.clone(),
                                 state: Some("on".into()),
@@ -2406,6 +2618,68 @@ fn ha_card(
                                 .color(t.faint),
                         );
                     });
+                    if e.supports_color_temp() {
+                        let min = e.min_color_temp_kelvin().max(1000);
+                        let max = e.max_color_temp_kelvin().max(min + 100);
+                        let mut k = e
+                            .color_temp_kelvin()
+                            .unwrap_or((min + max) / 2)
+                            .clamp(min, max) as i32;
+                        ui.horizontal(|ui| {
+                            ui.label(theme::icon(theme::icon::THERMOSTAT, 17.0, t.faint));
+                            ui.spacing_mut().interact_size.y = 30.0;
+                            let r = ui.add_sized(
+                                [(width - 100.0).max(90.0), 30.0],
+                                egui::Slider::new(&mut k, min as i32..=max as i32)
+                                    .step_by(100.0)
+                                    .show_value(false)
+                                    .trailing_fill(true),
+                            );
+                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                actions.push(HaAction {
+                                    call: ha_service(
+                                        e,
+                                        "turn_on",
+                                        json!({ "color_temp_kelvin": k }),
+                                    ),
+                                    entity: e.entity_id.clone(),
+                                    state: Some("on".into()),
+                                });
+                            }
+                            ui.label(
+                                RichText::new(format!("{k}K"))
+                                    .family(FontFamily::Monospace)
+                                    .size(11.0)
+                                    .color(t.faint),
+                            );
+                        });
+                    }
+                    if e.supports_color() {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(theme::icon(theme::icon::LOOK, 17.0, t.faint));
+                            for (name, rgb) in LIGHT_COLORS {
+                                let c = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+                                let selected = e.rgb_color() == Some(*rgb);
+                                let resp = ui.add(
+                                    egui::Button::new("")
+                                        .fill(c)
+                                        .stroke(Stroke::new(
+                                            if selected { 2.0 } else { 1.0 },
+                                            if selected { t.strong } else { t.line },
+                                        ))
+                                        .corner_radius(CornerRadius::ZERO)
+                                        .min_size(Vec2::splat(26.0)),
+                                );
+                                if resp.on_hover_text(*name).clicked() {
+                                    actions.push(HaAction {
+                                        call: ha_service(e, "turn_on", json!({ "rgb_color": rgb })),
+                                        entity: e.entity_id.clone(),
+                                        state: Some("on".into()),
+                                    });
+                                }
+                            }
+                        });
+                    }
                 }
                 "cover" => {
                     let mut pos = e
@@ -2413,21 +2687,34 @@ fn ha_card(
                         .unwrap_or(if e.is_open() { 100 } else { 0 })
                         as i32;
                     ui.horizontal(|ui| {
-                        if ha_icon_button(ui, t, theme::icon::ARROW_UP, false, t!(lang, "открыть", "open")) {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::ARROW_UP,
+                            false,
+                            t!(lang, "открыть", "open"),
+                        ) {
                             actions.push(HaAction {
                                 call: ha_service(e, "open_cover", serde_json::Value::Null),
                                 entity: e.entity_id.clone(),
                                 state: Some("open".into()),
                             });
                         }
-                        if ha_icon_button(ui, t, theme::icon::STOP, false, t!(lang, "стоп", "stop")) {
+                        if ha_icon_button(ui, t, theme::icon::STOP, false, t!(lang, "стоп", "stop"))
+                        {
                             actions.push(HaAction {
                                 call: ha_service(e, "stop_cover", serde_json::Value::Null),
                                 entity: e.entity_id.clone(),
                                 state: None,
                             });
                         }
-                        if ha_icon_button(ui, t, theme::icon::ARROW_DOWN, false, t!(lang, "закрыть", "close")) {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::ARROW_DOWN,
+                            false,
+                            t!(lang, "закрыть", "close"),
+                        ) {
                             actions.push(HaAction {
                                 call: ha_service(e, "close_cover", serde_json::Value::Null),
                                 entity: e.entity_id.clone(),
@@ -2503,7 +2790,13 @@ fn ha_card(
                             );
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ha_icon_button(ui, t, theme::icon::POWER, on, t!(lang, "вкл/выкл", "on/off")) {
+                            if ha_icon_button(
+                                ui,
+                                t,
+                                theme::icon::POWER,
+                                on,
+                                t!(lang, "вкл/выкл", "on/off"),
+                            ) {
                                 actions.push(HaAction {
                                     call: ha_service(
                                         e,
@@ -2518,6 +2811,35 @@ fn ha_card(
                     });
                 }
                 "media_player" => {
+                    let app_name = e.media_app();
+                    ui.horizontal(|ui| {
+                        ui.label(theme::icon(theme::icon::MUSIC, 17.0, t.faint));
+                        ui.label(
+                            RichText::new(if app_name.is_empty() {
+                                t!(lang, "плеер", "player").to_string()
+                            } else {
+                                util::truncate(&app_name, 30)
+                            })
+                            .family(FontFamily::Monospace)
+                            .size(10.5)
+                            .color(t.faint),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ha_icon_button(
+                                ui,
+                                t,
+                                theme::icon::POWER,
+                                on,
+                                t!(lang, "вкл/выкл", "on/off"),
+                            ) {
+                                actions.push(HaAction {
+                                    call: ha_toggle(e, !on),
+                                    entity: e.entity_id.clone(),
+                                    state: Some(if on { "off" } else { "on" }.into()),
+                                });
+                            }
+                        });
+                    });
                     if let Some(title) = e.media_title() {
                         ui.add(
                             egui::Label::new(
@@ -2539,28 +2861,51 @@ fn ha_card(
                         );
                     }
                     ui.horizontal(|ui| {
-                        if ha_icon_button(ui, t, theme::icon::PREV, false, t!(lang, "назад", "previous")) {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::PREV,
+                            false,
+                            t!(lang, "назад", "previous"),
+                        ) {
                             actions.push(HaAction {
-                                call: ha_service(e, "media_previous_track", serde_json::Value::Null),
+                                call: ha_service(
+                                    e,
+                                    "media_previous_track",
+                                    serde_json::Value::Null,
+                                ),
                                 entity: e.entity_id.clone(),
                                 state: None,
                             });
                         }
-                        if ha_icon_button(ui, t, theme::icon::PLAY_PAUSE, e.state == "playing", t!(lang, "пауза", "play/pause")) {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::PLAY_PAUSE,
+                            e.state == "playing",
+                            t!(lang, "пауза", "play/pause"),
+                        ) {
                             actions.push(HaAction {
                                 call: ha_service(e, "media_play_pause", serde_json::Value::Null),
                                 entity: e.entity_id.clone(),
                                 state: None,
                             });
                         }
-                        if ha_icon_button(ui, t, theme::icon::NEXT, false, t!(lang, "дальше", "next")) {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::NEXT,
+                            false,
+                            t!(lang, "дальше", "next"),
+                        ) {
                             actions.push(HaAction {
                                 call: ha_service(e, "media_next_track", serde_json::Value::Null),
                                 entity: e.entity_id.clone(),
                                 state: None,
                             });
                         }
-                        if let Some(vol) = e.attributes.get("volume_level").and_then(|v| v.as_f64()) {
+                        if let Some(vol) = e.attributes.get("volume_level").and_then(|v| v.as_f64())
+                        {
                             let mut pct = (vol * 100.0).round() as i32;
                             let r = ui.add(
                                 egui::Slider::new(&mut pct, 0..=100)
@@ -2714,7 +3059,11 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             });
         });
         if ha.configured && !ha.error.is_empty() && !ha.connected {
-            ui.label(RichText::new(util::truncate(&ha.error, 90)).size(11.5).color(t.bad));
+            ui.label(
+                RichText::new(util::truncate(&ha.error, 90))
+                    .size(11.5)
+                    .color(t.bad),
+            );
         }
     });
 
@@ -2722,10 +3071,14 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ui.add_space(8.0);
         theme::card(ui, t, |ui| {
             ui.label(
-                RichText::new(t!(app.lang, "подключить home assistant", "connect home assistant"))
-                    .size(18.0)
-                    .strong()
-                    .color(t.strong),
+                RichText::new(t!(
+                    app.lang,
+                    "подключить home assistant",
+                    "connect home assistant"
+                ))
+                .size(18.0)
+                .strong()
+                .color(t.strong),
             );
             ui.label(
                 RichText::new(t!(
@@ -2773,8 +3126,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         )
                     });
                 }
-                app.last_status = std::time::Instant::now()
-                    - std::time::Duration::from_secs(5);
+                app.last_status = std::time::Instant::now() - std::time::Duration::from_secs(5);
             }
         });
         return;
@@ -2837,10 +3189,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             for (i, c) in list.iter_mut().enumerate() {
                 ui.horizontal(|ui| {
                     if ui
-                        .add(
-                            TextEdit::singleline(&mut c.name)
-                                .desired_width(220.0),
-                        )
+                        .add(TextEdit::singleline(&mut c.name).desired_width(220.0))
                         .lost_focus()
                     {
                         changed = true;
@@ -2917,6 +3266,185 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         }
     }
 
+    // ---------------------------------------------------------------- presets
+
+    if app.ha.presets_open {
+        ui.add_space(8.0);
+        let mut list = app.ha.presets.clone();
+        let mut name = app.ha.preset_name.clone();
+        let mut apply: Option<usize> = None;
+        let mut remove: Option<usize> = None;
+        let mut swap: Option<(usize, usize)> = None;
+        let mut recapture: Option<usize> = None;
+        let mut changed = false;
+        let mut save_current = false;
+        let count = list.len();
+        let manage = app.ha.manage;
+        theme::card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(t!(app.lang, "пресеты", "presets"))
+                        .size(16.0)
+                        .strong()
+                        .color(t.strong),
+                );
+                ui.label(
+                    RichText::new(t!(
+                        app.lang,
+                        "яркость, температура и цвет всех включённых ламп одним нажатием.",
+                        "brightness, temperature and colour of every lit lamp in one tap."
+                    ))
+                    .size(12.0)
+                    .color(t.muted),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::ghost(ui, t!(app.lang, "готово", "done"), t).clicked() {
+                        app.ha.presets_open = false;
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut name)
+                        .hint_text(t!(app.lang, "имя нового пресета", "new preset name"))
+                        .desired_width(260.0),
+                );
+                if theme::ghost(
+                    ui,
+                    t!(app.lang, "сохранить текущий свет", "capture current lights"),
+                    t,
+                )
+                .on_hover_text(t!(
+                    app.lang,
+                    "снимок яркости и цвета всех включённых ламп",
+                    "snapshot of brightness and colour of every lamp that is on"
+                ))
+                .clicked()
+                {
+                    save_current = true;
+                }
+            });
+            if list.is_empty() {
+                ui.label(
+                    RichText::new(t!(
+                        app.lang,
+                        "пока нет пресетов. включите лампы, введите имя и нажмите «сохранить текущий свет».",
+                        "no presets yet. turn lamps on, type a name and hit “capture current lights”."
+                    ))
+                    .size(12.0)
+                    .color(t.muted),
+                );
+            }
+            for (i, p) in list.iter_mut().enumerate() {
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let label = format!("{} · {}", p.name, p.actions.len());
+                    let resp = ui.add(
+                        egui::Button::new(RichText::new(label).size(14.0).color(t.ink))
+                            .fill(t.well)
+                            .stroke(Stroke::new(1.0, t.line_strong))
+                            .corner_radius(CornerRadius::ZERO)
+                            .min_size(Vec2::new(0.0, 42.0)),
+                    );
+                    if resp
+                        .on_hover_text(t!(app.lang, "применить пресет", "apply preset"))
+                        .clicked()
+                    {
+                        apply = Some(i);
+                    }
+                    if manage {
+                        if ui
+                            .add(TextEdit::singleline(&mut p.name).desired_width(180.0))
+                            .lost_focus()
+                        {
+                            changed = true;
+                        }
+                        if ha_move_button(
+                            ui,
+                            t,
+                            theme::icon::ARROW_UP,
+                            t!(app.lang, "выше", "move up"),
+                            i > 0,
+                        ) {
+                            swap = Some((i, i - 1));
+                        }
+                        if ha_move_button(
+                            ui,
+                            t,
+                            theme::icon::ARROW_DOWN,
+                            t!(app.lang, "ниже", "move down"),
+                            i + 1 < count,
+                        ) {
+                            swap = Some((i, i + 1));
+                        }
+                        if ha_move_button(
+                            ui,
+                            t,
+                            theme::icon::CHECK,
+                            t!(
+                                app.lang,
+                                "переснять с текущего света",
+                                "re-capture current lights"
+                            ),
+                            true,
+                        ) {
+                            recapture = Some(i);
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(theme::icon(theme::icon::CLOSE, 16.0, t.bad))
+                                    .fill(t.well)
+                                    .stroke(Stroke::new(1.0, t.line))
+                                    .corner_radius(CornerRadius::ZERO)
+                                    .min_size(Vec2::splat(30.0)),
+                            )
+                            .on_hover_text(t!(app.lang, "удалить пресет", "delete preset"))
+                            .clicked()
+                        {
+                            remove = Some(i);
+                        }
+                    }
+                });
+            }
+        });
+        app.ha.preset_name = name;
+        if save_current {
+            let new_name = app.ha.preset_name.clone();
+            app.save_preset_from_lights(&new_name);
+        }
+        if let Some((a, b)) = swap {
+            if a < list.len() && b < list.len() {
+                list.swap(a, b);
+                changed = true;
+            }
+        }
+        if let Some(i) = remove {
+            if i < list.len() {
+                list.remove(i);
+                changed = true;
+            }
+        }
+        if let Some(i) = recapture {
+            let snapshot = sdw_core::ha::capture_light_preset(&app.ha.entities);
+            if !snapshot.is_empty() {
+                if let Some(p) = list.get_mut(i) {
+                    p.actions = snapshot;
+                    changed = true;
+                }
+            }
+        }
+        if let Some(i) = apply {
+            if let Some(p) = app.ha.presets.get(i).cloned() {
+                app.apply_preset(&p);
+            }
+        }
+        if changed {
+            app.ha.presets = list;
+            app.save_ha_presets();
+        }
+    }
+
     // ---------------------------------------------------------------- rooms
 
     let mut area_counts: Vec<(String, usize)> = Vec::new();
@@ -2946,12 +3474,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     area_counts.retain(|(_, n)| *n > 0);
 
     let mut rooms: Vec<(HaRoom, String, usize)> = Vec::new();
-    let all_count = app
-        .ha
-        .entities
-        .iter()
-        .filter(|e| ha_visible(e))
-        .count();
+    let all_count = app.ha.entities.iter().filter(|e| ha_visible(e)).count();
     rooms.push((
         HaRoom::All,
         t!(app.lang, "весь дом", "whole home").to_string(),
@@ -2965,11 +3488,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ));
     }
     for (i, c) in app.ha.categories.iter().enumerate() {
-        rooms.push((
-            HaRoom::Category(i),
-            c.name.clone(),
-            c.entities.len(),
-        ));
+        rooms.push((HaRoom::Category(i), c.name.clone(), c.entities.len()));
     }
     for (area, count) in &area_counts {
         rooms.push((HaRoom::Area(area.clone()), area.clone(), *count));
@@ -3003,7 +3522,11 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         if !searching {
             let n = rooms.len();
-            let prev = if app.ha.room == 0 { n - 1 } else { app.ha.room - 1 };
+            let prev = if app.ha.room == 0 {
+                n - 1
+            } else {
+                app.ha.room - 1
+            };
             if theme::nav_arrow(ui, t, theme::icon::ARROW_LEFT, n > 1).clicked() && n > 1 {
                 app.ha.room = prev;
             }
@@ -3016,11 +3539,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .width(280.0)
                 .show_ui(ui, |ui| {
                     for (i, (_, label, count)) in rooms.iter().enumerate() {
-                        ui.selectable_value(
-                            &mut app.ha.room,
-                            i,
-                            format!("{label} · {count}"),
-                        );
+                        ui.selectable_value(&mut app.ha.room, i, format!("{label} · {count}"));
                     }
                 });
             if theme::nav_arrow(ui, t, theme::icon::ARROW_RIGHT, n > 1).clicked() && n > 1 {
@@ -3052,6 +3571,19 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .hint_text(t!(app.lang, "поиск по имени", "search by name"))
                     .desired_width(220.0),
             );
+            if theme::ghost(
+                ui,
+                if app.ha.presets_open {
+                    t!(app.lang, "скрыть пресеты", "hide presets")
+                } else {
+                    t!(app.lang, "пресеты", "presets")
+                },
+                t,
+            )
+            .clicked()
+            {
+                app.ha.presets_open = !app.ha.presets_open;
+            }
             if theme::ghost(
                 ui,
                 if app.ha.manage {
@@ -3194,8 +3726,9 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
     groups.sort_by_key(|(d, _)| priority(d));
     let width = ui.available_width();
-    let cols = if width > 1100.0 { 2 } else { 1 };
-    let card_w = ((width - 10.0 * (cols as f32 - 1.0)) / cols as f32).max(220.0);
+    // Two columns only where a card is still wide enough to be usable. On the
+    // Deck everything stays in one full-width column so nothing can spill out.
+    let cols = if width >= 1180.0 { 2 } else { 1 };
 
     for (domain, list) in groups {
         ui.add_space(4.0);
@@ -3214,27 +3747,32 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .color(t.faint),
             );
         });
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(10.0, 10.0);
-            for e in list {
-                ui.push_id(e.entity_id.as_str(), |ui| {
-                    ha_card(
-                        ui,
-                        t,
-                        app.lang,
-                        e,
-                        card_w - 30.0,
-                        &favorites,
-                        &categories,
-                        current_category,
-                        &mut actions,
-                        &mut star,
-                        &mut category_change,
-                        &mut move_entity,
-                    );
-                });
-            }
-        });
+        for row in list.chunks(cols) {
+            ui.columns(cols, |columns| {
+                for (i, e) in row.iter().enumerate() {
+                    let col = &mut columns[i];
+                    // The card frame has 14 px margins on both sides; pass the
+                    // exact content width so its children can never overflow.
+                    let inner = (col.available_width() - 28.0).max(120.0);
+                    col.push_id(e.entity_id.as_str(), |ui| {
+                        ha_card(
+                            ui,
+                            t,
+                            app.lang,
+                            e,
+                            inner,
+                            &favorites,
+                            &categories,
+                            current_category,
+                            &mut actions,
+                            &mut star,
+                            &mut category_change,
+                            &mut move_entity,
+                        );
+                    });
+                }
+            });
+        }
     }
 
     let acted = !actions.is_empty();
@@ -3324,7 +3862,6 @@ fn ha_rooms_count(app: &App) -> usize {
     n + areas.len()
 }
 
-
 // ---------------------------------------------------------------- settings
 
 fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
@@ -3367,11 +3904,7 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if info.newer {
-                    theme::chip(
-                        ui,
-                        &format!("{} → {}", info.current, info.latest),
-                        t.good,
-                    );
+                    theme::chip(ui, &format!("{} → {}", info.current, info.latest), t.good);
                 } else {
                     theme::chip(ui, t!(app.lang, "последняя версия", "up to date"), t.good);
                 }
@@ -3392,14 +3925,15 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 }
                 ui.horizontal(|ui| {
                     if app.update.downloading {
-                        let done = app.update.progress.load(std::sync::atomic::Ordering::Relaxed);
+                        let done = app
+                            .update
+                            .progress
+                            .load(std::sync::atomic::Ordering::Relaxed);
                         let total = app.update.total.max(1);
                         ui.add(
-                            egui::ProgressBar::new(
-                                (done as f32 / total as f32).clamp(0.0, 1.0),
-                            )
-                            .desired_width(240.0)
-                            .text(format!("{}%", done * 100 / total)),
+                            egui::ProgressBar::new((done as f32 / total as f32).clamp(0.0, 1.0))
+                                .desired_width(240.0)
+                                .text(format!("{}%", done * 100 / total)),
                         );
                     } else if theme::primary(
                         ui,
@@ -3410,7 +3944,8 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     {
                         app.download_update();
                     }
-                    if theme::ghost(ui, t!(app.lang, "страница релиза", "release page"), t).clicked()
+                    if theme::ghost(ui, t!(app.lang, "страница релиза", "release page"), t)
+                        .clicked()
                     {
                         let _ = util::open_url(&info.page);
                     }
@@ -3424,12 +3959,7 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         .color(t.muted),
                 );
                 ui.horizontal(|ui| {
-                    if theme::ghost(
-                        ui,
-                        t!(app.lang, "установить", "install"),
-                        t,
-                    )
-                    .clicked()
+                    if theme::ghost(ui, t!(app.lang, "установить", "install"), t).clicked()
                     {
                         let path = app.update.path.clone();
                         app.spawn(move || {
@@ -3438,9 +3968,8 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     }
                     if theme::ghost(ui, t!(app.lang, "открыть папку", "open folder"), t).clicked()
                     {
-                        let _ = util::open_url(
-                            &sdw_core::update::updates_dir().display().to_string(),
-                        );
+                        let _ =
+                            util::open_url(&sdw_core::update::updates_dir().display().to_string());
                     }
                 });
             }
@@ -3463,11 +3992,12 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
     theme::card(ui, t, |ui| {
         ui.label(theme::hud(t!(app.lang, "устройство", "device"), t.faint));
         ui.horizontal(|ui| {
-            ui.label(RichText::new(t!(app.lang, "имя дека", "deck name")).size(13.0).color(t.muted));
-            ui.add(
-                TextEdit::singleline(&mut app.settings_name)
-                    .desired_width(280.0),
+            ui.label(
+                RichText::new(t!(app.lang, "имя дека", "deck name"))
+                    .size(13.0)
+                    .color(t.muted),
             );
+            ui.add(TextEdit::singleline(&mut app.settings_name).desired_width(280.0));
             if theme::ghost(ui, t!(app.lang, "сохранить", "save"), t).clicked() {
                 let name = app.settings_name.trim().to_string();
                 if !name.is_empty() {
@@ -3494,8 +4024,16 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.add_space(8.0);
     theme::card(ui, t, |ui| {
-        ui.label(theme::hud(t!(app.lang, "язык и тема", "language and theme"), t.faint));
-        ui.horizontal(|ui| {
+        ui.label(theme::hud(
+            t!(app.lang, "язык и тема", "language and theme"),
+            t.faint,
+        ));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(t!(app.lang, "язык", "language"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             for lang in [Lang::Ru, Lang::En] {
                 if ui
                     .selectable_label(app.lang == lang, lang.label())
@@ -3504,7 +4042,7 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     app.set_lang(lang);
                 }
             }
-            ui.add_space(16.0);
+            ui.add_space(14.0);
             let mut dark = app.dark;
             theme::switch(ui, &mut dark, t);
             if dark != app.dark {
@@ -3519,16 +4057,70 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .size(13.0)
                 .color(t.muted),
             );
-            ui.add_space(16.0);
-            ui.label(RichText::new(t!(app.lang, "масштаб ui", "ui scale")).size(13.0).color(t.muted));
-            let r = ui.add(egui::Slider::new(&mut app.cfg.ui_scale, 0.75..=crate::app::max_ui_scale()));
-            if r.drag_stopped() {
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(t!(app.lang, "масштаб ui", "ui scale"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            let mut scale = app.cfg.ui_scale;
+            let resp = ui.add(
+                egui::Slider::new(&mut scale, 0.75..=crate::app::max_ui_scale())
+                    .step_by(0.05)
+                    .show_value(false),
+            );
+            if resp.changed() {
+                app.cfg.ui_scale = scale;
+            }
+            if resp.drag_stopped() {
                 app.save();
             }
+            ui.label(
+                RichText::new(format!("{:.0}%", app.cfg.ui_scale * 100.0))
+                    .family(FontFamily::Monospace)
+                    .size(12.0)
+                    .color(t.muted),
+            );
+            if theme::ghost(ui, "1×", t).clicked() {
+                app.cfg.ui_scale = 1.0;
+                app.save();
+            }
+            ui.add_space(8.0);
+            let deck_scale = app.deck_view.cfg.scale;
+            ui.label(
+                RichText::new(t!(app.lang, "рисунок", "drawing"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            let mut drawing = deck_scale;
+            let resp = ui.add(
+                egui::Slider::new(&mut drawing, 0.6..=1.4)
+                    .step_by(0.05)
+                    .show_value(false),
+            );
+            if resp.changed() {
+                app.deck_view.cfg.scale = drawing;
+            }
+            if resp.drag_stopped() {
+                app.save();
+            }
+            ui.label(
+                RichText::new(format!("{:.0}%", drawing * 100.0))
+                    .family(FontFamily::Monospace)
+                    .size(12.0)
+                    .color(t.muted),
+            );
         });
-        ui.horizontal(|ui| {
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
             theme::switch(ui, &mut app.cfg.show_clock, t);
-            ui.label(RichText::new(t!(app.lang, "часы в шапке", "clock in the header")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "часы в шапке", "clock in the header"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             ui.add_space(14.0);
             let mut gestures = app.cfg.global_gestures;
             theme::switch(ui, &mut gestures, t);
@@ -3536,14 +4128,49 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 app.cfg.global_gestures = gestures;
                 app.save();
             }
-            ui.label(RichText::new(t!(app.lang, "свайпы страниц", "page swipes")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "свайпы страниц", "page swipes"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             ui.add_space(14.0);
             let mut grid = app.cfg.style.grid;
             if theme::switch(ui, &mut grid, t).changed() {
                 app.cfg.style.grid = grid;
                 app.apply_style(ui.ctx());
             }
-            ui.label(RichText::new(t!(app.lang, "сетка", "grid")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "сетка", "grid"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(t!(app.lang, "размер стрелок", "arrow size"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            let mut arrow = app.cfg.style.arrow_size;
+            let resp = ui.add(
+                egui::Slider::new(&mut arrow, 28.0..=96.0)
+                    .step_by(4.0)
+                    .show_value(false),
+            );
+            if resp.changed() {
+                app.cfg.style.arrow_size = arrow;
+                app.apply_style(ui.ctx());
+            }
+            if resp.drag_stopped() {
+                app.save();
+            }
+            ui.label(
+                RichText::new(format!("{:.0}", arrow))
+                    .family(FontFamily::Monospace)
+                    .size(12.0)
+                    .color(t.muted),
+            );
         });
         ui.label(
             RichText::new(t!(
@@ -3558,23 +4185,59 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.add_space(8.0);
     theme::card(ui, t, |ui| {
-        ui.label(theme::hud(t!(app.lang, "геймпад и вид", "gamepad and view"), t.faint));
-        ui.horizontal(|ui| {
+        ui.label(theme::hud(
+            t!(app.lang, "геймпад и вид", "gamepad and view"),
+            t.faint,
+        ));
+        ui.horizontal_wrapped(|ui| {
             let mut cfg = app.deck_view.cfg.clone();
-            let r = ui.add(egui::Slider::new(&mut cfg.scale, 0.6..=1.4).text(t!(app.lang, "масштаб рисунка", "drawing scale")));
+            ui.label(
+                RichText::new(t!(app.lang, "масштаб рисунка", "drawing scale"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            let r = ui.add(
+                egui::Slider::new(&mut cfg.scale, 0.6..=1.4)
+                    .step_by(0.05)
+                    .show_value(false),
+            );
+            if r.changed() {
+                app.deck_view.cfg.scale = cfg.scale;
+            }
             if r.drag_stopped() {
-                app.deck_view.cfg = cfg;
                 app.save();
             }
+            ui.label(
+                RichText::new(format!("{:.0}%", cfg.scale * 100.0))
+                    .family(FontFamily::Monospace)
+                    .size(12.0)
+                    .color(t.muted),
+            );
+            ui.add_space(14.0);
             theme::switch(ui, &mut app.deck_view.cfg.labels, t);
-            ui.label(RichText::new(t!(app.lang, "подписи", "labels")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "подписи", "labels"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            ui.add_space(14.0);
             theme::switch(ui, &mut app.deck_view.cfg.glow, t);
-            ui.label(RichText::new(t!(app.lang, "свечение", "glow")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "свечение", "glow"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            ui.add_space(14.0);
             theme::switch(ui, &mut app.deck_view.cfg.sticks, t);
-            ui.label(RichText::new(t!(app.lang, "стики", "sticks")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "стики", "sticks"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
         });
         ui.horizontal(|ui| {
-            if theme::ghost(ui, t!(app.lang, "сбросить вид", "reset view"), t).clicked() {
+            if theme::ghost(ui, t!(app.lang, "сбросить вид", "reset view"), t).clicked()
+            {
                 app.deck_view.cfg = DeckViewCfg::default();
                 app.save();
             }
@@ -3622,6 +4285,54 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             .size(11.0)
             .color(t.faint),
         );
+    });
+
+    ui.add_space(8.0);
+    theme::card(ui, t, |ui| {
+        ui.label(theme::hud(t!(app.lang, "звук с пк", "pc audio"), t.faint));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(t!(app.lang, "громкость", "volume"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            let mut vol = app.cfg.audio.volume;
+            let r = ui.add(
+                egui::Slider::new(&mut vol, 0..=100)
+                    .suffix("%")
+                    .show_value(true),
+            );
+            if r.changed() {
+                app.cfg.audio.volume = vol;
+            }
+            if r.drag_stopped() {
+                app.save();
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(t!(app.lang, "подтверждений", "confirmations"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            let mut n = app.cfg.audio.confirmations as u32;
+            let r = ui.add(egui::DragValue::new(&mut n).range(0..=3));
+            if r.changed() {
+                app.cfg.audio.confirmations = n.min(3) as u8;
+            }
+            if r.drag_stopped() {
+                app.save();
+            }
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "сколько раз спросить «вы точно хотите перевести звук»",
+                    "how many times to ask “are you sure about moving the sound”"
+                ))
+                .size(11.5)
+                .color(t.faint),
+            );
+        });
     });
 
     ui.add_space(8.0);
@@ -3674,10 +4385,7 @@ fn hex_of(c: Color32) -> String {
 fn color_row(ui: &mut Ui, t: &Tokens, style: &mut ThemeCfg, name: &str, label: &str) -> bool {
     let raw = theme::css_var(&style.css, name)
         .or_else(|| theme::css_var(&style.css, &format!("light-{name}")));
-    let c = raw
-        .as_deref()
-        .and_then(theme::parse_color)
-        .unwrap_or(t.ink);
+    let c = raw.as_deref().and_then(theme::parse_color).unwrap_or(t.ink);
     ui.horizontal(|ui| {
         ui.label(RichText::new(label).size(12.5).color(t.muted));
         let mut rgb = [c.r(), c.g(), c.b()];
@@ -3729,6 +4437,10 @@ fn palette(ui: &mut Ui, t: &Tokens, style: &mut ThemeCfg, prefix: &str, lang: La
     dirty
 }
 
+pub fn addons(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    crate::addons_ui::ui(app, ui, t);
+}
+
 pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
     page_title(
         ui,
@@ -3746,25 +4458,27 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     theme::card(ui, t, |ui| {
         ui.label(theme::hud(t!(app.lang, "пресеты", "presets"), t.faint));
+        let presets = theme::all_presets();
+        let current_bg = theme::css_var(&style.css, "bg")
+            .as_deref()
+            .and_then(theme::parse_color);
         ui.horizontal_wrapped(|ui| {
-            for (key, name) in theme::PRESETS {
-                let active = theme::css_var(&style.css, "bg")
-                    .as_deref()
-                    .and_then(theme::parse_color)
-                    == theme::css_var(theme::preset_css(key), "bg")
-                        .as_deref()
-                        .and_then(theme::parse_color);
+            for (key, name) in &presets {
+                let active = current_bg.is_some()
+                    && current_bg
+                        == theme::preset_css_owned(key)
+                            .as_deref()
+                            .and_then(|css| theme::css_var(css, "bg"))
+                            .as_deref()
+                            .and_then(theme::parse_color);
                 let resp = ui.add(
-                    egui::Button::new(
-                        RichText::new(name)
-                            .size(13.5)
-                            .color(if active { t.strong } else { t.muted }),
-                    )
+                    egui::Button::new(RichText::new(name).size(13.5).color(if active {
+                        t.strong
+                    } else {
+                        t.muted
+                    }))
                     .fill(if active { t.accent_soft } else { t.well })
-                    .stroke(Stroke::new(
-                        1.0,
-                        if active { t.accent } else { t.line },
-                    ))
+                    .stroke(Stroke::new(1.0, if active { t.accent } else { t.line }))
                     .corner_radius(0.0)
                     .min_size(Vec2::new(0.0, 38.0)),
                 );
@@ -3793,9 +4507,16 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .color(t.muted),
             );
             ui.add_space(18.0);
-            ui.label(RichText::new(t!(app.lang, "масштаб ui", "ui scale")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "масштаб ui", "ui scale"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             if ui
-                .add(egui::Slider::new(&mut app.cfg.ui_scale, 0.75..=crate::app::max_ui_scale()).fixed_decimals(2))
+                .add(
+                    egui::Slider::new(&mut app.cfg.ui_scale, 0.75..=crate::app::max_ui_scale())
+                        .fixed_decimals(2),
+                )
                 .drag_stopped()
             {
                 app.save();
@@ -3821,7 +4542,10 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.add_space(8.0);
     theme::card(ui, t, |ui| {
-        ui.label(theme::hud(t!(app.lang, "сетка и плотность", "grid and density"), t.faint));
+        ui.label(theme::hud(
+            t!(app.lang, "сетка и плотность", "grid and density"),
+            t.faint,
+        ));
         ui.horizontal(|ui| {
             let mut grid = style.grid;
             theme::switch(ui, &mut grid, t);
@@ -3829,7 +4553,11 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 style.grid = grid;
                 style_dirty = true;
             }
-            ui.label(RichText::new(t!(app.lang, "сетка", "grid")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "сетка", "grid"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             ui.add_space(14.0);
             let mut compact = style.compact;
             theme::switch(ui, &mut compact, t);
@@ -3837,7 +4565,11 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 style.compact = compact;
                 style_dirty = true;
             }
-            ui.label(RichText::new(t!(app.lang, "компактно", "compact")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "компактно", "compact"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             ui.add_space(14.0);
             let mut anim = style.animations;
             theme::switch(ui, &mut anim, t);
@@ -3845,19 +4577,35 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 style.animations = anim;
                 style_dirty = true;
             }
-            ui.label(RichText::new(t!(app.lang, "анимации", "animations")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "анимации", "animations"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
         });
         ui.horizontal(|ui| {
-            ui.label(RichText::new(t!(app.lang, "шаг сетки", "grid step")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "шаг сетки", "grid step"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             if ui
                 .add(egui::Slider::new(&mut style.grid_step, 16.0..=64.0).step_by(8.0))
                 .changed()
             {
-                theme::css_set(&mut style.css, "grid-step", &format!("{}", style.grid_step as u32));
+                theme::css_set(
+                    &mut style.css,
+                    "grid-step",
+                    &format!("{}", style.grid_step as u32),
+                );
                 style_dirty = true;
             }
             ui.add_space(14.0);
-            ui.label(RichText::new(t!(app.lang, "яркость", "alpha")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "яркость", "alpha"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             if ui
                 .add(egui::Slider::new(&mut style.grid_alpha, 0.0..=40.0))
                 .changed()
@@ -3871,7 +4619,11 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
             }
         });
         ui.horizontal(|ui| {
-            ui.label(RichText::new(t!(app.lang, "плотность", "density")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "плотность", "density"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             if ui
                 .add(egui::Slider::new(&mut style.density, 0.65..=1.9).fixed_decimals(2))
                 .changed()
@@ -3879,7 +4631,11 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 style_dirty = true;
             }
             ui.add_space(14.0);
-            ui.label(RichText::new(t!(app.lang, "шрифт", "font")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "шрифт", "font"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             if ui
                 .add(egui::Slider::new(&mut style.font_scale, 0.75..=1.8).fixed_decimals(2))
                 .changed()
@@ -3887,7 +4643,11 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 style_dirty = true;
             }
             ui.add_space(14.0);
-            ui.label(RichText::new(t!(app.lang, "высота плиток", "tile height")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "высота плиток", "tile height"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             if ui
                 .add(egui::Slider::new(&mut style.tile_height, 120.0..=300.0).step_by(8.0))
                 .changed()
@@ -3895,7 +4655,11 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 style_dirty = true;
             }
             ui.add_space(14.0);
-            ui.label(RichText::new(t!(app.lang, "колонки", "columns")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "колонки", "columns"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             if ui
                 .add(egui::DragValue::new(&mut style.tile_columns).range(1..=4))
                 .changed()
@@ -3920,16 +4684,39 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 if *value != before {
                     style_dirty = true;
                 }
-                ui.label(RichText::new(t!(app.lang, ru, en)).size(13.0).color(t.muted));
+                ui.label(
+                    RichText::new(t!(app.lang, ru, en))
+                        .size(13.0)
+                        .color(t.muted),
+                );
                 ui.add_space(14.0);
+            }
+            ui.label(
+                RichText::new(t!(app.lang, "размер стрелок", "arrow size"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
+            if ui
+                .add(
+                    egui::Slider::new(&mut style.arrow_size, 28.0..=96.0)
+                        .step_by(4.0)
+                        .fixed_decimals(0),
+                )
+                .changed()
+            {
+                style_dirty = true;
             }
         });
         ui.add_space(4.0);
-        ui.label(theme::hud(t!(app.lang, "страницы в доке", "pages in the dock"), t.faint));
+        ui.label(theme::hud(
+            t!(app.lang, "страницы в доке", "pages in the dock"),
+            t.faint,
+        ));
         let keys: Vec<&str> = Page::ORDER.iter().map(|p| p.key()).collect();
         ui.horizontal_wrapped(|ui| {
             for page in Page::ORDER {
-                let mut shown = style.pages.is_empty() || style.pages.iter().any(|p| p == page.key());
+                let mut shown =
+                    style.pages.is_empty() || style.pages.iter().any(|p| p == page.key());
                 let before = shown;
                 theme::switch(ui, &mut shown, t);
                 if shown != before {
@@ -3944,12 +4731,19 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     }
                     style_dirty = true;
                 }
-                ui.label(RichText::new(page.label(app.lang)).size(12.5).color(t.muted));
+                ui.label(
+                    RichText::new(page.label(app.lang))
+                        .size(12.5)
+                        .color(t.muted),
+                );
                 ui.add_space(10.0);
             }
         });
         ui.add_space(4.0);
-        ui.label(theme::hud(t!(app.lang, "плитки на главной", "home tiles"), t.faint));
+        ui.label(theme::hud(
+            t!(app.lang, "плитки на главной", "home tiles"),
+            t.faint,
+        ));
         let tiles = [
             ("gamepad", "геймпад", "gamepad"),
             ("screen", "экран", "screen"),
@@ -3960,8 +4754,8 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ];
         ui.horizontal_wrapped(|ui| {
             for (key, ru, en) in tiles {
-                let mut shown = style.home_tiles.is_empty()
-                    || style.home_tiles.iter().any(|k| k == key);
+                let mut shown =
+                    style.home_tiles.is_empty() || style.home_tiles.iter().any(|k| k == key);
                 let before = shown;
                 theme::switch(ui, &mut shown, t);
                 if shown != before {
@@ -3976,7 +4770,11 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     }
                     style_dirty = true;
                 }
-                ui.label(RichText::new(t!(app.lang, ru, en)).size(12.5).color(t.muted));
+                ui.label(
+                    RichText::new(t!(app.lang, ru, en))
+                        .size(12.5)
+                        .color(t.muted),
+                );
                 ui.add_space(10.0);
             }
         });
@@ -4023,6 +4821,159 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
         );
     });
 
+    ui.add_space(8.0);
+    theme::card(ui, t, |ui| {
+        ui.label(theme::hud(
+            t!(app.lang, "свои паки оформления", "custom theme packs"),
+            t.faint,
+        ));
+        ui.label(
+            RichText::new(format!(
+                "{} {}",
+                t!(app.lang, "папка:", "folder:"),
+                theme::custom_dir().display()
+            ))
+            .family(FontFamily::Monospace)
+            .size(11.0)
+            .color(t.faint),
+        );
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut app.theme_pack_name)
+                    .hint_text(t!(app.lang, "имя пака", "pack name"))
+                    .desired_width(220.0),
+            );
+            if theme::ghost(
+                ui,
+                t!(app.lang, "сохранить текущий css", "save current css"),
+                t,
+            )
+            .clicked()
+            {
+                match theme::save_custom_pack(&app.theme_pack_name, &style.css) {
+                    Ok(path) => {
+                        let stem = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("my-theme")
+                            .to_string();
+                        let key = format!("custom:{stem}");
+                        theme::apply_preset(&mut style, &key);
+                        app.style_draft = style.css.clone();
+                        app.theme_pack_name.clear();
+                        style_dirty = true;
+                        app.toast(
+                            format!(
+                                "{} {}",
+                                t!(app.lang, "пак сохранён:", "pack saved:"),
+                                path.display()
+                            ),
+                            true,
+                        );
+                    }
+                    Err(e) => app.toast(format!("{}: {e}", t!(app.lang, "пак", "pack")), false),
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut app.theme_import)
+                    .hint_text(t!(app.lang, "путь к .css файлу", "path to a .css file"))
+                    .desired_width(360.0),
+            );
+            if theme::ghost(ui, t!(app.lang, "импортировать", "import"), t).clicked() {
+                let raw = app.theme_import.trim().to_string();
+                let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+                    dirs::home_dir()
+                        .map(|h| h.join(rest))
+                        .unwrap_or_else(|| std::path::PathBuf::from(&raw))
+                } else {
+                    std::path::PathBuf::from(&raw)
+                };
+                match std::fs::read_to_string(&expanded) {
+                    Ok(css) => {
+                        let name = app
+                            .theme_pack_name
+                            .trim()
+                            .to_string()
+                            .is_empty()
+                            .then(|| {
+                                expanded
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("imported")
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|| app.theme_pack_name.clone());
+                        match theme::save_custom_pack(&name, &css) {
+                            Ok(path) => {
+                                let stem = path
+                                    .file_stem()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("imported")
+                                    .to_string();
+                                theme::apply_preset(&mut style, &format!("custom:{stem}"));
+                                app.style_draft = style.css.clone();
+                                app.theme_import.clear();
+                                style_dirty = true;
+                                app.toast(
+                                    format!(
+                                        "{} {}",
+                                        t!(app.lang, "пак добавлен:", "pack added:"),
+                                        path.display()
+                                    ),
+                                    true,
+                                );
+                            }
+                            Err(e) => {
+                                app.toast(format!("{}: {e}", t!(app.lang, "пак", "pack")), false)
+                            }
+                        }
+                    }
+                    Err(e) => app.toast(format!("{}: {e}", t!(app.lang, "файл", "file")), false),
+                }
+            }
+        });
+        let custom = theme::custom_presets();
+        if custom.is_empty() {
+            theme::small(
+                ui,
+                t!(
+                    app.lang,
+                    "пока нет своих паков. сохраните текущий css или импортируйте файл — он появится в списке пресетов.",
+                    "no custom packs yet. save the current css or import a file and it appears in the presets list."
+                ),
+                t.muted,
+            );
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                for (key, _) in &custom {
+                    let name = key.strip_prefix("custom:").unwrap_or(key);
+                    if theme::ghost(ui, name, t).clicked() {
+                        theme::apply_preset(&mut style, key);
+                        app.style_draft = style.css.clone();
+                        style_dirty = true;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(theme::icon(theme::icon::CLOSE, 14.0, t.faint))
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::NONE)
+                                .corner_radius(0.0)
+                                .min_size(Vec2::new(24.0, 24.0)),
+                        )
+                        .on_hover_text(t!(app.lang, "удалить пак", "delete pack"))
+                        .clicked()
+                    {
+                        let _ =
+                            std::fs::remove_file(theme::custom_dir().join(format!("{name}.css")));
+                    }
+                }
+            });
+        }
+    });
+
     // ---------------------------------------------------------------- sound
     let mut snd = app.cfg.sound.clone();
     let mut snd_dirty = false;
@@ -4044,7 +4995,11 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .color(t.muted),
             );
             ui.add_space(18.0);
-            ui.label(RichText::new(t!(app.lang, "громкость", "volume")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "громкость", "volume"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             if ui
                 .add(egui::Slider::new(&mut snd.volume, 0..=100))
                 .changed()
@@ -4052,13 +5007,13 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 snd_dirty = true;
             }
             ui.add_space(18.0);
-            ui.label(RichText::new(t!(app.lang, "набор", "pack")).size(13.0).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "набор", "pack"))
+                    .size(13.0)
+                    .color(t.muted),
+            );
             for (key, label) in [("grid", "Grid"), ("soft", "Soft"), ("chip", "Chip")] {
-                if ui
-                    .selectable_label(snd.pack == key, label)
-                    .clicked()
-                    && snd.pack != key
-                {
+                if ui.selectable_label(snd.pack == key, label).clicked() && snd.pack != key {
                     snd.pack = key.to_string();
                     snd_dirty = true;
                     crate::sound::play(&snd, crate::sound::Cue::Click);

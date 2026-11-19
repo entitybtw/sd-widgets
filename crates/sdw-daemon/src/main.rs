@@ -1,11 +1,12 @@
 //! sd-widgets daemon: virtual gamepads, extra screen, notifications and Home Assistant.
 
+mod audio;
 mod config;
 #[cfg(feature = "gui")]
 mod gui;
 mod install;
-mod monitor;
 mod media;
+mod monitor;
 mod notifications;
 mod server;
 mod state;
@@ -108,12 +109,29 @@ fn main() {
 
     if cli.print_config {
         println!("config: {}", config::path().display());
-        println!("api:    {}", sdw_core::util::addresses(cfg.api_port).join("  "));
+        println!(
+            "api:    {}",
+            sdw_core::util::addresses(cfg.api_port).join("  ")
+        );
         println!("input:  udp :{}", cfg.input_port);
         println!("viiper: {}", cfg.viiper.api_addr);
         println!("setup:  {}", cfg.setup_done);
         return;
     }
+
+    // One daemon per user: a second process would own the notification bus or
+    // the API while the first one serves the deck, and notifications vanish
+    // between them. Keep the lock file open for the whole run.
+    let _instance_lock = match single_instance() {
+        Ok(lock) => lock,
+        Err(pid) => {
+            eprintln!(
+                "sdw-daemon уже запущен (pid {pid}). остановите его или перезагрузитесь: \
+                 два демона делят D-Bus и API и уведомления теряются."
+            );
+            std::process::exit(1);
+        }
+    };
 
     let state = AppState::new();
     if !state.cfg().viiper.password.is_empty() {
@@ -165,6 +183,54 @@ fn headless(state: Arc<AppState>) {
         std::process::exit(1);
     }
     state.shutdown();
+}
+
+/// Keep one daemon per user. The lock file holds the pid for the message and
+/// never leaves git or the config dir.
+fn single_instance() -> Result<std::fs::File, u32> {
+    let path = sdw_core::util::config_dir().join("daemon.lock");
+    let file = match std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        // A read-only or missing config dir must not block the daemon.
+        Err(_) => {
+            return Ok(std::fs::File::open(&path).unwrap_or_else(|_| {
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(std::env::temp_dir().join("sdw-daemon.lock"))
+                    .expect("lock file")
+            }))
+        }
+    };
+    #[cfg(unix)]
+    {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        use std::os::unix::io::AsRawFd;
+        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        if rc != 0 {
+            let mut text = String::new();
+            let mut probe = file.try_clone().ok();
+            if let Some(f) = probe.as_mut() {
+                let _ = f.seek(SeekFrom::Start(0));
+                let _ = f.read_to_string(&mut text);
+            }
+            return Err(text.trim().parse().unwrap_or(0));
+        }
+        let mut f = &file;
+        let _ = f.set_len(0);
+        let _ = writeln!(f, "{}", std::process::id());
+        return Ok(file);
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(file)
+    }
 }
 
 fn has_display() -> bool {

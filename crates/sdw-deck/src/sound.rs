@@ -93,11 +93,7 @@ fn spawn_player(path: &std::path::Path) {
         ),
         (
             "mpv",
-            vec![
-                "--no-video".into(),
-                "--really-quiet".into(),
-                p.clone(),
-            ],
+            vec!["--no-video".into(), "--really-quiet".into(), p.clone()],
         ),
     ];
     for (bin, args) in candidates {

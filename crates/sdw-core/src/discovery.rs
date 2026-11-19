@@ -24,7 +24,10 @@ pub fn scan(timeout: Duration) -> Result<Vec<DiscoveryResponse>, String> {
     if let Some(local) = crate::util::local_ipv4() {
         if let std::net::IpAddr::V4(v4) = local {
             let o = v4.octets();
-            targets.push(SocketAddr::from((Ipv4Addr::new(o[0], o[1], o[2], 255), DISCOVERY_PORT)));
+            targets.push(SocketAddr::from((
+                Ipv4Addr::new(o[0], o[1], o[2], 255),
+                DISCOVERY_PORT,
+            )));
         }
     }
     for target in &targets {
@@ -67,7 +70,9 @@ pub fn responder(
     while !stop.load(Ordering::Relaxed) {
         match sock.recv_from(&mut buf) {
             Ok((n, from)) => {
-                if n < DISCOVERY_MAGIC.len() || &buf[..DISCOVERY_MAGIC.len()] != DISCOVERY_MAGIC.as_bytes() {
+                if n < DISCOVERY_MAGIC.len()
+                    || &buf[..DISCOVERY_MAGIC.len()] != DISCOVERY_MAGIC.as_bytes()
+                {
                     continue;
                 }
                 let reply = DiscoveryResponse {

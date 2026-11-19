@@ -3,3 +3,12 @@
 .env
 *.log
 /dist
+# maintainer's local work queue and scratch space, never committed
+/next.md
+/NEXT.md
+/docs/NEXT.md
+/work/
+
+# Python bytecode from packaging helpers
+__pycache__/
+*.pyc

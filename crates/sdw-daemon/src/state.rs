@@ -82,6 +82,7 @@ pub struct HaRuntime {
     pub entities: Vec<HaEntity>,
     pub areas: Vec<String>,
     pub categories: Vec<HaCategory>,
+    pub presets: Vec<HaPreset>,
     pub client: Option<HaClient>,
     pub last_sync: Instant,
 }
@@ -103,6 +104,7 @@ impl HaRuntime {
             entities: Vec::new(),
             areas: Vec::new(),
             categories: cfg.ha.categories.clone(),
+            presets: cfg.ha.presets.clone(),
             client,
             last_sync: Instant::now() - Duration::from_secs(3600),
         }
@@ -131,6 +133,27 @@ impl HaRuntime {
             c.entities.truncate(500);
         }
         self.categories = list.clone();
+        list
+    }
+
+    /// Clean up and store the presets. Returns what was actually kept.
+    pub fn set_presets(&mut self, mut list: Vec<HaPreset>) -> Vec<HaPreset> {
+        list.truncate(60);
+        for (i, p) in list.iter_mut().enumerate() {
+            p.name = p.name.trim().to_string();
+            if p.name.is_empty() {
+                p.name = format!("Пресет {}", i + 1);
+            }
+            if p.id.trim().is_empty() {
+                p.id = random_id(8);
+            }
+            p.actions.retain(|a| {
+                !a.entity_id.trim().is_empty()
+                    && matches!(a.service.as_str(), "turn_on" | "turn_off" | "toggle")
+            });
+            p.actions.truncate(200);
+        }
+        self.presets = list.clone();
         list
     }
 
@@ -172,14 +195,24 @@ impl HaRuntime {
         client.toggle(entity_id, on)
     }
 
-    pub fn set_brightness(&self, entity_id: &str, brightness: u8) -> Result<serde_json::Value, String> {
+    pub fn set_brightness(
+        &self,
+        entity_id: &str,
+        brightness: u8,
+    ) -> Result<serde_json::Value, String> {
         let Some(client) = &self.client else {
             return Err("Home Assistant не настроен".into());
         };
         client.set_brightness(entity_id, brightness)
     }
 
-    pub fn set(&mut self, cfg: &mut DaemonConfig, url: &str, token: &str, favorites: &[String]) -> Result<(), String> {
+    pub fn set(
+        &mut self,
+        cfg: &mut DaemonConfig,
+        url: &str,
+        token: &str,
+        favorites: &[String],
+    ) -> Result<(), String> {
         cfg.ha.url = url.trim().to_string();
         cfg.ha.token = token.trim().to_string();
         cfg.ha.favorites = favorites.to_vec();
@@ -339,6 +372,7 @@ pub struct AppState {
     pub logger: Logger,
     pub notifications: Arc<NotificationStore>,
     pub media: Arc<crate::media::MediaService>,
+    pub audio: Arc<crate::audio::Audio>,
     pub viiper: Arc<ViiperManager>,
     pub monitor: Arc<MonitorManager>,
     pub ha: Arc<Mutex<HaRuntime>>,
@@ -359,8 +393,12 @@ impl AppState {
             VERSION,
             sdw_core::util::hostname()
         ));
-        let notifications = Arc::new(NotificationStore::new(cfg.notifications.enabled, logger.clone()));
+        let notifications = Arc::new(NotificationStore::new(
+            cfg.notifications.enabled,
+            logger.clone(),
+        ));
         let media = Arc::new(crate::media::MediaService::new());
+        let audio = Arc::new(crate::audio::Audio::new());
         let viiper = Arc::new(ViiperManager::new(logger.clone()));
         let monitor = Arc::new(MonitorManager::new(logger.clone()));
         let ha = Arc::new(Mutex::new(HaRuntime::from_config(&cfg)));
@@ -371,6 +409,7 @@ impl AppState {
             logger,
             notifications,
             media,
+            audio,
             viiper,
             monitor,
             ha,
@@ -407,11 +446,7 @@ impl AppState {
         let viiper = self.viiper.status(&cfg);
         let monitor = self.monitor.status();
         let notifications = self.notifications.status();
-        let ha = self
-            .ha
-            .lock()
-            .map(|h| h.status.clone())
-            .unwrap_or_default();
+        let ha = self.ha.lock().map(|h| h.status.clone()).unwrap_or_default();
         let pads = self.viiper.pads();
         DaemonStatus {
             name: cfg.name.clone(),
@@ -429,6 +464,8 @@ impl AppState {
             notifications,
             ha,
             pads,
+            audio: self.audio.status(),
+            addons: sdw_core::addons::info(&cfg.addons),
             config_dir: sdw_core::util::config_dir().display().to_string(),
             log_tail: self.logger.tail(40),
         }
@@ -438,7 +475,12 @@ impl AppState {
         // LAN discovery
         let cfg = self.cfg();
         let stop = self.stop.clone();
-        let (name, id, port, setup) = (cfg.name.clone(), cfg.daemon_id.clone(), cfg.api_port, cfg.setup_done);
+        let (name, id, port, setup) = (
+            cfg.name.clone(),
+            cfg.daemon_id.clone(),
+            cfg.api_port,
+            cfg.setup_done,
+        );
         let log = self.logger.clone();
         std::thread::spawn(move || {
             if let Err(e) = sdw_core::discovery::responder(name, id, port, setup, stop) {
@@ -459,26 +501,24 @@ impl AppState {
         let cfg_arc = self.cfg.clone();
         let log = self.logger.clone();
         let stop = self.stop.clone();
-        std::thread::spawn(move || {
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    break;
-                }
-                let configured = cfg_arc
-                    .lock()
-                    .map(|c| !c.ha.url.is_empty() && !c.ha.token.is_empty())
-                    .unwrap_or(false);
-                if configured {
-                    if let Ok(mut h) = ha.lock() {
-                        if h.last_sync.elapsed() > Duration::from_secs(10) {
-                            if let Err(e) = h.refresh() {
-                                log.warn(format!("Home Assistant: {e}"));
-                            }
+        std::thread::spawn(move || loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
+            let configured = cfg_arc
+                .lock()
+                .map(|c| !c.ha.url.is_empty() && !c.ha.token.is_empty())
+                .unwrap_or(false);
+            if configured {
+                if let Ok(mut h) = ha.lock() {
+                    if h.last_sync.elapsed() > Duration::from_secs(10) {
+                        if let Err(e) = h.refresh() {
+                            log.warn(format!("Home Assistant: {e}"));
                         }
                     }
                 }
-                std::thread::sleep(Duration::from_secs(2));
             }
+            std::thread::sleep(Duration::from_secs(2));
         });
 
         // UDP controller input

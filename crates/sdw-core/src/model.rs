@@ -80,6 +80,9 @@ pub struct DaemonStatus {
     pub notifications: NotificationStatus,
     pub ha: HaStatus,
     pub pads: Vec<PadInfo>,
+    #[serde(default)]
+    pub audio: AudioStatus,
+    pub addons: Vec<crate::addons::AddonInfo>,
     pub config_dir: String,
     pub log_tail: Vec<LogEntry>,
 }
@@ -321,6 +324,56 @@ pub struct MonitorStatus {
     pub started_at: u64,
 }
 
+/// A running or idle PC-audio transfer to the Deck.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioStatus {
+    /// PulseAudio/PipeWire and `parec` are present, so streaming can work.
+    pub available: bool,
+    pub backend: String,
+    pub running: bool,
+    /// `system` pours the whole computer into the stream, `apps` only the picked ones.
+    pub source: String,
+    pub apps: Vec<String>,
+    pub rate: u32,
+    pub channels: u8,
+    pub bytes: u64,
+    pub seconds: u64,
+    pub error: String,
+}
+
+/// One application that is currently producing audio on the computer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioApp {
+    pub name: String,
+    pub binary: String,
+    pub index: u32,
+    pub media: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioStart {
+    /// `system` or `apps`.
+    pub source: String,
+    /// Application names from `GET /api/v1/audio/sources`.
+    pub apps: Vec<String>,
+    pub rate: u32,
+    pub channels: u8,
+}
+
+impl Default for AudioStart {
+    fn default() -> Self {
+        Self {
+            source: "system".into(),
+            apps: Vec::new(),
+            rate: 48000,
+            channels: 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolStatus {
     pub name: String,
@@ -477,7 +530,10 @@ impl HaEntity {
             .to_string()
     }
     pub fn is_on(&self) -> bool {
-        matches!(self.state.as_str(), "on" | "home" | "playing" | "open" | "unlocked")
+        matches!(
+            self.state.as_str(),
+            "on" | "home" | "playing" | "open" | "unlocked"
+        )
     }
     pub fn brightness(&self) -> Option<u8> {
         self.attributes
@@ -553,6 +609,77 @@ impl HaEntity {
                 .map(|a| a.iter().any(|m| m.as_str() != Some("onoff")))
                 .unwrap_or(false)
     }
+    /// Brightness as a percentage, so sliders do not have to know about 0..255.
+    pub fn brightness_pct(&self) -> Option<u8> {
+        self.brightness()
+            .map(|b| ((b as f32 / 255.0) * 100.0).round().clamp(0.0, 100.0) as u8)
+    }
+    pub fn min_color_temp_kelvin(&self) -> u32 {
+        self.attributes
+            .get("min_color_temp_kelvin")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(2000)
+    }
+    pub fn max_color_temp_kelvin(&self) -> u32 {
+        self.attributes
+            .get("max_color_temp_kelvin")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .unwrap_or(6500)
+    }
+    pub fn supports_color_temp(&self) -> bool {
+        self.attributes.get("color_temp_kelvin").is_some()
+            || self
+                .attributes
+                .get("supported_color_modes")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter().any(|m| {
+                        matches!(
+                            m.as_str(),
+                            Some("color_temp")
+                                | Some("hs")
+                                | Some("xy")
+                                | Some("rgb")
+                                | Some("rgbw")
+                                | Some("rgbww")
+                        )
+                    })
+                })
+                .unwrap_or(false)
+    }
+    pub fn supports_color(&self) -> bool {
+        self.attributes.get("rgb_color").is_some()
+            || self
+                .attributes
+                .get("supported_color_modes")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter().any(|m| {
+                        matches!(
+                            m.as_str(),
+                            Some("hs") | Some("xy") | Some("rgb") | Some("rgbw") | Some("rgbww")
+                        )
+                    })
+                })
+                .unwrap_or(false)
+    }
+    pub fn rgb_color(&self) -> Option<[u8; 3]> {
+        let arr = self.attributes.get("rgb_color")?.as_array()?;
+        if arr.len() < 3 {
+            return None;
+        }
+        let c = |i: usize| arr[i].as_u64().map(|v| v.min(255) as u8).unwrap_or(0);
+        Some([c(0), c(1), c(2)])
+    }
+    pub fn media_app(&self) -> String {
+        self.attributes
+            .get("app_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    }
     pub fn icon(&self) -> &str {
         self.attributes
             .get("icon")
@@ -589,6 +716,9 @@ pub struct HaStates {
     /// User-made categories, ordered, shared by the daemon and every deck.
     #[serde(default)]
     pub categories: Vec<HaCategory>,
+    /// User-made light/scene presets, ordered, shared by everyone.
+    #[serde(default)]
+    pub presets: Vec<HaPreset>,
 }
 
 /// A custom group of Home Assistant entities. The order of `entities` is the
@@ -607,6 +737,43 @@ impl HaCategory {
             id: random_id(8),
             name: name.trim().to_string(),
             entities: Vec::new(),
+        }
+    }
+}
+
+/// One entity inside a preset: the service to call and its data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaPresetAction {
+    pub entity_id: String,
+    #[serde(default = "turn_on_service")]
+    pub service: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
+}
+
+fn turn_on_service() -> String {
+    "turn_on".into()
+}
+
+/// A named set of light/scene states. Applying it calls every action, so a
+/// single tap can set five lamps to "кино" without any server-side scenes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HaPreset {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub icon: String,
+    #[serde(default)]
+    pub actions: Vec<HaPresetAction>,
+}
+
+impl HaPreset {
+    pub fn new(name: &str) -> Self {
+        Self {
+            id: random_id(8),
+            name: name.trim().to_string(),
+            icon: String::new(),
+            actions: Vec::new(),
         }
     }
 }
@@ -936,6 +1103,9 @@ pub struct ThemeCfg {
     pub tile_columns: u32,
     #[serde(default = "default_true")]
     pub arrows: bool,
+    /// Page arrow square size in points.
+    #[serde(default = "default_arrow_size")]
+    pub arrow_size: f32,
     #[serde(default = "default_true")]
     pub dock: bool,
     #[serde(default)]
@@ -966,6 +1136,9 @@ fn default_grid_alpha() -> f32 {
 fn default_one() -> f32 {
     1.0
 }
+fn default_arrow_size() -> f32 {
+    48.0
+}
 fn default_tile_height() -> f32 {
     176.0
 }
@@ -986,6 +1159,7 @@ impl Default for ThemeCfg {
             tile_height: default_tile_height(),
             tile_columns: default_tile_columns(),
             arrows: true,
+            arrow_size: default_arrow_size(),
             dock: true,
             labels: false,
             glyphs: true,
@@ -1201,7 +1375,246 @@ pub const PRESET_TERMINAL: &str = "\
 }
 ";
 
+pub const PRESET_CATPPUCCIN_MOCHA: &str = "\
+/* sd-widgets · Catppuccin Mocha */
+:root {
+  --bg: #1e1e2e;
+  --bg2: #181825;
+  --card: #313244;
+  --well: #292c3c;
+  --ink: #cdd6f4;
+  --strong: #f5e0dc;
+  --muted: #a6adc8;
+  --faint: #7f849c;
+  --line: #313244;
+  --line-strong: #45475a;
+  --accent: #89b4fa;
+  --accent-soft: #74c7ec;
+  --radius: 0;
+  --light-bg: #eff1f5;
+  --light-bg2: #e6e9ef;
+  --light-card: #ffffff;
+  --light-well: #e6e9ef;
+  --light-ink: #4c4f69;
+  --light-strong: #11111b;
+  --light-muted: #6c6f85;
+  --light-faint: #9ca0b0;
+  --light-line: #ccd0da;
+  --light-line-strong: #bcc0cc;
+  --light-accent: #1e66f5;
+}
+";
+
+pub const PRESET_CATPPUCCIN_MACCHIATO: &str = "\
+/* sd-widgets · Catppuccin Macchiato */
+:root {
+  --bg: #24273a;
+  --bg2: #1e2030;
+  --card: #363a4f;
+  --well: #2e3247;
+  --ink: #cad3f5;
+  --strong: #f4dbd6;
+  --muted: #a5adcb;
+  --faint: #8087a2;
+  --line: #363a4f;
+  --line-strong: #494d64;
+  --accent: #8aadf4;
+  --accent-soft: #7dc4e4;
+  --radius: 0;
+  --light-bg: #eff1f5;
+  --light-bg2: #e6e9ef;
+  --light-card: #ffffff;
+  --light-well: #e6e9ef;
+  --light-ink: #4c4f69;
+  --light-strong: #11111b;
+  --light-muted: #6c6f85;
+  --light-faint: #9ca0b0;
+  --light-line: #ccd0da;
+  --light-line-strong: #bcc0cc;
+  --light-accent: #1e66f5;
+}
+";
+
+pub const PRESET_CATPPUCCIN_FRAPPE: &str = "\
+/* sd-widgets · Catppuccin Frappé */
+:root {
+  --bg: #303446;
+  --bg2: #292c3c;
+  --card: #414559;
+  --well: #383c4f;
+  --ink: #c6d0f5;
+  --strong: #f2d5cf;
+  --muted: #a5adce;
+  --faint: #838ba7;
+  --line: #414559;
+  --line-strong: #51576d;
+  --accent: #8caaee;
+  --accent-soft: #85c1dc;
+  --radius: 0;
+  --light-bg: #eff1f5;
+  --light-bg2: #e6e9ef;
+  --light-card: #ffffff;
+  --light-well: #e6e9ef;
+  --light-ink: #4c4f69;
+  --light-strong: #11111b;
+  --light-muted: #6c6f85;
+  --light-faint: #9ca0b0;
+  --light-line: #ccd0da;
+  --light-line-strong: #bcc0cc;
+  --light-accent: #1e66f5;
+}
+";
+
+pub const PRESET_CATPPUCCIN_LATTE: &str = "\
+/* sd-widgets · Catppuccin Latte */
+:root {
+  --bg: #eff1f5;
+  --bg2: #e6e9ef;
+  --card: #ffffff;
+  --well: #e6e9ef;
+  --ink: #4c4f69;
+  --strong: #11111b;
+  --muted: #6c6f85;
+  --faint: #9ca0b0;
+  --line: #ccd0da;
+  --line-strong: #bcc0cc;
+  --accent: #1e66f5;
+  --accent-soft: #209fb5;
+  --radius: 0;
+  --light-bg: #eff1f5;
+  --light-bg2: #e6e9ef;
+  --light-card: #ffffff;
+  --light-well: #e6e9ef;
+  --light-ink: #4c4f69;
+  --light-strong: #11111b;
+  --light-muted: #6c6f85;
+  --light-faint: #9ca0b0;
+  --light-line: #ccd0da;
+  --light-line-strong: #bcc0cc;
+  --light-accent: #1e66f5;
+}
+";
+
+/// Clock screen: a full-screen clock with several styles. The `tide` style
+/// follows the FLOW Tide lock screen (deep water, moon, tilted time, bubbles).
+pub const PRESET_TIDE: &str = "\
+/* sd-widgets · Tide (inspired by FLOW · Tide) */
+:root {
+  --bg: #0b2f6e;
+  --bg2: #04163f;
+  --card: #17438a;
+  --well: #10376f;
+  --ink: #f2f2f6;
+  --strong: #ffffff;
+  --muted: #a8acb8;
+  --faint: #7c8798;
+  --line: #1c4a94;
+  --line-strong: #2b63b8;
+  --accent: #3fd2ff;
+  --accent-soft: #79e0ff;
+  --radius: 0;
+  --light-bg: #eaf4ff;
+  --light-bg2: #dcecff;
+  --light-card: #ffffff;
+  --light-well: #e2efff;
+  --light-ink: #0b2f6e;
+  --light-strong: #04163f;
+  --light-muted: #3f5f8c;
+  --light-faint: #6b86a8;
+  --light-line: #c6dcf6;
+  --light-line-strong: #a8c8ee;
+  --light-accent: #0b6fc4;
+}
+";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ClockCfg {
+    /// tide, digital, analog or minimal
+    pub style: String,
+    pub seconds: bool,
+    pub date: bool,
+    pub weekday: bool,
+    pub battery: bool,
+    pub animate: bool,
+    /// drift, pulse or off
+    pub anim: String,
+    /// Animation speed multiplier.
+    pub speed: f32,
+    /// Paint the clock in the theme ink only.
+    pub mono: bool,
+    /// 24-hour time; off = 12-hour with an am/pm mark.
+    pub h24: bool,
+    /// Multiplies every clock font size.
+    pub font_scale: f32,
+    /// Accent colour, `#rrggbb`.
+    pub accent: String,
+    /// Background gradient ends, `#rrggbb`.
+    pub bg_top: String,
+    pub bg_bottom: String,
+    /// A short line under the time, for example a name or a city.
+    pub caption: String,
+    /// Tide decorations.
+    pub show_moon: bool,
+    pub show_bubbles: bool,
+    pub show_stripes: bool,
+    /// left, center or right: where the big time sits.
+    pub position: String,
+}
+
+impl Default for ClockCfg {
+    fn default() -> Self {
+        Self {
+            style: "tide".into(),
+            seconds: true,
+            date: true,
+            weekday: true,
+            battery: true,
+            animate: true,
+            anim: "drift".into(),
+            speed: 1.0,
+            mono: false,
+            h24: true,
+            font_scale: 1.0,
+            accent: "#3fd2ff".into(),
+            bg_top: "#0e5fca".into(),
+            bg_bottom: "#020c28".into(),
+            caption: String::new(),
+            show_moon: true,
+            show_bubbles: true,
+            show_stripes: true,
+            position: "left".into(),
+        }
+    }
+}
+
+/// How the Deck receives PC audio. The confirmation count is a deck-side
+/// safety net: each step is one more explicit "yes" before the stream starts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioDeckCfg {
+    pub volume: u8,
+    /// 0..=3 extra confirmations before audio leaves the computer.
+    pub confirmations: u8,
+    pub source: String,
+    pub apps: Vec<String>,
+    pub rate: u32,
+}
+
+impl Default for AudioDeckCfg {
+    fn default() -> Self {
+        Self {
+            volume: 80,
+            confirmations: 1,
+            source: "system".into(),
+            apps: Vec::new(),
+            rate: 48000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DeckConfig {
     pub device_name: String,
     #[serde(default = "client_id_default")]
@@ -1240,6 +1653,12 @@ pub struct DeckConfig {
     pub sound: SoundCfg,
     #[serde(default)]
     pub deck_view: DeckViewCfg,
+    #[serde(default)]
+    pub clock: ClockCfg,
+    #[serde(default)]
+    pub audio: AudioDeckCfg,
+    #[serde(default)]
+    pub addons: crate::addons::AddonsCfg,
 }
 
 fn default_lang() -> String {
@@ -1282,6 +1701,9 @@ impl Default for DeckConfig {
             style: ThemeCfg::default(),
             sound: SoundCfg::default(),
             deck_view: DeckViewCfg::default(),
+            clock: ClockCfg::default(),
+            audio: AudioDeckCfg::default(),
+            addons: crate::addons::AddonsCfg::default(),
         }
     }
 }

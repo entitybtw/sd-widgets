@@ -42,7 +42,7 @@ Wrong password: `401`.
 
 | Method | Path | Body / result |
 | --- | --- | --- |
-| `GET` | `/api/v1/status` | `DaemonStatus`: host, platform, VIIPER state, pads, monitor state, Home Assistant summary, setup flags. |
+| `GET` | `/api/v1/status` | `DaemonStatus`: host, platform, VIIPER state, pads, monitor state, Home Assistant summary, addons, setup flags. |
 | `GET` | `/api/v1/config` | Redacted daemon config. |
 | `PATCH` | `/api/v1/config` | Partial config update. |
 | `GET` | `/api/v1/logs` | Recent log lines. |
@@ -72,6 +72,18 @@ Gamepad input itself is not HTTP: the Deck sends compact binary state packets to
 | `GET` | `/api/v1/monitor/frame` | Latest JPEG frame. |
 
 Position values: `auto`, `right`, `left`, `above`, `below`.
+
+## Audio
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| `GET` | `/api/v1/audio` | `AudioStatus`: available, backend, running, source, apps, rate, channels, bytes, seconds, error. |
+| `GET` | `/api/v1/audio/sources` | Applications currently producing sound. |
+| `POST` | `/api/v1/audio/start` | `AudioStart` `{ source: "system" \| "apps", apps, rate, channels }`. |
+| `POST` | `/api/v1/audio/stop` | Stop capture and return app streams to their sink. |
+| `GET` | `/api/v1/audio/stream` | Raw `s16le` PCM while running; `409` when idle. |
+
+Details and requirements: [`AUDIO.md`](AUDIO.md).
 
 ## Notifications
 
@@ -108,8 +120,19 @@ Allowed commands:
 - `monitor_start`, `monitor_stop`
 - `open:https://…` (http and https only)
 - `launch:<desktop-id>` (validated characters only)
+- `addon:<id>:<action>` — an action declared by an installed **and enabled**
+  addon. See [`ADDONS.md`](ADDONS.md#http).
 
-Anything else returns `400`. There is no arbitrary shell execution endpoint.
+Anything else returns `400`. There is no arbitrary shell execution endpoint; the
+addon form can only name an action that already exists in a local package.
+
+## Addons
+
+Addons are files on the daemon machine, not an HTTP resource. `GET /api/v1/status`
+carries the list (`id`, `name`, `version`, `description`, `scope`, `enabled`,
+declared `actions`, `tiles`, `has_theme`, `has_clock`). Install, enable,
+configure and remove them in the daemon window or on the Deck; the format is in
+[`ADDONS.md`](ADDONS.md).
 
 ## Security
 

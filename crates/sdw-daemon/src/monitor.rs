@@ -93,7 +93,15 @@ impl MonitorManager {
         inner.compositor = compositor.clone();
         inner.outputs = outputs;
         inner.tools = detect_tools();
-        inner.config_hint = config_hint(&compositor, &inner.output, 1280, 800, 60, inner.position, &inner.outputs);
+        inner.config_hint = config_hint(
+            &compositor,
+            &inner.output,
+            1280,
+            800,
+            60,
+            inner.position,
+            &inner.outputs,
+        );
         inner.config_file = config_file_for(&compositor);
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -231,16 +239,19 @@ impl MonitorManager {
                     if mode == MonitorMode::Extend {
                         let before: Vec<String> = outputs.iter().map(|o| o.name.clone()).collect();
                         if !sdw_core::util::has("hyprctl") {
-                            return Err("hyprctl не найден: Hyprland не запущен или пакет не установлен".into());
+                            return Err(
+                                "hyprctl не найден: Hyprland не запущен или пакет не установлен"
+                                    .into(),
+                            );
                         }
                         let _ = sdw_core::util::run("hyprctl", &["output", "create", "headless"]);
                         std::thread::sleep(Duration::from_millis(800));
                         self.refresh();
                         let now = self.outputs();
-                        let new = now
-                            .iter()
-                            .find(|o| !before.contains(&o.name))
-                            .or_else(|| now.iter().find(|o| o.name.to_ascii_lowercase().contains("headless")));
+                        let new = now.iter().find(|o| !before.contains(&o.name)).or_else(|| {
+                            now.iter()
+                                .find(|o| o.name.to_ascii_lowercase().contains("headless"))
+                        });
                         let Some(new) = new else {
                             return Err("Hyprland не создал headless-выход. Проверьте `hyprctl output create headless`".into());
                         };
@@ -284,7 +295,8 @@ impl MonitorManager {
                     if mode == MonitorMode::Extend {
                         if !sdw_core::util::has("krfb-virtualmonitor") {
                             return Err(
-                                "krfb-virtualmonitor не найден. Установите krfb (KDE) и повторите.".into(),
+                                "krfb-virtualmonitor не найден. Установите krfb (KDE) и повторите."
+                                    .into(),
                             );
                         }
                         let child = Command::new("krfb-virtualmonitor")
@@ -313,7 +325,8 @@ impl MonitorManager {
             // Put the new output where the user asked: right, left, above or below
             // the primary display. This is applied live *and* written into the
             // compositor config, so the layout survives a restart.
-            if !rfb && mode == MonitorMode::Extend && !output.is_empty() && output != "весь экран" {
+            if !rfb && mode == MonitorMode::Extend && !output.is_empty() && output != "весь экран"
+            {
                 if let Err(e) = apply_output_layout(
                     &compositor,
                     &output,
@@ -347,8 +360,9 @@ impl MonitorManager {
                 return Err(e);
             }
             note = format!("{e}; включено зеркало основного экрана");
-            self.logger
-                .warn(format!("Экран: {e} — переключаюсь на зеркало основного экрана"));
+            self.logger.warn(format!(
+                "Экран: {e} — переключаюсь на зеркало основного экрана"
+            ));
             if backend == MonitorBackend::Hyprland {
                 if let Some(name) = created.take() {
                     let _ = sdw_core::util::run("hyprctl", &["output", "remove", &name]);
@@ -392,7 +406,9 @@ impl MonitorManager {
             } else if sdw_core::util::has("ffmpeg") && cfg!(target_os = "linux") {
                 Capture::FfmpegX11
             } else {
-                return Err("Не найден инструмент захвата: установите grim (Wayland) или ffmpeg.".into());
+                return Err(
+                    "Не найден инструмент захвата: установите grim (Wayland) или ffmpeg.".into(),
+                );
             }
         };
 
@@ -427,7 +443,15 @@ impl MonitorManager {
             inner.created_output = created.clone();
             inner.rfb = rfb;
             let outputs_now = inner.outputs.clone();
-            inner.config_hint = config_hint(&compositor, &output, width, height, fps, position, &outputs_now);
+            inner.config_hint = config_hint(
+                &compositor,
+                &output,
+                width,
+                height,
+                fps,
+                position,
+                &outputs_now,
+            );
             inner.config_file = config_file_for(&compositor);
         }
         self.logger.info(format!(
@@ -450,13 +474,34 @@ impl MonitorManager {
         std::thread::spawn(move || {
             let result = match capture {
                 Capture::Grim => capture_grim(
-                    &output, width, height, fps, quality2, stop2.clone(), frame.clone(), frames.clone(),
+                    &output,
+                    width,
+                    height,
+                    fps,
+                    quality2,
+                    stop2.clone(),
+                    frame.clone(),
+                    frames.clone(),
                 ),
                 Capture::Spectacle => capture_screenshot(
-                    "spectacle", width, height, fps, quality2, stop2.clone(), frame.clone(), frames.clone(),
+                    "spectacle",
+                    width,
+                    height,
+                    fps,
+                    quality2,
+                    stop2.clone(),
+                    frame.clone(),
+                    frames.clone(),
                 ),
                 Capture::Gnome => capture_screenshot(
-                    "gnome-screenshot", width, height, fps, quality2, stop2.clone(), frame.clone(), frames.clone(),
+                    "gnome-screenshot",
+                    width,
+                    height,
+                    fps,
+                    quality2,
+                    stop2.clone(),
+                    frame.clone(),
+                    frames.clone(),
                 ),
                 Capture::FfmpegX11 => capture_ffmpeg(
                     FfmpegKind::X11,
@@ -483,7 +528,14 @@ impl MonitorManager {
                     child_slot.clone(),
                 ),
                 Capture::Mac => capture_mac(
-                    rect, width, height, fps, quality2, stop2.clone(), frame.clone(), frames.clone(),
+                    rect,
+                    width,
+                    height,
+                    fps,
+                    quality2,
+                    stop2.clone(),
+                    frame.clone(),
+                    frames.clone(),
                 ),
                 Capture::Rfb => rfb_capture(
                     "127.0.0.1:5900",
@@ -600,7 +652,11 @@ fn layout_xy(
     let reference = outputs
         .iter()
         .find(|o| o.name != output && o.enabled && o.primary && !o.virtual_output)
-        .or_else(|| outputs.iter().find(|o| o.name != output && o.enabled && !o.virtual_output))
+        .or_else(|| {
+            outputs
+                .iter()
+                .find(|o| o.name != output && o.enabled && !o.virtual_output)
+        })
         .or_else(|| outputs.iter().find(|o| o.name != output && o.enabled))
         .or_else(|| outputs.iter().find(|o| o.primary))
         .or_else(|| outputs.iter().find(|o| o.name != output))
@@ -634,7 +690,11 @@ fn niri_mode_string(output: &str, width: u32, height: u32) -> Option<String> {
         let r = m["refresh_rate"].as_u64().unwrap_or(60000);
         let area = (w as i64 - width as i64).abs() * height.max(1) as i64
             + (h as i64 - height as i64).abs() * width.max(1) as i64;
-        let score = if w == width && h == height { 0 } else { 1_000_000 + area };
+        let score = if w == width && h == height {
+            0
+        } else {
+            1_000_000 + area
+        };
         let dist = (r as i64 - 60_000).abs();
         if best
             .map(|(bs, bd, _, _, _)| (score, dist) < (bs, bd))
@@ -648,8 +708,7 @@ fn niri_mode_string(output: &str, width: u32, height: u32) -> Option<String> {
 }
 
 fn niri_output_active(output: &str) -> bool {
-    let text = sdw_core::util::run("niri", &["msg", "--json", "outputs"])
-        .unwrap_or_default();
+    let text = sdw_core::util::run("niri", &["msg", "--json", "outputs"]).unwrap_or_default();
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
         return false;
     };
@@ -847,11 +906,7 @@ fn find_kdl_block(text: &str, output: &str) -> Option<(usize, usize)> {
 }
 
 /// Replace every `monitor=<name>,…` line in Hyprland's config, or append one.
-fn patch_hypr_config(
-    path: &std::path::Path,
-    output: &str,
-    spec: &str,
-) -> Result<(), String> {
+fn patch_hypr_config(path: &std::path::Path, output: &str, spec: &str) -> Result<(), String> {
     let mut text = std::fs::read_to_string(path).unwrap_or_default();
     let line = format!("monitor={spec}");
     let mut found = false;
@@ -961,7 +1016,9 @@ pub fn detect_compositor() -> String {
     if std::env::var_os("SWAYSOCK").is_some() {
         return "sway".into();
     }
-    let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default().to_ascii_lowercase();
+    let desktop = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     if desktop.contains("kde") || std::env::var_os("KDE_FULL_SESSION").is_some() {
         return "kde".into();
     }
@@ -1055,8 +1112,16 @@ fn niri_outputs() -> Result<Vec<DisplayOutput>, String> {
         out.push(DisplayOutput {
             name: name.clone(),
             description: format!("{make} {model}").trim().to_string(),
-            width: if enabled && logical_w > 0 { logical_w } else { w },
-            height: if enabled && logical_h > 0 { logical_h } else { h },
+            width: if enabled && logical_w > 0 {
+                logical_w
+            } else {
+                w
+            },
+            height: if enabled && logical_h > 0 {
+                logical_h
+            } else {
+                h
+            },
             refresh,
             x: logical["x"].as_i64().unwrap_or(0) as i32,
             y: logical["y"].as_i64().unwrap_or(0) as i32,
@@ -1121,7 +1186,10 @@ fn kde_outputs() -> Result<Vec<DisplayOutput>, String> {
         );
         let mut refresh = 60.0;
         if let Some(modes) = o["modes"].as_array() {
-            if let Some(m) = modes.iter().find(|m| m["current"].as_bool().unwrap_or(false)) {
+            if let Some(m) = modes
+                .iter()
+                .find(|m| m["current"].as_bool().unwrap_or(false))
+            {
                 if let Some(r) = m["refreshRate"].as_f64() {
                     refresh = r as f32;
                 }
@@ -1243,11 +1311,17 @@ fn windows_outputs() -> Result<Vec<DisplayOutput>, String> {
 fn mac_outputs() -> Result<Vec<DisplayOutput>, String> {
     let text = sdw_core::util::run("system_profiler", &["SPDisplaysDataType", "-json"])?;
     let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let arr = v["SPDisplaysDataType"].as_array().cloned().unwrap_or_default();
+    let arr = v["SPDisplaysDataType"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     let mut out = Vec::new();
     let mut idx = 0;
     for gpu in arr {
-        let displays = gpu["spdisplays_ndrvs"].as_array().cloned().unwrap_or_default();
+        let displays = gpu["spdisplays_ndrvs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         for d in displays {
             let name = d["_name"].as_str().unwrap_or("Display").to_string();
             let res = d["_spdisplays_resolution"]
@@ -1262,7 +1336,14 @@ fn mac_outputs() -> Result<Vec<DisplayOutput>, String> {
                 width: w,
                 height: h,
                 refresh: 60.0,
-                x: if idx == 0 { 0 } else { out.iter().map(|o: &DisplayOutput| o.x + o.width as i32).max().unwrap_or(0) },
+                x: if idx == 0 {
+                    0
+                } else {
+                    out.iter()
+                        .map(|o: &DisplayOutput| o.x + o.width as i32)
+                        .max()
+                        .unwrap_or(0)
+                },
                 y: 0,
                 scale: 1.0,
                 primary,
@@ -1322,13 +1403,29 @@ fn tool(name: &str, purpose: &str, hint: &str) -> ToolStatus {
 fn detect_tools() -> Vec<ToolStatus> {
     let mut v = vec![
         tool("grim", "Снимки Wayland-экрана", "sudo pacman -S grim"),
-        tool("ffmpeg", "Поток X11/Windows и сжатие", "sudo pacman -S ffmpeg"),
+        tool(
+            "ffmpeg",
+            "Поток X11/Windows и сжатие",
+            "sudo pacman -S ffmpeg",
+        ),
         tool("niri", "Управление выходами niri", "sudo pacman -S niri"),
-        tool("hyprctl", "Управление выходами Hyprland", "sudo pacman -S hyprland"),
+        tool(
+            "hyprctl",
+            "Управление выходами Hyprland",
+            "sudo pacman -S hyprland",
+        ),
         tool("kscreen-doctor", "Экраны KDE", "sudo pacman -S libkscreen"),
-        tool("krfb-virtualmonitor", "Виртуальный монитор KDE", "sudo pacman -S krfb"),
+        tool(
+            "krfb-virtualmonitor",
+            "Виртуальный монитор KDE",
+            "sudo pacman -S krfb",
+        ),
         tool("spectacle", "Снимки KDE", "sudo pacman -S spectacle"),
-        tool("gnome-screenshot", "Снимки GNOME", "sudo pacman -S gnome-screenshot"),
+        tool(
+            "gnome-screenshot",
+            "Снимки GNOME",
+            "sudo pacman -S gnome-screenshot",
+        ),
         tool("wlr-randr", "Режимы wlroots", "sudo pacman -S wlr-randr"),
         tool("xrandr", "Экраны X11", "sudo pacman -S xorg-xrandr"),
         tool("xdotool", "Мышь X11", "sudo pacman -S xdotool"),
@@ -1336,15 +1433,26 @@ fn detect_tools() -> Vec<ToolStatus> {
         tool("wtype", "Клавиатура Wayland", "sudo pacman -S wtype"),
         tool("screencapture", "Снимки macOS", "встроено в macOS"),
         tool("cliclick", "Мышь macOS", "brew install cliclick"),
-        tool("usbip", "Подключение USB-устройств VIIPER", "sudo pacman -S usbip"),
-        tool("viiper", "Сервер виртуальных USB-устройств", "см. раздел VIIPER"),
+        tool(
+            "usbip",
+            "Подключение USB-устройств VIIPER",
+            "sudo pacman -S usbip",
+        ),
+        tool(
+            "viiper",
+            "Сервер виртуальных USB-устройств",
+            "см. раздел VIIPER",
+        ),
     ];
     v.retain(|t| {
         // Keep the full list on Linux; hide irrelevant platform tools elsewhere.
         if cfg!(windows) {
             t.name == "ffmpeg" || t.name == "viiper" || t.name == "usbip"
         } else if cfg!(target_os = "macos") {
-            matches!(t.name.as_str(), "screencapture" | "cliclick" | "ffmpeg" | "viiper" | "usbip")
+            matches!(
+                t.name.as_str(),
+                "screencapture" | "cliclick" | "ffmpeg" | "viiper" | "usbip"
+            )
         } else {
             true
         }
@@ -1481,14 +1589,20 @@ fn store_frame(
     frames.fetch_add(1, Ordering::Relaxed);
 }
 
-fn encode_jpeg(img: &image::DynamicImage, width: u32, height: u32, quality: u8) -> Result<Vec<u8>, String> {
+fn encode_jpeg(
+    img: &image::DynamicImage,
+    width: u32,
+    height: u32,
+    quality: u8,
+) -> Result<Vec<u8>, String> {
     let resized = if img.width() != width || img.height() != height {
         img.resize_exact(width, height, image::imageops::FilterType::Triangle)
     } else {
         img.clone()
     };
     let mut out = Vec::new();
-    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(20, 95));
+    let encoder =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality.clamp(20, 95));
     resized
         .to_rgb8()
         .write_with_encoder(encoder)
@@ -1508,24 +1622,41 @@ fn capture_grim(
 ) -> Result<(), String> {
     let interval = Duration::from_millis((1000 / fps.max(1)).max(16) as u64);
     let mut failures = 0u32;
+    // A screencast without the pointer is useless for remote control: ask grim
+    // to paint the cursor into the frame. Older builds do not know `-c`, so fall
+    // back to a cursorless capture on the first failure and stay there.
+    let mut with_cursor = true;
     while !stop.load(Ordering::Relaxed) {
         let started = Instant::now();
         let q = quality.to_string();
-        let mut args: Vec<String> = vec![
-            "-o".into(),
-            output.into(),
+        let mut args: Vec<String> = vec!["-o".into(), output.into()];
+        if with_cursor {
+            args.push("-c".into());
+        }
+        args.extend([
             "-t".into(),
             "jpeg".into(),
             "-q".into(),
             q.clone(),
             "-".into(),
-        ];
+        ]);
         let out = Command::new("grim").args(&args).output();
         let (ok, bytes) = match out {
             Ok(o) if o.status.success() && !o.stdout.is_empty() => (true, o.stdout),
             _ => {
+                if with_cursor {
+                    // Retry once without `-c` before dropping to PNG.
+                    with_cursor = false;
+                    continue;
+                }
                 // Older grim builds or PNG-only fallback.
-                args = vec!["-o".into(), output.into(), "-t".into(), "png".into(), "-".into()];
+                args = vec![
+                    "-o".into(),
+                    output.into(),
+                    "-t".into(),
+                    "png".into(),
+                    "-".into(),
+                ];
                 match Command::new("grim").args(&args).output() {
                     Ok(o) if o.status.success() && !o.stdout.is_empty() => {
                         match image::load_from_memory(&o.stdout)
@@ -1647,6 +1778,8 @@ fn capture_ffmpeg(
                 &fps.to_string(),
                 "-video_size",
                 &format!("{w}x{h}"),
+                "-draw_mouse",
+                "1",
                 "-i",
                 &format!("{display}+{x},{y}"),
             ]);
@@ -1663,6 +1796,8 @@ fn capture_ffmpeg(
                 &y.to_string(),
                 "-video_size",
                 &format!("{w}x{h}"),
+                "-draw_mouse",
+                "1",
                 "-i",
                 "desktop",
             ]);
@@ -1770,7 +1905,9 @@ fn capture_mac(
         } else {
             failures += 1;
             if failures > 15 {
-                return Err("screencapture не работает: разрешите запись экрана в настройках macOS".into());
+                return Err(
+                    "screencapture не работает: разрешите запись экрана в настройках macOS".into(),
+                );
             }
         }
         let spent = started.elapsed();
@@ -1783,7 +1920,13 @@ fn capture_mac(
 
 // ---------------------------------------------------------------- pointer input
 
-fn inject_pointer(compositor: &str, x: i32, y: i32, action: &str, amount: i32) -> Result<(), String> {
+fn inject_pointer(
+    compositor: &str,
+    x: i32,
+    y: i32,
+    action: &str,
+    amount: i32,
+) -> Result<(), String> {
     if cfg!(windows) {
         return windows_pointer(x, y, action, amount);
     }
@@ -1825,7 +1968,14 @@ fn inject_pointer(compositor: &str, x: i32, y: i32, action: &str, amount: i32) -
 fn move_ydotool(x: i32, y: i32) -> Result<(), String> {
     sdw_core::util::run(
         "ydotool",
-        &["mousemove", "--absolute", "-x", &x.to_string(), "-y", &y.to_string()],
+        &[
+            "mousemove",
+            "--absolute",
+            "-x",
+            &x.to_string(),
+            "-y",
+            &y.to_string(),
+        ],
     )
     .map(|_| ())
     .map_err(|e| format!("ydotool (запущен ли ydotoold?): {e}"))
@@ -1861,7 +2011,9 @@ fn mac_pointer(x: i32, y: i32, action: &str, _amount: i32) -> Result<(), String>
     }
     let script = match action {
         "click" | "move" => format!("tell application \"System Events\" to click at {{{x}, {y}}}"),
-        "right_click" => format!("tell application \"System Events\" to click at {{{x}, {y}}} using {{control down}}"),
+        "right_click" => format!(
+            "tell application \"System Events\" to click at {{{x}, {y}}} using {{control down}}"
+        ),
         _ => format!("tell application \"System Events\" to set position of mouse to {{{x}, {y}}}"),
     };
     sdw_core::util::run("osascript", &["-e", &script]).map(|_| ())
@@ -1954,8 +2106,16 @@ pub fn rfb_connect(addr: &str) -> Result<RfbStream, String> {
         .and_then(|v| v.split('.').nth(1))
         .and_then(|v| v.parse().ok())
         .unwrap_or(8);
-    let reply = if minor >= 8 { "RFB 003.008\n" } else if minor >= 7 { "RFB 003.007\n" } else { "RFB 003.003\n" };
-    stream.write_all(reply.as_bytes()).map_err(|e| e.to_string())?;
+    let reply = if minor >= 8 {
+        "RFB 003.008\n"
+    } else if minor >= 7 {
+        "RFB 003.007\n"
+    } else {
+        "RFB 003.003\n"
+    };
+    stream
+        .write_all(reply.as_bytes())
+        .map_err(|e| e.to_string())?;
     let mut chosen = 1u8;
     if minor >= 7 {
         let mut n = [0u8; 1];
@@ -1965,7 +2125,10 @@ pub fn rfb_connect(addr: &str) -> Result<RfbStream, String> {
             let _ = stream.read_exact(&mut len);
             let mut reason = vec![0u8; u32::from_be_bytes(len).min(4096) as usize];
             let _ = stream.read_exact(&mut reason);
-            return Err(format!("RFB отклонил подключение: {}", String::from_utf8_lossy(&reason)));
+            return Err(format!(
+                "RFB отклонил подключение: {}",
+                String::from_utf8_lossy(&reason)
+            ));
         }
         let mut types = vec![0u8; n[0] as usize];
         stream.read_exact(&mut types).map_err(|e| e.to_string())?;
@@ -1994,7 +2157,9 @@ pub fn rfb_connect(addr: &str) -> Result<RfbStream, String> {
     let mut pf = [0u8; 16];
     stream.read_exact(&mut pf).map_err(|e| e.to_string())?;
     let mut name_len = [0u8; 4];
-    stream.read_exact(&mut name_len).map_err(|e| e.to_string())?;
+    stream
+        .read_exact(&mut name_len)
+        .map_err(|e| e.to_string())?;
     let mut name = vec![0u8; u32::from_be_bytes(name_len).min(4096) as usize];
     stream.read_exact(&mut name).map_err(|e| e.to_string())?;
 
@@ -2042,9 +2207,13 @@ impl RfbStream {
             match t[0] {
                 0 => {
                     let mut pad = [0u8; 1];
-                    self.stream.read_exact(&mut pad).map_err(|e| e.to_string())?;
+                    self.stream
+                        .read_exact(&mut pad)
+                        .map_err(|e| e.to_string())?;
                     let mut nrects = [0u8; 2];
-                    self.stream.read_exact(&mut nrects).map_err(|e| e.to_string())?;
+                    self.stream
+                        .read_exact(&mut nrects)
+                        .map_err(|e| e.to_string())?;
                     let n = u16::from_be_bytes(nrects) as usize;
                     let mut pixels: Option<Vec<u8>> = None;
                     for _ in 0..n {
@@ -2057,9 +2226,12 @@ impl RfbStream {
                         let enc = i32::from_be_bytes([r[8], r[9], r[10], r[11]]);
                         if enc == 0 {
                             let mut data = vec![0u8; w * h * 4];
-                            self.stream.read_exact(&mut data).map_err(|e| e.to_string())?;
+                            self.stream
+                                .read_exact(&mut data)
+                                .map_err(|e| e.to_string())?;
                             if pixels.is_none() {
-                                pixels = Some(vec![0u8; self.width as usize * self.height as usize * 3]);
+                                pixels =
+                                    Some(vec![0u8; self.width as usize * self.height as usize * 3]);
                             }
                             let canvas = pixels.as_mut().unwrap();
                             for row in 0..h {
@@ -2095,18 +2267,26 @@ impl RfbStream {
                 }
                 1 => {
                     let mut hdr = [0u8; 5];
-                    self.stream.read_exact(&mut hdr).map_err(|e| e.to_string())?;
+                    self.stream
+                        .read_exact(&mut hdr)
+                        .map_err(|e| e.to_string())?;
                     let count = u16::from_be_bytes([hdr[3], hdr[4]]) as usize;
                     let mut skip = vec![0u8; count * 6];
-                    self.stream.read_exact(&mut skip).map_err(|e| e.to_string())?;
+                    self.stream
+                        .read_exact(&mut skip)
+                        .map_err(|e| e.to_string())?;
                 }
                 2 => {}
                 3 => {
                     let mut hdr = [0u8; 7];
-                    self.stream.read_exact(&mut hdr).map_err(|e| e.to_string())?;
+                    self.stream
+                        .read_exact(&mut hdr)
+                        .map_err(|e| e.to_string())?;
                     let len = u32::from_be_bytes([hdr[3], hdr[4], hdr[5], hdr[6]]) as usize;
                     let mut skip = vec![0u8; len.min(1 << 20)];
-                    self.stream.read_exact(&mut skip).map_err(|e| e.to_string())?;
+                    self.stream
+                        .read_exact(&mut skip)
+                        .map_err(|e| e.to_string())?;
                 }
                 other => return Err(format!("RFB: неизвестное сообщение {other}")),
             }
@@ -2121,7 +2301,10 @@ mod tests {
     #[test]
     fn geometry() {
         assert_eq!(parse_geometry("2560x1440+0+0"), Some((2560, 1440, 0, 0)));
-        assert_eq!(parse_geometry("1920x1080+-100+50"), Some((1920, 1080, -100, 50)));
+        assert_eq!(
+            parse_geometry("1920x1080+-100+50"),
+            Some((1920, 1080, -100, 50))
+        );
     }
 
     #[test]

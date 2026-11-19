@@ -178,7 +178,8 @@ impl NotificationStore {
         }
     }
 
-    pub fn dismiss(&self, id: u64) {        let dbus_id = {
+    pub fn dismiss(&self, id: u64) {
+        let dbus_id = {
             let mut inner = match self.inner.lock() {
                 Ok(i) => i,
                 Err(_) => return,
@@ -269,10 +270,7 @@ impl NotificationStore {
                     continue;
                 }
                 match Command::new("dbus-monitor")
-                    .args([
-                        "--session",
-                        "interface='org.freedesktop.Notifications'",
-                    ])
+                    .args(["--session", "interface='org.freedesktop.Notifications'"])
                     .stdout(Stdio::piped())
                     .stderr(Stdio::null())
                     .spawn()
@@ -404,7 +402,11 @@ impl NotificationStore {
         let urgency = p.urgency;
         self.push(Notification {
             id: p.notification_id,
-            app: if app.trim().is_empty() { "Система".into() } else { app },
+            app: if app.trim().is_empty() {
+                "Система".into()
+            } else {
+                app
+            },
             summary,
             body,
             icon: unescape(&p.strings[1]),
@@ -511,11 +513,7 @@ struct NotifServer {
 #[zbus::interface(name = "org.freedesktop.Notifications")]
 impl NotifServer {
     fn get_capabilities(&self) -> Vec<String> {
-        vec![
-            "body".into(),
-            "body-markup".into(),
-            "persistence".into(),
-        ]
+        vec!["body".into(), "body-markup".into(), "persistence".into()]
     }
 
     fn get_server_information(&self) -> (String, String, String, String) {

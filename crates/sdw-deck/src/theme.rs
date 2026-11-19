@@ -6,8 +6,11 @@ use eframe::egui::{
     RichText, Sense, Stroke, TextStyle, Ui, Vec2, Visuals,
 };
 use sdw_core::model::{
-    ThemeCfg, PRESET_GRUVBOX, PRESET_MONO, PRESET_NORD, PRESET_GRID, PRESET_TERMINAL,
+    ThemeCfg, PRESET_CATPPUCCIN_FRAPPE, PRESET_CATPPUCCIN_LATTE, PRESET_CATPPUCCIN_MACCHIATO,
+    PRESET_CATPPUCCIN_MOCHA, PRESET_GRID, PRESET_GRUVBOX, PRESET_MONO, PRESET_NORD,
+    PRESET_TERMINAL,
 };
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Copy)]
@@ -53,12 +56,16 @@ static STYLE: Mutex<Option<ThemeCfg>> = Mutex::new(None);
 static DARK_CACHE: Mutex<Option<Tokens>> = Mutex::new(None);
 static LIGHT_CACHE: Mutex<Option<Tokens>> = Mutex::new(None);
 
-pub const PRESETS: [(&str, &str); 5] = [
+pub const PRESETS: [(&str, &str); 9] = [
     ("grid", "Grid"),
     ("mono", "Monochrome"),
     ("nord", "Nord"),
     ("gruvbox", "Gruvbox"),
     ("terminal", "Terminal"),
+    ("mocha", "Catppuccin Mocha"),
+    ("macchiato", "Catppuccin Macchiato"),
+    ("frappe", "Catppuccin Frappé"),
+    ("latte", "Catppuccin Latte"),
 ];
 
 pub fn preset_css(name: &str) -> &'static str {
@@ -67,13 +74,107 @@ pub fn preset_css(name: &str) -> &'static str {
         "nord" => PRESET_NORD,
         "gruvbox" => PRESET_GRUVBOX,
         "terminal" => PRESET_TERMINAL,
+        "mocha" => PRESET_CATPPUCCIN_MOCHA,
+        "macchiato" => PRESET_CATPPUCCIN_MACCHIATO,
+        "frappe" => PRESET_CATPPUCCIN_FRAPPE,
+        "latte" => PRESET_CATPPUCCIN_LATTE,
         _ => PRESET_GRID,
     }
 }
 
-/// Switch the whole look to a built-in preset. Layout knobs stay as they are.
+/// Where user theme packs live: `~/.config/sd-widgets/themes/*.css`.
+pub fn custom_dir() -> PathBuf {
+    sdw_core::util::config_dir().join("themes")
+}
+
+/// Every `*.css` in the themes folder, as `(key, css)` pairs. The key is
+/// `custom:<file stem>` so it never collides with a built-in preset.
+pub fn custom_presets() -> Vec<(String, String)> {
+    let dir = custom_dir();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("css") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if let Ok(css) = std::fs::read_to_string(&path) {
+            out.push((format!("custom:{stem}"), css));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+pub fn all_presets() -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = PRESETS
+        .iter()
+        .map(|(key, name)| (key.to_string(), name.to_string()))
+        .collect();
+    for (key, _) in custom_presets() {
+        let name = key.strip_prefix("custom:").unwrap_or(&key).to_string();
+        out.push((key, name));
+    }
+    // Enabled addon themes apply exactly like a preset.
+    for addon in sdw_core::addons::list() {
+        if addon.manifest.deck.theme.trim().is_empty() {
+            continue;
+        }
+        out.push((format!("addon:{}", addon.id()), addon.manifest.name.clone()));
+    }
+    out
+}
+
+/// Save the current CSS as a named user pack. Returns the written path.
+pub fn save_custom_pack(name: &str, css: &str) -> std::io::Result<PathBuf> {
+    let stem: String = name
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let stem = stem.trim_matches('-').to_lowercase();
+    let stem = if stem.is_empty() {
+        "my-theme".to_string()
+    } else {
+        stem
+    };
+    let dir = custom_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{stem}.css"));
+    std::fs::write(&path, css)?;
+    Ok(path)
+}
+
+/// Read the CSS for any preset key (built-in or `custom:name`).
+pub fn preset_css_owned(name: &str) -> Option<String> {
+    if let Some(id) = name.strip_prefix("addon:") {
+        return sdw_core::addons::find(id).and_then(|a| a.theme_css());
+    }
+    if let Some(stem) = name.strip_prefix("custom:") {
+        return std::fs::read_to_string(custom_dir().join(format!("{stem}.css"))).ok();
+    }
+    if PRESETS.iter().any(|(key, _)| *key == name) {
+        return Some(preset_css(name).to_string());
+    }
+    None
+}
+
+/// Switch the whole look to a preset. Layout knobs stay as they are.
 pub fn apply_preset(cfg: &mut ThemeCfg, name: &str) {
-    cfg.css = preset_css(name).to_string();
+    if let Some(css) = preset_css_owned(name) {
+        cfg.css = css;
+    }
     cfg.radius = match name {
         "nord" => 2.0,
         "gruvbox" => 1.0,
@@ -108,9 +209,8 @@ pub fn style() -> ThemeCfg {
 
 fn apply_css(mut t: Tokens, cfg: &ThemeCfg, light: bool) -> Tokens {
     let prefix = if light { "light-" } else { "" };
-    let pick = |name: &str| {
-        css_var(&cfg.css, &format!("{prefix}{name}")).and_then(|v| parse_color(&v))
-    };
+    let pick =
+        |name: &str| css_var(&cfg.css, &format!("{prefix}{name}")).and_then(|v| parse_color(&v));
     if let Some(c) = pick("bg") {
         t.bg = c;
     }
@@ -197,7 +297,11 @@ pub fn css_var(css: &str, name: &str) -> Option<String> {
 
 pub fn css_number(css: &str, name: &str) -> Option<f32> {
     let raw = css_var(css, name)?;
-    let raw = raw.trim().trim_end_matches("px").trim_end_matches('%').trim();
+    let raw = raw
+        .trim()
+        .trim_end_matches("px")
+        .trim_end_matches('%')
+        .trim();
     raw.parse().ok()
 }
 
@@ -387,7 +491,12 @@ fn visuals(t: &Tokens) -> Visuals {
     v.warn_fg_color = t.warn;
     v.error_fg_color = t.bad;
     for (w, fill, stroke, fg) in [
-        (&mut v.widgets.noninteractive, Color32::TRANSPARENT, t.line, t.muted),
+        (
+            &mut v.widgets.noninteractive,
+            Color32::TRANSPARENT,
+            t.line,
+            t.muted,
+        ),
         (&mut v.widgets.inactive, t.card, t.line, t.ink),
         (&mut v.widgets.hovered, t.well, t.line_strong, t.strong),
         (&mut v.widgets.active, t.well, t.line_strong, t.strong),
@@ -414,7 +523,11 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         .ok()
         .and_then(|s| *s)
         .unwrap_or(Tokens::LIGHT);
-    ctx.set_theme(if dark { egui::Theme::Dark } else { egui::Theme::Light });
+    ctx.set_theme(if dark {
+        egui::Theme::Dark
+    } else {
+        egui::Theme::Light
+    });
     ctx.set_visuals_of(egui::Theme::Dark, visuals(&d));
     ctx.set_visuals_of(egui::Theme::Light, visuals(&l));
     let st = style();
@@ -426,11 +539,26 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         s.spacing.interact_size.y = 42.0 * density;
         s.spacing.slider_width = 180.0;
         s.text_styles = [
-            (TextStyle::Heading, FontId::new(30.0 * fs, FontFamily::Proportional)),
-            (TextStyle::Body, FontId::new(16.0 * fs, FontFamily::Proportional)),
-            (TextStyle::Button, FontId::new(15.0 * fs, FontFamily::Proportional)),
-            (TextStyle::Small, FontId::new(13.0 * fs, FontFamily::Proportional)),
-            (TextStyle::Monospace, FontId::new(13.5 * fs, FontFamily::Monospace)),
+            (
+                TextStyle::Heading,
+                FontId::new(30.0 * fs, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Body,
+                FontId::new(16.0 * fs, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Button,
+                FontId::new(15.0 * fs, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Small,
+                FontId::new(13.0 * fs, FontFamily::Proportional),
+            ),
+            (
+                TextStyle::Monospace,
+                FontId::new(13.5 * fs, FontFamily::Monospace),
+            ),
         ]
         .into();
     });
@@ -491,6 +619,14 @@ pub mod icon {
     pub const SHUFFLE: &str = "\u{e043}";
     pub const REPEAT: &str = "\u{e040}";
     pub const DRAG: &str = "\u{e25d}";
+    pub const CLOCK: &str = "\u{e8b5}";
+    pub const TIMER: &str = "\u{e425}";
+    pub const BATTERY: &str = "\u{e1a5}";
+    pub const MOON: &str = "\u{e51c}";
+    pub const SUN: &str = "\u{e518}";
+    pub const PALETTE: &str = "\u{e40a}";
+    pub const TUNE: &str = "\u{e429}";
+    pub const ADDON: &str = "\u{e87b}";
 }
 
 /// The window / taskbar icon, decoded once from the packaged PNG.
@@ -514,7 +650,10 @@ pub fn icon_family() -> FontFamily {
 
 /// One Material symbol, sized and coloured like body text.
 pub fn icon(text: &str, size: f32, color: Color32) -> RichText {
-    RichText::new(text).family(icon_family()).size(size).color(color)
+    RichText::new(text)
+        .family(icon_family())
+        .size(size)
+        .color(color)
 }
 
 /// Material symbols live in the private use area; everything else is text.
@@ -615,7 +754,8 @@ pub fn backdrop(ui: &Ui, t: &Tokens) {
 
 /// A floating page arrow: one square, blue outline, blue glyph.
 pub fn nav_arrow(ui: &mut Ui, t: &Tokens, glyph: &str, enabled: bool) -> Response {
-    let size = Vec2::splat(48.0);
+    let side = style().arrow_size.clamp(28.0, 96.0);
+    let size = Vec2::splat(side);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let hover = ui
         .ctx()
@@ -642,7 +782,7 @@ pub fn nav_arrow(ui: &mut Ui, t: &Tokens, glyph: &str, enabled: bool) -> Respons
         rect.center(),
         egui::Align2::CENTER_CENTER,
         glyph,
-        FontId::new(26.0, glyph_family(glyph)),
+        FontId::new(side * 0.54, glyph_family(glyph)),
         if !enabled {
             t.faint
         } else {
@@ -675,11 +815,16 @@ pub fn card<R>(ui: &mut Ui, t: &Tokens, add: impl FnOnce(&mut Ui) -> R) -> R {
 
 pub fn primary(ui: &mut Ui, text: &str, t: &Tokens) -> Response {
     ui.add(
-        egui::Button::new(RichText::new(text).size(15.5).strong().color(Color32::WHITE))
-            .fill(t.accent)
-            .stroke(Stroke::new(1.0, t.accent))
-            .corner_radius(t.corner(0))
-            .min_size(Vec2::new(0.0, 44.0)),
+        egui::Button::new(
+            RichText::new(text)
+                .size(15.5)
+                .strong()
+                .color(Color32::WHITE),
+        )
+        .fill(t.accent)
+        .stroke(Stroke::new(1.0, t.accent))
+        .corner_radius(t.corner(0))
+        .min_size(Vec2::new(0.0, 44.0)),
     )
 }
 
@@ -813,11 +958,7 @@ pub fn tile(ui: &mut Ui, t: &Tokens, tile: &Tile, size: Vec2) -> Response {
         0.0,
         Stroke::new(
             if hover > 0.5 { 1.0 } else { 1.0 },
-            if hover > 0.5 {
-                t.accent
-            } else {
-                t.line
-            },
+            if hover > 0.5 { t.accent } else { t.line },
         ),
         egui::StrokeKind::Inside,
     );
@@ -883,33 +1024,65 @@ pub fn key_button(ui: &mut Ui, label: &str, t: &Tokens, width: f32) -> Response 
                 .size(17.0)
                 .color(t.strong),
         )
-            .fill(t.card)
-            .stroke(Stroke::new(1.0, t.line))
-            .corner_radius(t.corner(0))
-            .min_size(Vec2::new(width, 42.0)),
+        .fill(t.card)
+        .stroke(Stroke::new(1.0, t.line))
+        .corner_radius(t.corner(0))
+        .min_size(Vec2::new(width, 42.0)),
     )
 }
 
 pub fn clock_text() -> String {
-    let now = chrono_lite();
-    now
+    let now = local_now();
+    format!("{:02}:{:02}", now.hour, now.minute)
 }
 
-fn chrono_lite() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    // local time without a chrono dependency: ask the C library through `date`
-    let out = std::process::Command::new("date")
-        .arg("+%H:%M")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
-    out.unwrap_or_else(|| {
-        let h = (secs / 3600 % 24) as u32;
-        format!("{:02}:{:02}", h, secs / 60 % 60)
-    })
+/// Broken-down local time, straight from libc: the clock page needs seconds,
+/// the weekday and the date, and spawning `date` every frame is wasteful.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NowParts {
+    pub hour: u32,
+    pub minute: u32,
+    pub second: u32,
+    /// 0 = Sunday … 6 = Saturday
+    pub weekday: u32,
+    pub day: u32,
+    pub month: u32,
+    pub year: i32,
+}
+
+pub fn local_now() -> NowParts {
+    #[cfg(unix)]
+    unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return NowParts::default();
+        }
+        NowParts {
+            hour: tm.tm_hour as u32,
+            minute: tm.tm_min as u32,
+            second: tm.tm_sec as u32,
+            weekday: tm.tm_wday as u32,
+            day: tm.tm_mday as u32,
+            month: tm.tm_mon as u32 + 1,
+            year: tm.tm_year + 1900,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        NowParts {
+            hour: (secs / 3600 % 24) as u32,
+            minute: (secs / 60 % 60) as u32,
+            second: (secs % 60) as u32,
+            weekday: (secs / 86400 + 4) % 7,
+            day: 1,
+            month: 1,
+            year: 1970,
+        }
+    }
 }

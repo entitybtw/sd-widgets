@@ -24,20 +24,24 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Home,
+    Clock,
     Computers,
     Gamepad,
     Media,
     Screen,
+    Audio,
     Notifications,
     HomeAssistant,
     Binds,
+    Addons,
     Settings,
     Theme,
 }
 
 impl Page {
-    pub const NAV: [Page; 7] = [
+    pub const NAV: [Page; 8] = [
         Page::Home,
+        Page::Clock,
         Page::Computers,
         Page::Gamepad,
         Page::Media,
@@ -46,41 +50,50 @@ impl Page {
         Page::Binds,
     ];
     /// Every page, in the order the arrows and the floating dock walk through them.
-    pub const ORDER: [Page; 10] = [
+    pub const ORDER: [Page; 13] = [
         Page::Home,
+        Page::Clock,
         Page::Computers,
         Page::Gamepad,
         Page::Media,
         Page::Screen,
+        Page::Audio,
         Page::Notifications,
         Page::HomeAssistant,
         Page::Binds,
+        Page::Addons,
         Page::Theme,
         Page::Settings,
     ];
     pub fn key(self) -> &'static str {
         match self {
             Page::Home => "home",
+            Page::Clock => "clock",
             Page::Computers => "computers",
             Page::Gamepad => "gamepad",
             Page::Media => "media",
             Page::Screen => "screen",
+            Page::Audio => "audio",
             Page::Notifications => "notifications",
             Page::HomeAssistant => "ha",
             Page::Binds => "binds",
+            Page::Addons => "addons",
             Page::Settings => "settings",
             Page::Theme => "theme",
         }
     }
     pub fn from_key(key: &str) -> Page {
         match key.trim().to_ascii_lowercase().as_str() {
+            "clock" | "watch" | "time" => Page::Clock,
             "computers" | "pc" => Page::Computers,
             "gamepad" => Page::Gamepad,
-            "media" | "music" | "sound" => Page::Media,
+            "media" | "music" => Page::Media,
             "screen" | "stream" => Page::Screen,
+            "audio" | "sound" => Page::Audio,
             "notifications" => Page::Notifications,
             "ha" | "homeassistant" => Page::HomeAssistant,
             "binds" => Page::Binds,
+            "addons" | "addon" | "plugins" => Page::Addons,
             "settings" => Page::Settings,
             "theme" | "look" | "appearance" => Page::Theme,
             _ => Page::Home,
@@ -89,13 +102,16 @@ impl Page {
     pub fn label(self, l: Lang) -> &'static str {
         match self {
             Page::Home => t!(l, "домой", "home"),
+            Page::Clock => t!(l, "часы", "clock"),
             Page::Computers => t!(l, "компьютеры", "computers"),
             Page::Gamepad => t!(l, "геймпад", "gamepad"),
             Page::Media => t!(l, "медиа", "media"),
             Page::Screen => t!(l, "экран", "screen"),
+            Page::Audio => t!(l, "звук", "audio"),
             Page::Notifications => t!(l, "уведомления", "alerts"),
             Page::HomeAssistant => t!(l, "home assistant", "home assistant"),
             Page::Binds => t!(l, "бинды", "binds"),
+            Page::Addons => t!(l, "аддоны", "addons"),
             Page::Settings => t!(l, "настройки", "settings"),
             Page::Theme => t!(l, "вид", "look"),
         }
@@ -103,13 +119,16 @@ impl Page {
     pub fn icon(self) -> &'static str {
         match self {
             Page::Home => theme::icon::HOME,
+            Page::Clock => theme::icon::CLOCK,
             Page::Computers => theme::icon::COMPUTERS,
             Page::Gamepad => theme::icon::GAMEPAD,
             Page::Media => theme::icon::MUSIC,
             Page::Screen => theme::icon::SCREEN,
+            Page::Audio => theme::icon::SPEAKER,
             Page::Notifications => theme::icon::NOTIFICATIONS,
             Page::HomeAssistant => theme::icon::HOME_ASSISTANT,
             Page::Binds => theme::icon::BINDS,
+            Page::Addons => theme::icon::ADDON,
             Page::Settings => theme::icon::SETTINGS,
             Page::Theme => theme::icon::LOOK,
         }
@@ -150,6 +169,8 @@ pub struct HaState {
     pub entities: Vec<HaEntity>,
     pub areas: Vec<String>,
     pub categories: Vec<HaCategory>,
+    /// Named presets shared with the daemon and every other deck.
+    pub presets: Vec<HaPreset>,
     /// Local state right after a tap, until Home Assistant confirms it.
     pub optimistic: HashMap<String, (String, Instant)>,
     pub room: usize,
@@ -164,6 +185,9 @@ pub struct HaState {
     /// Category editor open.
     pub manage: bool,
     pub new_category: String,
+    /// Preset bar open and its new-name field.
+    pub presets_open: bool,
+    pub preset_name: String,
 }
 
 pub struct MediaUiState {
@@ -206,7 +230,10 @@ pub struct Toast {
 
 pub enum Task {
     Status(Result<DaemonStatus, String>),
-    Paired { base: String, result: Result<PairResponse, String> },
+    Paired {
+        base: String,
+        result: Result<PairResponse, String>,
+    },
     Discovery(Result<Vec<DiscoveryResponse>, String>),
     Pad(Result<PadCreated, String>),
     Monitor(Result<MonitorStatus, String>),
@@ -214,12 +241,129 @@ pub enum Task {
     Notifications(Result<Vec<Notification>, String>),
     Ha(Result<HaStates, String>),
     Media(Result<MediaState, String>),
-    MediaArt { id: String, result: Result<Vec<u8>, String> },
+    MediaArt {
+        id: String,
+        result: Result<Vec<u8>, String>,
+    },
     Categories(Result<Vec<HaCategory>, String>),
+    Presets(Result<Vec<HaPreset>, String>),
     Update(Result<UpdateInfo, String>),
     Updated(Result<(String, u64), String>),
     Installed(Result<String, String>),
+    Audio(Result<AudioStatus, String>),
+    AudioApps(Result<Vec<AudioApp>, String>),
     Msg(Result<String, String>),
+}
+
+/// Multi-finger touch state from `egui::Event::Touch`.
+///
+/// The compositor may deliver the touchscreen either as native touch events or
+/// as a plain mouse. This tracks the native case; the mouse fallback lives in
+/// [`App::swipe_tick`]. Single finger is deliberately left to egui (taps and
+/// scrolling), only two or more fingers become a gesture.
+#[derive(Default)]
+pub struct TouchTrack {
+    points: HashMap<u64, egui::Pos2>,
+    last: HashMap<u64, egui::Pos2>,
+    start: Option<Instant>,
+    anchor: Option<(f32, f32)>,
+    max: u8,
+    pinch: Option<(u64, u64, f32)>,
+}
+
+impl TouchTrack {
+    fn norm(pos: egui::Pos2, rect: Rect) -> (f32, f32) {
+        (
+            ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0),
+            ((pos.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0),
+        )
+    }
+
+    fn centroid(&self, map: &HashMap<u64, egui::Pos2>, rect: Rect) -> (f32, f32) {
+        if map.is_empty() {
+            return (0.0, 0.0);
+        }
+        let (mut x, mut y) = (0.0, 0.0);
+        for p in map.values() {
+            let (nx, ny) = Self::norm(*p, rect);
+            x += nx;
+            y += ny;
+        }
+        (x / map.len() as f32, y / map.len() as f32)
+    }
+
+    fn begin(&mut self, id: u64, pos: egui::Pos2, rect: Rect, now: Instant) {
+        self.points.insert(id, pos);
+        self.last.insert(id, pos);
+        if self.start.is_none() {
+            self.start = Some(now);
+        }
+        self.max = self.max.max(self.points.len().min(4) as u8);
+        // Re-anchor whenever the finger count changes: adding a second finger
+        // must not look like the first one jumped sideways.
+        self.anchor = Some(self.centroid(&self.points, rect));
+        if self.pinch.is_none() && self.points.len() >= 2 {
+            let mut ids = self.points.keys().copied();
+            if let (Some(a), Some(b)) = (ids.next(), ids.next()) {
+                let pa = self.points[&a];
+                let pb = self.points[&b];
+                let dx = (pb.x - pa.x) / rect.width().max(1.0);
+                let dy = (pb.y - pa.y) / rect.height().max(1.0);
+                self.pinch = Some((a, b, (dx * dx + dy * dy).sqrt()));
+            }
+        }
+    }
+
+    fn moved(&mut self, id: u64, pos: egui::Pos2) {
+        if self.points.contains_key(&id) {
+            self.points.insert(id, pos);
+        }
+        self.last.insert(id, pos);
+    }
+
+    /// Returns a finished gesture once the last finger lifts.
+    fn end(&mut self, id: u64, pos: egui::Pos2, rect: Rect, now: Instant) -> Option<GestureSpec> {
+        self.last.insert(id, pos);
+        self.points.remove(&id);
+        if !self.points.is_empty() {
+            return None;
+        }
+        let spec = self.finish(rect, now);
+        self.reset();
+        spec
+    }
+
+    fn finish(&mut self, rect: Rect, now: Instant) -> Option<GestureSpec> {
+        if self.max < 2 {
+            return None;
+        }
+        let started = self.start?;
+        let start = self.anchor?;
+        let end = self.centroid(&self.last, rect);
+        let pinch = self.pinch.and_then(|(a, b, d0)| {
+            let pa = *self.last.get(&a)?;
+            let pb = *self.last.get(&b)?;
+            let dx = (pb.x - pa.x) / rect.width().max(1.0);
+            let dy = (pb.y - pa.y) / rect.height().max(1.0);
+            Some((d0, (dx * dx + dy * dy).sqrt()))
+        });
+        crate::input::gesture_from(
+            self.max.clamp(1, 4),
+            now.saturating_duration_since(started),
+            start,
+            end,
+            pinch,
+        )
+    }
+
+    fn reset(&mut self) {
+        self.points.clear();
+        self.last.clear();
+        self.start = None;
+        self.anchor = None;
+        self.max = 0;
+        self.pinch = None;
+    }
 }
 
 pub struct App {
@@ -262,6 +406,11 @@ pub struct App {
     pub input: InputHandle,
     pub input_devices: Vec<String>,
     pub input_errors: Vec<String>,
+    /// A gamepad-capable event node exists, so the UI must poll fast.
+    pub has_gamepad: bool,
+    /// Presses collected between frames; fast taps would otherwise be lost.
+    pub pad_press: Vec<u16>,
+    pub last_pad: Instant,
     pub pressed: HashSet<u16>,
     pub last_button: Option<(u16, String, Instant)>,
     pub last_gesture: Option<(GestureSpec, Instant)>,
@@ -272,8 +421,13 @@ pub struct App {
     pub pad_buttons: u32,
     pub pad_release: bool,
     pub pad_seen: bool,
-    /// Finger swipe from a screen edge, used when the compositor sends touch as mouse.
-    pub edge_swipe: Option<(egui::Pos2, egui::Pos2)>,
+    /// Finger swipe used when the compositor sends touch as mouse.
+    pub edge_swipe: Option<(egui::Pos2, egui::Pos2, Instant)>,
+    /// The current pointer drag belongs to a widget (slider, splitter, …), so
+    /// it must not also turn into a page swipe.
+    pub swipe_blocked: bool,
+    /// Raw multi-touch gestures from egui's touch events.
+    pub touch: TouchTrack,
 
     pub stream: StreamState,
     pub ha: HaState,
@@ -281,6 +435,12 @@ pub struct App {
     pub binds: BindsState,
     pub update: UpdateState,
     pub settings_name: String,
+    /// Path typed in the appearance page to import a theme pack.
+    pub theme_import: String,
+    /// Name used when saving the current CSS as a user pack.
+    pub theme_pack_name: String,
+    /// Path typed in the addons page to import a package.
+    pub addon_import: String,
 
     pub osk_open: bool,
     pub osk_shift: bool,
@@ -296,6 +456,14 @@ pub struct App {
     pub applied_scale: f32,
     /// Working copy of the theme CSS while the appearance page is open.
     pub style_draft: String,
+    /// The player process receiving the PC audio stream.
+    pub audio_player: Option<std::process::Child>,
+    /// How many more "yes" presses are needed before audio starts.
+    pub audio_confirm_left: u8,
+    pub audio_error: String,
+    pub audio_apps: Vec<AudioApp>,
+    pub audio_apps_at: Option<Instant>,
+    pub audio_starting: bool,
     pub last_frame_rect: Option<Rect>,
     pub quit_confirm: bool,
 }
@@ -361,6 +529,9 @@ impl App {
             input,
             input_devices: Vec::new(),
             input_errors: Vec::new(),
+            has_gamepad: false,
+            pad_press: Vec::new(),
+            last_pad: Instant::now() - Duration::from_secs(10),
             pressed: HashSet::new(),
             last_button: None,
             last_gesture: None,
@@ -370,6 +541,8 @@ impl App {
             pad_release: false,
             pad_seen: false,
             edge_swipe: None,
+            swipe_blocked: false,
+            touch: TouchTrack::default(),
             stream: StreamState {
                 feed: None,
                 texture: None,
@@ -392,6 +565,7 @@ impl App {
                 entities: Vec::new(),
                 areas: Vec::new(),
                 categories: Vec::new(),
+                presets: Vec::new(),
                 optimistic: HashMap::new(),
                 room: 0,
                 search: String::new(),
@@ -404,6 +578,8 @@ impl App {
                 last_fetch: Instant::now() - Duration::from_secs(60),
                 manage: false,
                 new_category: String::new(),
+                presets_open: false,
+                preset_name: String::new(),
             },
             media: MediaUiState {
                 state: MediaState::default(),
@@ -434,6 +610,8 @@ impl App {
                 notified: false,
             },
             settings_name: cfg.device_name.clone(),
+            theme_import: String::new(),
+            theme_pack_name: String::new(),
             osk_open: false,
             osk_shift: false,
             osk_symbols: false,
@@ -446,6 +624,13 @@ impl App {
             last_battery: Instant::now() - Duration::from_secs(60),
             applied_scale: 0.0,
             style_draft: cfg.style.css.clone(),
+            addon_import: String::new(),
+            audio_player: None,
+            audio_confirm_left: 0,
+            audio_error: String::new(),
+            audio_apps: Vec::new(),
+            audio_apps_at: None,
+            audio_starting: false,
             last_frame_rect: None,
             quit_confirm: false,
             cfg,
@@ -480,14 +665,13 @@ impl App {
     /// frame behind the cursor (or not at all).
     fn pad_ui(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         let buttons = self.gamepad.buttons;
-        let prev = self.pad_buttons;
-        let pressed = |bit: u32| buttons & bit != 0 && prev & bit == 0;
 
         // While the pad is forwarded to a computer (or a bind is being
         // captured) the same buttons must not also drive this interface.
         if self.gamepad_on || self.binds.capture {
             self.pad_buttons = buttons;
             self.pad_release = false;
+            self.pad_press.clear();
             return;
         }
 
@@ -539,9 +723,30 @@ impl App {
             moved = true;
         }
 
+        // Discrete presses come from a queue filled by the input thread, not
+        // from the current button bit: a tap that starts and ends between two
+        // repaints would otherwise never be seen.
+        let presses = std::mem::take(&mut self.pad_press);
+        let mut want_click = false;
+        for code in presses {
+            match code {
+                crate::input::BTN_SOUTH => want_click = true,
+                crate::input::BTN_EAST => self.go_back(ctx),
+                crate::input::BTN_TL => self.nav_step(-1),
+                crate::input::BTN_TR => self.nav_step(1),
+                crate::input::BTN_NORTH => self.set_page(Page::Home),
+                crate::input::BTN_SELECT => self.set_page(Page::Settings),
+                crate::input::BTN_START => self.set_page(Page::Gamepad),
+                crate::input::BTN_MODE => self.set_page(Page::Home),
+                _ => {}
+            }
+            self.pad_seen = true;
+            moved = true;
+        }
+
         // A clicks at the virtual pointer, with the release one frame later so
         // widgets see a real press/release pair.
-        if pressed(sdw_core::udp::BTN_A) {
+        if want_click {
             if self.pad_cursor.is_none() {
                 self.pad_cursor = Some(rect.center());
                 raw.events.push(egui::Event::PointerMoved(rect.center()));
@@ -570,34 +775,54 @@ impl App {
             moved = true;
         }
 
-        if pressed(sdw_core::udp::BTN_B) {
-            self.go_back(ctx);
-        }
-        if pressed(sdw_core::udp::BTN_LB) {
-            self.nav_step(-1);
-        }
-        if pressed(sdw_core::udp::BTN_RB) {
-            self.nav_step(1);
-        }
-        if pressed(sdw_core::udp::BTN_Y) {
-            self.set_page(Page::Home);
-        }
-        if pressed(sdw_core::udp::BTN_BACK) {
-            self.set_page(Page::Settings);
-        }
-
         if moved {
             ctx.request_repaint();
         }
         self.pad_buttons = buttons;
     }
 
-    /// Horizontal swipe starting at a screen edge. gamescope often hands the
-    /// deck touchscreen to egui as a plain mouse, so egui never treats it as a
-    /// touch device and drag-to-scroll stays off. This gives pages a gesture
-    /// that does not depend on touch detection at all.
-    fn edge_swipe_tick(&mut self, ctx: &egui::Context) {
-        if !deck_mode() || self.gamepad_on || self.binds.capture {
+    /// Touch gestures on the page surface.
+    ///
+    /// Native touch events are turned into `GestureSpec`s here (multi-finger
+    /// swipes, pinches). When the compositor instead reports the touchscreen as
+    /// a plain mouse, [`Self::swipe_tick`] covers the single-finger case.
+    fn touch_gesture_tick(&mut self, ctx: &egui::Context, raw: &egui::RawInput) {
+        if self.gamepad_on || self.binds.capture {
+            self.touch.reset();
+            return;
+        }
+        let rect = raw.screen_rect.unwrap_or_else(|| ctx.content_rect());
+        let now = Instant::now();
+        let mut finished = None;
+        for event in &raw.events {
+            if let egui::Event::Touch { id, phase, pos, .. } = event {
+                match phase {
+                    egui::TouchPhase::Start => self.touch.begin(id.0, *pos, rect, now),
+                    egui::TouchPhase::Move => self.touch.moved(id.0, *pos),
+                    egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                        if let Some(spec) = self.touch.end(id.0, *pos, rect, now) {
+                            finished = Some(spec);
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(spec) = finished {
+            self.on_input(DeckEvent::Gesture(spec));
+        }
+    }
+
+    /// Horizontal swipe anywhere on the page, with a lower threshold when it
+    /// starts at an edge. This is the fallback for a touchscreen that the
+    /// compositor (or Steam Input) delivers as a mouse: there are no touch
+    /// events to count fingers with, but a horizontal drag still works.
+    fn swipe_tick(&mut self, ctx: &egui::Context) {
+        if !deck_mode()
+            || self.gamepad_on
+            || self.binds.capture
+            || self.stream.fullscreen
+            || self.binds.editor.is_some()
+        {
             self.edge_swipe = None;
             return;
         }
@@ -606,26 +831,41 @@ impl App {
                 i.pointer.any_pressed(),
                 i.pointer.any_down(),
                 i.pointer.any_released(),
-                i.pointer.interact_pos(),
+                i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()),
             )
         });
         let rect = ctx.content_rect();
         if pressed {
             if let Some(p) = pos {
-                let edge = p.x <= rect.left() + 56.0 || p.x >= rect.right() - 56.0;
-                self.edge_swipe = edge.then_some((p, p));
+                self.swipe_blocked = false;
+                self.edge_swipe = Some((p, p, Instant::now()));
             }
         }
-        if let Some((start, _)) = self.edge_swipe {
+        if down && ctx.dragged_id().is_some() {
+            // Sliders and other draggable widgets own this pointer.
+            self.swipe_blocked = true;
+        }
+        if let Some((start, _, at)) = self.edge_swipe {
             if down {
                 if let Some(p) = pos {
-                    self.edge_swipe = Some((start, p));
+                    self.edge_swipe = Some((start, p, at));
                 }
             } else if released {
                 if let Some(p) = pos {
                     let dx = p.x - start.x;
                     let dy = p.y - start.y;
-                    if dx.abs() > 140.0 && dx.abs() > dy.abs() * 1.4 {
+                    let edge = start.x <= rect.left() + 64.0 || start.x >= rect.right() - 64.0;
+                    let min = if edge { 80.0 } else { 140.0 };
+                    let gesture_recent = self
+                        .last_gesture
+                        .as_ref()
+                        .is_some_and(|(_, when)| when.elapsed() < Duration::from_millis(450));
+                    if !self.swipe_blocked
+                        && !gesture_recent
+                        && at.elapsed() < Duration::from_millis(900)
+                        && dx.abs() > min
+                        && dx.abs() > dy.abs() * 1.4
+                    {
                         self.nav_step(if dx < 0.0 { 1 } else { -1 });
                     }
                 }
@@ -659,8 +899,7 @@ impl App {
         if self.pad_cursor_at.elapsed() > Duration::from_secs(3) {
             return;
         }
-        let fade = (1.0
-            - (self.pad_cursor_at.elapsed().as_secs_f32() - 1.8).max(0.0) / 1.2)
+        let fade = (1.0 - (self.pad_cursor_at.elapsed().as_secs_f32() - 1.8).max(0.0) / 1.2)
             .clamp(0.0, 1.0);
         let t = Tokens::get(ctx);
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -730,8 +969,7 @@ impl App {
     }
 
     pub fn client(&self) -> Option<Client> {
-        self.active_host()
-            .map(|h| Client::new(&h.url, &h.token))
+        self.active_host().map(|h| Client::new(&h.url, &h.token))
     }
 
     pub fn client_for(&self, host: Option<&str>) -> Option<Client> {
@@ -773,7 +1011,10 @@ impl App {
 
     pub fn set_page(&mut self, page: Page) {
         if self.page != page {
-            if let (Some(a), Some(b)) = (Page::ORDER.iter().position(|p| *p == self.page), Page::ORDER.iter().position(|p| *p == page)) {
+            if let (Some(a), Some(b)) = (
+                Page::ORDER.iter().position(|p| *p == self.page),
+                Page::ORDER.iter().position(|p| *p == page),
+            ) {
                 self.page_dir = if b > a { 1.0 } else { -1.0 };
             }
             self.page_at = Instant::now();
@@ -783,7 +1024,11 @@ impl App {
             self.save();
             sound::play(
                 &self.cfg.sound,
-                if self.page_dir >= 0.0 { Cue::Navigate } else { Cue::Back },
+                if self.page_dir >= 0.0 {
+                    Cue::Navigate
+                } else {
+                    Cue::Back
+                },
             );
             if page == Page::Notifications {
                 self.notif_unread = 0;
@@ -819,14 +1064,12 @@ impl App {
 
     /// Whether a page should show up in the dock and the arrow walk.
     pub fn page_shown(&self, page: Page) -> bool {
-        self.cfg.style.pages.is_empty()
-            || self.cfg.style.pages.iter().any(|p| p == page.key())
+        self.cfg.style.pages.is_empty() || self.cfg.style.pages.iter().any(|p| p == page.key())
     }
 
     /// Whether a home tile is visible.
     pub fn tile_shown(&self, key: &str) -> bool {
-        self.cfg.style.home_tiles.is_empty()
-            || self.cfg.style.home_tiles.iter().any(|k| k == key)
+        self.cfg.style.home_tiles.is_empty() || self.cfg.style.home_tiles.iter().any(|k| k == key)
     }
 
     pub fn set_lang(&mut self, lang: Lang) {
@@ -924,7 +1167,12 @@ impl App {
     pub fn start_pair(&mut self) {
         let url = self.pair_url.trim().to_string();
         if url.is_empty() {
-            self.pair_error = t!(self.lang, "укажите адрес компьютера", "enter the computer address").into();
+            self.pair_error = t!(
+                self.lang,
+                "укажите адрес компьютера",
+                "enter the computer address"
+            )
+            .into();
             return;
         }
         let pass = self.pair_pass.clone();
@@ -991,7 +1239,11 @@ impl App {
                 self.input.set_enabled(true);
                 self.apply_target();
                 self.toast(
-                    t!(self.lang, "геймпад передаётся на компьютер", "gamepad is live on the computer"),
+                    t!(
+                        self.lang,
+                        "геймпад передаётся на компьютер",
+                        "gamepad is live on the computer"
+                    ),
                     true,
                 );
             } else {
@@ -1009,7 +1261,14 @@ impl App {
             return;
         }
         let Some(c) = self.client() else {
-            self.toast(t!(self.lang, "сначала подключите компьютер", "connect a computer first"), false);
+            self.toast(
+                t!(
+                    self.lang,
+                    "сначала подключите компьютер",
+                    "connect a computer first"
+                ),
+                false,
+            );
             return;
         };
         self.gamepad_pending = true;
@@ -1019,7 +1278,14 @@ impl App {
         } else {
             self.gamepad_name.trim().to_string()
         };
-        self.toast(t!(self.lang, "создаю виртуальный пад…", "creating the virtual pad…"), true);
+        self.toast(
+            t!(
+                self.lang,
+                "создаю виртуальный пад…",
+                "creating the virtual pad…"
+            ),
+            true,
+        );
         self.spawn(move || Task::Pad(c.create_pad(&name, kind).map_err(|e| e.to_string())));
     }
 
@@ -1224,7 +1490,9 @@ impl App {
         self.notif_pending = true;
         let since = self.notif_last_id;
         if let Some(c) = self.client() {
-            self.spawn(move || Task::Notifications(c.notifications(since).map_err(|e| e.to_string())));
+            self.spawn(move || {
+                Task::Notifications(c.notifications(since).map_err(|e| e.to_string()))
+            });
         }
     }
 
@@ -1246,6 +1514,74 @@ impl App {
                 Task::Categories(c.set_ha_categories(&list).map_err(|e| e.to_string()))
             });
         }
+    }
+
+    pub fn save_ha_presets(&mut self) {
+        let list = self.ha.presets.clone();
+        if let Some(c) = self.client() {
+            self.spawn(move || Task::Presets(c.set_ha_presets(&list).map_err(|e| e.to_string())));
+        }
+    }
+
+    /// Capture the current state of every visible light into a new preset.
+    pub fn save_preset_from_lights(&mut self, name: &str) {
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        let mut actions = sdw_core::ha::capture_light_preset(&self.ha.entities);
+        if actions.is_empty() {
+            self.toast(
+                t!(
+                    self.lang,
+                    "нет включённых ламп — пресет пустой",
+                    "no lights are on — the preset would be empty"
+                ),
+                false,
+            );
+            return;
+        }
+        let mut preset = HaPreset::new(name);
+        preset.actions = std::mem::take(&mut actions);
+        self.ha.presets.push(preset);
+        self.ha.preset_name.clear();
+        self.save_ha_presets();
+        self.toast(
+            t!(self.lang, "пресет сохранён", "preset saved").to_string(),
+            true,
+        );
+    }
+
+    /// Apply every action of a preset and show the guessed state right away.
+    pub fn apply_preset(&mut self, preset: &HaPreset) {
+        for a in &preset.actions {
+            let call = HaCall {
+                domain: "light".into(),
+                service: a.service.clone(),
+                target: serde_json::json!({ "entity_id": a.entity_id }),
+                data: a.data.clone(),
+            };
+            let state = match a.service.as_str() {
+                "turn_off" => Some("off".into()),
+                "turn_on" => Some("on".into()),
+                _ => None,
+            };
+            if let Some(state) = state {
+                self.ha
+                    .optimistic
+                    .insert(a.entity_id.clone(), (state, Instant::now()));
+            }
+            self.ha_call(call);
+        }
+        self.ha.last_fetch = Instant::now() - Duration::from_secs(4);
+        self.toast(
+            format!(
+                "{} · {}",
+                t!(self.lang, "пресет", "preset"),
+                sdw_core::util::truncate(&preset.name, 30)
+            ),
+            true,
+        );
     }
 
     pub fn poll_media(&mut self) {
@@ -1316,7 +1652,8 @@ impl App {
         }
     }
 
-    pub fn set_media_sink(&mut self, sink: &str) {        let sink = sink.to_string();
+    pub fn set_media_sink(&mut self, sink: &str) {
+        let sink = sink.to_string();
         self.media.state.sink = sink.clone();
         if let Some(c) = self.client() {
             self.spawn(move || {
@@ -1396,7 +1733,11 @@ impl App {
     pub fn toggle_monitor_default(&mut self) {
         let Some(c) = self.client() else {
             self.toast(
-                t!(self.lang, "сначала подключите компьютер", "connect a computer first"),
+                t!(
+                    self.lang,
+                    "сначала подключите компьютер",
+                    "connect a computer first"
+                ),
                 false,
             );
             return;
@@ -1439,7 +1780,11 @@ impl App {
         };
         let Some(asset) = info.asset_for("sdw-deck").cloned() else {
             self.toast(
-                t!(self.lang, "в релизе нет файла для дека", "no deck file in the release"),
+                t!(
+                    self.lang,
+                    "в релизе нет файла для дека",
+                    "no deck file in the release"
+                ),
                 false,
             );
             return;
@@ -1546,8 +1891,14 @@ impl App {
 
     fn on_input(&mut self, event: DeckEvent) {
         match event {
-            DeckEvent::Pad(state) => self.gamepad = state,
-            DeckEvent::Devices(list) => self.input_devices = list,
+            DeckEvent::Pad(state) => {
+                self.gamepad = state;
+                self.last_pad = Instant::now();
+            }
+            DeckEvent::Devices(list, pad) => {
+                self.input_devices = list;
+                self.has_gamepad = pad;
+            }
             DeckEvent::Error(e) => {
                 if !self.input_errors.contains(&e) {
                     self.input_errors.push(e);
@@ -1588,6 +1939,12 @@ impl App {
                     let fresh = self.pressed.insert(code);
                     self.last_button = Some((code, label.clone(), Instant::now()));
                     if fresh {
+                        if !self.gamepad_on && !self.binds.capture && pad_key(code) {
+                            self.pad_press.push(code);
+                            if self.pad_press.len() > 16 {
+                                self.pad_press.remove(0);
+                            }
+                        }
                         if self.binds.capture {
                             binds::capture_button(self, code, &label, &device);
                             return;
@@ -1657,10 +2014,7 @@ impl App {
         if pages.is_empty() {
             return;
         }
-        let idx = pages
-            .iter()
-            .position(|p| *p == self.page)
-            .unwrap_or(0) as i32;
+        let idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as i32;
         let next = (idx + delta).rem_euclid(pages.len() as i32) as usize;
         self.set_page(pages[next]);
     }
@@ -1698,7 +2052,8 @@ impl App {
 
         self.poll_status();
         self.poll_notifications();
-        if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(6) {
+        if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(6)
+        {
             self.load_ha();
         }
         if self.page == Page::Media {
@@ -1708,11 +2063,15 @@ impl App {
         self.ensure_stream();
         self.pump_frames(ctx);
 
-        if self.toast.as_ref().is_some_and(|t| t.at.elapsed() > Duration::from_secs(4)) {
+        if self
+            .toast
+            .as_ref()
+            .is_some_and(|t| t.at.elapsed() > Duration::from_secs(4))
+        {
             self.toast = None;
         }
 
-        self.edge_swipe_tick(ctx);
+        self.swipe_tick(ctx);
 
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.go_back(ctx);
@@ -1753,11 +2112,8 @@ impl App {
                             auto_connect: true,
                             pad: None,
                         };
-                        if let Some(existing) = self
-                            .cfg
-                            .hosts
-                            .iter_mut()
-                            .find(|h| h.id == pair.daemon_id)
+                        if let Some(existing) =
+                            self.cfg.hosts.iter_mut().find(|h| h.id == pair.daemon_id)
                         {
                             let pad = existing.pad.clone();
                             *existing = HostConfig { pad, ..host };
@@ -1940,6 +2296,7 @@ impl App {
                 self.ha.entities = states.entities;
                 self.ha.areas = states.areas;
                 self.ha.categories = states.categories;
+                self.ha.presets = states.presets;
                 self.ha.optimistic.retain(|id, (state, at)| {
                     at.elapsed() < Duration::from_secs(6)
                         && self
@@ -1974,25 +2331,50 @@ impl App {
                 self.media.pending = false;
                 self.media.error = e;
             }
-            Task::MediaArt { id, result } => {
-                match result {
-                    Ok(bytes) => {
-                        if id == self.media.art_id {
-                            self.media.art_error.clear();
-                            self.media.art_bytes = Some((id, bytes));
-                        }
-                    }
-                    Err(e) => {
-                        if id == self.media.art_id {
-                            self.media.art_error = e;
-                        }
+            Task::MediaArt { id, result } => match result {
+                Ok(bytes) => {
+                    if id == self.media.art_id {
+                        self.media.art_error.clear();
+                        self.media.art_bytes = Some((id, bytes));
                     }
                 }
-            }
+                Err(e) => {
+                    if id == self.media.art_id {
+                        self.media.art_error = e;
+                    }
+                }
+            },
             Task::Categories(Ok(list)) => {
                 self.ha.categories = list;
             }
             Task::Categories(Err(e)) => self.toast(e, false),
+            Task::Presets(Ok(list)) => {
+                self.ha.presets = list;
+            }
+            Task::Presets(Err(e)) => self.toast(e, false),
+            Task::Audio(Ok(status)) => {
+                self.audio_starting = false;
+                if let Some(s) = self.status.as_mut() {
+                    s.audio = status.clone();
+                }
+                if status.running {
+                    self.audio_error.clear();
+                    crate::audio_ui::spawn_player(self);
+                }
+            }
+            Task::Audio(Err(e)) => {
+                self.audio_starting = false;
+                self.audio_error = e.clone();
+                self.toast(format!("звук: {e}"), false);
+            }
+            Task::AudioApps(Ok(apps)) => {
+                self.audio_apps = apps;
+                self.audio_apps_at = Some(Instant::now());
+            }
+            Task::AudioApps(Err(e)) => {
+                self.audio_error = e.clone();
+                self.audio_apps_at = Some(Instant::now());
+            }
             Task::Msg(Ok(message)) => {
                 if !message.is_empty() {
                     self.toast(message, true);
@@ -2028,14 +2410,12 @@ impl App {
             )
             .show(root, |ui| self.top_bar(ui, &t));
         egui::CentralPanel::default()
-            .frame(
-                egui::Frame::new().fill(t.bg).inner_margin(Margin {
-                    left,
-                    right,
-                    top: 4,
-                    bottom: 4,
-                }),
-            )
+            .frame(egui::Frame::new().fill(t.bg).inner_margin(Margin {
+                left,
+                right,
+                top: 4,
+                bottom: 4,
+            }))
             .show(root, |ui| {
                 theme::backdrop(ui, &t);
                 ui.set_opacity(ease);
@@ -2249,17 +2629,16 @@ impl App {
                             }
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 1.0;
-                                for page in Page::ORDER.into_iter().filter(|p| self.page_shown(*p)) {
+                                for page in Page::ORDER.into_iter().filter(|p| self.page_shown(*p))
+                                {
                                     let active = current == page;
                                     let resp = ui
                                         .add(
-                                            egui::Button::new(
-                                                theme::icon(
-                                                    page.icon(),
-                                                    if active { 18.0 } else { 17.0 },
-                                                    if active { t.strong } else { t.muted },
-                                                ),
-                                            )
+                                            egui::Button::new(theme::icon(
+                                                page.icon(),
+                                                if active { 18.0 } else { 17.0 },
+                                                if active { t.strong } else { t.muted },
+                                            ))
                                             .fill(if active {
                                                 t.accent_soft
                                             } else {
@@ -2304,13 +2683,16 @@ impl App {
     fn page_ui(&mut self, ui: &mut Ui, t: &Tokens) {
         match self.page {
             Page::Home => crate::pages::home(self, ui, t),
+            Page::Clock => crate::pages::clock(self, ui, t),
             Page::Computers => crate::pages::computers(self, ui, t),
             Page::Gamepad => crate::pages::gamepad(self, ui, t),
             Page::Media => crate::pages::media(self, ui, t),
             Page::Screen => crate::pages::screen(self, ui, t),
+            Page::Audio => crate::pages::audio(self, ui, t),
             Page::Notifications => crate::pages::notifications(self, ui, t),
             Page::HomeAssistant => crate::pages::home_assistant(self, ui, t),
             Page::Binds => binds::list_ui(self, ui, t),
+            Page::Addons => crate::pages::addons(self, ui, t),
             Page::Settings => crate::pages::settings(self, ui, t),
             Page::Theme => crate::pages::appearance(self, ui, t),
         }
@@ -2330,7 +2712,11 @@ impl App {
                     .show(ctx, |ui| {
                         if ui
                             .add(
-                                egui::Button::new(theme::icon(theme::icon::CLOSE, 22.0, Color32::WHITE))
+                                egui::Button::new(theme::icon(
+                                    theme::icon::CLOSE,
+                                    22.0,
+                                    Color32::WHITE,
+                                ))
                                 .fill(Color32::from_black_alpha(140))
                                 .stroke(Stroke::new(1.0, Color32::from_white_alpha(60)))
                                 .corner_radius(CornerRadius::ZERO),
@@ -2368,7 +2754,11 @@ impl App {
                 area.center(),
                 Align2::CENTER_CENTER,
                 if self.stream.feed.is_some() {
-                    t!(self.lang, "ждём первый кадр…", "waiting for the first frame…")
+                    t!(
+                        self.lang,
+                        "ждём первый кадр…",
+                        "waiting for the first frame…"
+                    )
                 } else {
                     t!(self.lang, "экран не запущен", "screen is not running")
                 },
@@ -2450,12 +2840,10 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_max_width(760.0);
                         ui.horizontal(|ui| {
-                            ui.label(theme::hud(
-                                t!(self.lang, "клавиатура", "keyboard"),
-                                t.faint,
-                            ));
+                            ui.label(theme::hud(t!(self.lang, "клавиатура", "keyboard"), t.faint));
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if theme::ghost(ui, t!(self.lang, "готово", "done"), &t).clicked() {
+                                if theme::ghost(ui, t!(self.lang, "готово", "done"), &t).clicked()
+                                {
                                     self.osk_open = false;
                                 }
                             });
@@ -2471,19 +2859,24 @@ impl App {
                             [
                                 ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
                                 ["a", "s", "d", "f", "g", "h", "j", "k", "l", "—"],
-                                ["z", "x", "c", "v", "b", "n", "m", ".", "@", theme::icon::BACKSPACE],
+                                [
+                                    "z",
+                                    "x",
+                                    "c",
+                                    "v",
+                                    "b",
+                                    "n",
+                                    "m",
+                                    ".",
+                                    "@",
+                                    theme::icon::BACKSPACE,
+                                ],
                             ]
                         };
                         for (ri, row) in rows.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 if ri == 2 {
-                                    if theme::key_button(
-                                        ui,
-                                        theme::icon::SHIFT,
-                                        &t,
-                                        58.0,
-                                    )
-                                    .clicked()
+                                    if theme::key_button(ui, theme::icon::SHIFT, &t, 58.0).clicked()
                                     {
                                         self.osk_shift = !self.osk_shift;
                                     }
@@ -2492,7 +2885,10 @@ impl App {
                                     let label = if key.len() == 1
                                         && self.osk_shift
                                         && !self.osk_symbols
-                                        && key.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                                        && key
+                                            .chars()
+                                            .next()
+                                            .is_some_and(|c| c.is_ascii_alphabetic())
                                     {
                                         key.to_uppercase()
                                     } else {
@@ -2511,7 +2907,9 @@ impl App {
                                     }
                                 }
                                 if ri == 2 {
-                                    if theme::key_button(ui, theme::icon::RETURN, &t, 58.0).clicked() {
+                                    if theme::key_button(ui, theme::icon::RETURN, &t, 58.0)
+                                        .clicked()
+                                    {
                                         push_key(ctx, egui::Key::Enter);
                                     }
                                 }
@@ -2529,13 +2927,8 @@ impl App {
                             {
                                 self.osk_symbols = !self.osk_symbols;
                             }
-                            if theme::key_button(
-                                ui,
-                                t!(self.lang, "пробел", "space"),
-                                &t,
-                                300.0,
-                            )
-                            .clicked()
+                            if theme::key_button(ui, t!(self.lang, "пробел", "space"), &t, 300.0)
+                                .clicked()
                             {
                                 push_text(ctx, " ");
                             }
@@ -2587,24 +2980,32 @@ impl App {
 impl eframe::App for App {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.pad_ui(ctx, raw);
+        self.touch_gesture_tick(ctx, raw);
     }
 
     fn ui(&mut self, root: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.maybe_check_updates();
         self.tick(&ctx);
+        crate::audio_ui::tick(self);
         if self.stream.fullscreen {
             self.fullscreen_ui(root, &ctx);
         } else {
             self.chrome_ui(root, &ctx);
         }
+        crate::audio_ui::confirm_modal(self, &ctx);
         self.osk_ui(&ctx);
         self.toast_ui(&ctx);
         self.pad_cursor_ui(&ctx);
 
         let ms = if self.stream.feed.is_some() {
             24
-        } else if self.gamepad_on || self.binds.capture || deck_mode() {
+        } else if self.gamepad_on
+            || self.binds.capture
+            || deck_mode()
+            || self.has_gamepad
+            || self.last_pad.elapsed() < Duration::from_secs(2)
+        {
             // The pad is read on a background thread; poll the frame often
             // enough that the virtual cursor does not feel laggy.
             33
@@ -2690,15 +3091,33 @@ pub fn brightness_map() -> HashMap<String, u8> {
 }
 
 /// Running on a handheld where the compositor may scale a small screen.
-fn deck_mode() -> bool {
-    std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some()
-        || sdw_core::util::is_steam_deck()
+pub(crate) fn deck_mode() -> bool {
+    std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some() || sdw_core::util::is_steam_deck()
 }
 
 /// Upper bound for the ui scale slider. A 1280x800 deck screen cannot carry
 /// the same 1.4x zoom a desktop window can.
 pub fn max_ui_scale() -> f32 {
-    if deck_mode() { 1.15 } else { 1.4 }
+    if deck_mode() {
+        1.5
+    } else {
+        1.7
+    }
+}
+
+/// Buttons that drive the deck UI itself (not the virtual pad).
+fn pad_key(code: u16) -> bool {
+    matches!(
+        code,
+        input::BTN_SOUTH
+            | input::BTN_EAST
+            | input::BTN_NORTH
+            | input::BTN_TL
+            | input::BTN_TR
+            | input::BTN_SELECT
+            | input::BTN_START
+            | input::BTN_MODE
+    )
 }
 
 /// Radial-ish deadzone: keep the centre still, then ramp to full speed.

@@ -24,8 +24,10 @@ pub struct DaemonConfig {
     pub viiper: ViiperCfg,
     pub monitor: MonitorCfg,
     pub notifications: NotificationsCfg,
+    pub audio: AudioCfg,
     pub ha: HaCfg,
     pub clients: Vec<ClientRecord>,
+    pub addons: sdw_core::addons::AddonsCfg,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +40,29 @@ pub struct ViiperCfg {
     pub usb_addr: String,
     pub password: String,
     pub default_pad: PadKind,
+}
+
+/// Streaming the computer's sound to the Deck. Off by default on the daemon;
+/// the user enables it consciously because it can capture private audio.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AudioCfg {
+    pub enabled: bool,
+    /// Let a paired Deck start the stream. When off, only the daemon window can.
+    pub allow_remote: bool,
+    pub rate: u32,
+    pub channels: u8,
+}
+
+impl Default for AudioCfg {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            allow_remote: true,
+            rate: 48000,
+            channels: 2,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +96,8 @@ pub struct HaCfg {
     pub favorites: Vec<String>,
     /// Custom tabs shared with every deck.
     pub categories: Vec<sdw_core::model::HaCategory>,
+    /// Named light presets shared with every deck.
+    pub presets: Vec<sdw_core::model::HaPreset>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,8 +126,10 @@ impl Default for DaemonConfig {
             viiper: ViiperCfg::default(),
             monitor: MonitorCfg::default(),
             notifications: NotificationsCfg::default(),
+            audio: AudioCfg::default(),
             ha: HaCfg::default(),
             clients: Vec::new(),
+            addons: sdw_core::addons::AddonsCfg::default(),
         }
     }
 }
@@ -151,6 +180,7 @@ impl Default for HaCfg {
             token: String::new(),
             favorites: Vec::new(),
             categories: Vec::new(),
+            presets: Vec::new(),
         }
     }
 }
@@ -320,7 +350,11 @@ pub fn viiper_key_paths() -> Vec<PathBuf> {
 }
 
 pub fn viiper_bin_path() -> PathBuf {
-    let name = if cfg!(windows) { "viiper.exe" } else { "viiper" };
+    let name = if cfg!(windows) {
+        "viiper.exe"
+    } else {
+        "viiper"
+    };
     sdw_core::util::data_dir().join("bin").join(name)
 }
 

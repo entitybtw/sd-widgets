@@ -232,10 +232,7 @@ fn download(url: &str, dest: &Path) -> Result<Vec<u8>, String> {
     if r.status().as_u16() != 200 {
         return Err(format!("HTTP {} для {url}", r.status().as_u16()));
     }
-    let bytes = r
-        .body_mut()
-        .read_to_vec()
-        .map_err(|e| e.to_string())?;
+    let bytes = r.body_mut().read_to_vec().map_err(|e| e.to_string())?;
     if let Some(parent) = dest.parent() {
         sdw_core::util::ensure_dir(parent).map_err(|e| e.to_string())?;
     }
@@ -256,7 +253,9 @@ fn install_viiper(ctx: &JobCtx, logger: &Logger) -> Result<(), String> {
         ("linux", "aarch64") => "viiper-linux-arm64",
         ("windows", "x86_64") => "viiper-windows-amd64.exe",
         ("windows", "aarch64") => "viiper-windows-arm64.exe",
-        _ => return Err("Готовый бинарник VIIPER есть только для Linux и Windows x64/arm64".into()),
+        _ => {
+            return Err("Готовый бинарник VIIPER есть только для Linux и Windows x64/arm64".into())
+        }
     };
     let base = format!("https://github.com/Alia5/VIIPER/releases/download/{tag}");
     let url = format!("{base}/{asset}");

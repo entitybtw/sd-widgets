@@ -1,5 +1,6 @@
 //! SD Widgets shared crate: protocol models, HTTP client, discovery, UDP gamepad packets.
 
+pub mod addons;
 pub mod api;
 pub mod auth;
 pub mod config;

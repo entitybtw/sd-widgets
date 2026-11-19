@@ -51,11 +51,7 @@ impl PadRuntime {
             connected: self.connected.load(Ordering::Relaxed),
             last_input_ms: self.last_input.load(Ordering::Relaxed),
             rumble: *self.rumble.lock().unwrap_or_else(|e| e.into_inner()),
-            error: self
-                .error
-                .lock()
-                .map(|e| e.clone())
-                .unwrap_or_default(),
+            error: self.error.lock().map(|e| e.clone()).unwrap_or_default(),
         }
     }
 }
@@ -252,10 +248,8 @@ impl ViiperManager {
     pub fn start(&self, cfg: &DaemonConfig) -> Result<(), String> {
         if Self::ping(cfg).is_ok() {
             self.set_error("");
-            self.logger.info(format!(
-                "VIIPER уже запущен на {}",
-                cfg.viiper.api_addr
-            ));
+            self.logger
+                .info(format!("VIIPER уже запущен на {}", cfg.viiper.api_addr));
             return Ok(());
         }
         let bin = self
@@ -398,7 +392,12 @@ impl ViiperManager {
         self.pads.lock().ok().and_then(|p| p.get(id).cloned())
     }
 
-    pub fn create_pad(&self, cfg: &DaemonConfig, name: &str, kind: PadKind) -> Result<PadCreated, String> {
+    pub fn create_pad(
+        &self,
+        cfg: &DaemonConfig,
+        name: &str,
+        kind: PadKind,
+    ) -> Result<PadCreated, String> {
         if Self::ping(cfg).is_err() {
             self.start(cfg)?;
         }
@@ -474,11 +473,7 @@ impl ViiperManager {
     }
 
     pub fn delete_pad(&self, id: &str) -> Result<(), String> {
-        let pad = self
-            .pads
-            .lock()
-            .map_err(|_| "pads lock")?
-            .remove(id);
+        let pad = self.pads.lock().map_err(|_| "pads lock")?.remove(id);
         let Some(pad) = pad else {
             return Err("пад не найден".into());
         };
@@ -685,73 +680,84 @@ fn send_state(
             } else {
                 s.accel
             };
-            let (mut buttons, touch, create, options, ps, l2btn, r2btn) = if kind == PadKind::DualShock4 {
-                let mut buttons: u16 = 0;
-                if has(udp::BTN_X) {
-                    buttons |= 0x0010;
-                }
-                if has(udp::BTN_A) {
-                    buttons |= 0x0020;
-                }
-                if has(udp::BTN_B) {
-                    buttons |= 0x0040;
-                }
-                if has(udp::BTN_Y) {
-                    buttons |= 0x0080;
-                }
-                if has(udp::BTN_LB) {
-                    buttons |= 0x0100;
-                }
-                if has(udp::BTN_RB) {
-                    buttons |= 0x0200;
-                }
-                if has(udp::BTN_BACK) {
-                    buttons |= 0x1000;
-                }
-                if has(udp::BTN_START) {
-                    buttons |= 0x2000;
-                }
-                if has(udp::BTN_L3) {
-                    buttons |= 0x4000;
-                }
-                if has(udp::BTN_R3) {
-                    buttons |= 0x8000;
-                }
-                (buttons as u32, 0x0002u32, 0x1000u32, 0x2000u32, 0x0001u32, 0x0400u32, 0x0800u32)
-            } else {
-                let mut buttons: u32 = 0;
-                if has(udp::BTN_X) {
-                    buttons |= 0x0010;
-                }
-                if has(udp::BTN_A) {
-                    buttons |= 0x0020;
-                }
-                if has(udp::BTN_B) {
-                    buttons |= 0x0040;
-                }
-                if has(udp::BTN_Y) {
-                    buttons |= 0x0080;
-                }
-                if has(udp::BTN_LB) {
-                    buttons |= 0x0100;
-                }
-                if has(udp::BTN_RB) {
-                    buttons |= 0x0200;
-                }
-                if has(udp::BTN_BACK) {
-                    buttons |= 0x1000;
-                }
-                if has(udp::BTN_START) {
-                    buttons |= 0x2000;
-                }
-                if has(udp::BTN_L3) {
-                    buttons |= 0x4000;
-                }
-                if has(udp::BTN_R3) {
-                    buttons |= 0x8000;
-                }
-                (buttons, 0x0002u32, 0x1000u32, 0x2000u32, 0x10000u32, 0x0400u32, 0x0800u32)
-            };
+            let (mut buttons, touch, create, options, ps, l2btn, r2btn) =
+                if kind == PadKind::DualShock4 {
+                    let mut buttons: u16 = 0;
+                    if has(udp::BTN_X) {
+                        buttons |= 0x0010;
+                    }
+                    if has(udp::BTN_A) {
+                        buttons |= 0x0020;
+                    }
+                    if has(udp::BTN_B) {
+                        buttons |= 0x0040;
+                    }
+                    if has(udp::BTN_Y) {
+                        buttons |= 0x0080;
+                    }
+                    if has(udp::BTN_LB) {
+                        buttons |= 0x0100;
+                    }
+                    if has(udp::BTN_RB) {
+                        buttons |= 0x0200;
+                    }
+                    if has(udp::BTN_BACK) {
+                        buttons |= 0x1000;
+                    }
+                    if has(udp::BTN_START) {
+                        buttons |= 0x2000;
+                    }
+                    if has(udp::BTN_L3) {
+                        buttons |= 0x4000;
+                    }
+                    if has(udp::BTN_R3) {
+                        buttons |= 0x8000;
+                    }
+                    (
+                        buttons as u32,
+                        0x0002u32,
+                        0x1000u32,
+                        0x2000u32,
+                        0x0001u32,
+                        0x0400u32,
+                        0x0800u32,
+                    )
+                } else {
+                    let mut buttons: u32 = 0;
+                    if has(udp::BTN_X) {
+                        buttons |= 0x0010;
+                    }
+                    if has(udp::BTN_A) {
+                        buttons |= 0x0020;
+                    }
+                    if has(udp::BTN_B) {
+                        buttons |= 0x0040;
+                    }
+                    if has(udp::BTN_Y) {
+                        buttons |= 0x0080;
+                    }
+                    if has(udp::BTN_LB) {
+                        buttons |= 0x0100;
+                    }
+                    if has(udp::BTN_RB) {
+                        buttons |= 0x0200;
+                    }
+                    if has(udp::BTN_BACK) {
+                        buttons |= 0x1000;
+                    }
+                    if has(udp::BTN_START) {
+                        buttons |= 0x2000;
+                    }
+                    if has(udp::BTN_L3) {
+                        buttons |= 0x4000;
+                    }
+                    if has(udp::BTN_R3) {
+                        buttons |= 0x8000;
+                    }
+                    (
+                        buttons, 0x0002u32, 0x1000u32, 0x2000u32, 0x10000u32, 0x0400u32, 0x0800u32,
+                    )
+                };
             let _ = (touch, create, options);
             if s.lt > 0.5 {
                 buttons |= l2btn;

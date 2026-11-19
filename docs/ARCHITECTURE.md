@@ -24,6 +24,8 @@
 - `config.rs` — Deck config load/save (atomic write).
 - `i18n.rs` — `t!(lang, "ru", "en")`.
 - `ha.rs` — Home Assistant helpers.
+- `addons.rs` — declarative addon manifests, install/remove, settings values,
+  `AddonInfo` for the status payload.
 - `util.rs` — paths, process helpers, addresses, platform detection.
 
 ### `sdw-deck` (the Deck)
@@ -31,6 +33,9 @@
 - `app.rs` — state, polling, pairing, page routing, chrome (top bar, arrows, dock,
   page transition), key input.
 - `pages.rs` — home grid and every page, including the Look page.
+- `clock.rs` — the four clock renderers and their controls.
+- `addons_ui.rs` — the Addons page: import, enable, settings, themes, clocks and
+  daemon action buttons.
 - `theme.rs` — Grid tokens, CSS variable parser, presets, backdrop, tiles,
   arrows, switches, chips.
 - `deck_view.rs` — the drawn Steam Deck and live control highlighting.
@@ -47,6 +52,11 @@
 - `monitor.rs` — monitor creation per backend, layout, config patching, capture,
   RFB client, frame buffer.
 - `notifications.rs` — desktop notification watcher.
+- `audio.rs` — `parec` for the default monitor, one `pw-record` per picked
+  application with a Rust mixer (PulseAudio falls back to a null sink), a
+  bounded PCM ring buffer and the blocking `Read` used by the HTTP stream.
+- `server.rs` also routes `addon:<id>:<action>` through the declared action
+  runner; disabled addons and undeclared actions are rejected.
 - `install.rs` — dependency detection and install jobs.
 - `gui/` — hoplite-style hard-edge egui setup wizard and control panel.
 - `config.rs` — daemon config in TOML.
@@ -55,6 +65,16 @@
 
 A vendored copy of the MIT Rust client for the VIIPER server. The server itself is
 GPL-3.0 and is installed separately; it is not linked or bundled.
+
+## Addons
+
+`sdw-core::addons` owns the format: a folder with `addon.json`, a theme CSS, a
+clock JSON, tiles, sounds and daemon actions. Both binaries read the same folder
+in `~/.config/sd-widgets/addons`; each keeps its own enabled list and values in
+its own config. The Deck applies a theme as the preset `addon:<id>`, adds tiles
+to Home and clock presets to the Clock page. The daemon lists the packages in
+`DaemonStatus.addons` and runs an action only when the package is enabled. The
+format is documented in [`ADDONS.md`](ADDONS.md).
 
 ## Threads
 

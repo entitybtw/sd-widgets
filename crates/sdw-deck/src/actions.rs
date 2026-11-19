@@ -37,7 +37,10 @@ fn launch(target: &str) -> Result<String, String> {
     if target.is_empty() {
         return Err("пустое приложение".into());
     }
-    if target.starts_with("http://") || target.starts_with("https://") || target.starts_with("steam://") {
+    if target.starts_with("http://")
+        || target.starts_with("https://")
+        || target.starts_with("steam://")
+    {
         return util::open_url(target).map(|_| format!("открыто {target}"));
     }
     if target.ends_with(".desktop") {
@@ -52,7 +55,11 @@ fn launch(target: &str) -> Result<String, String> {
 }
 
 fn volume_delta(delta: i32) -> Result<String, String> {
-    let step = format!("{}%{}", delta.abs().max(1), if delta >= 0 { "+" } else { "-" });
+    let step = format!(
+        "{}%{}",
+        delta.abs().max(1),
+        if delta >= 0 { "+" } else { "-" }
+    );
     if util::has("wpctl") {
         return util::run("wpctl", &["set-volume", "@DEFAULT_AUDIO_SINK@", &step])
             .map(|_| format!("громкость {delta:+}%"));
@@ -95,16 +102,20 @@ fn volume_mute() -> Result<String, String> {
             .map(|_| "звук переключён".into());
     }
     if util::has("amixer") {
-        return util::run("amixer", &["sset", "Master", "toggle"]).map(|_| "звук переключён".into());
+        return util::run("amixer", &["sset", "Master", "toggle"])
+            .map(|_| "звук переключён".into());
     }
     Err("нет wpctl, pactl или amixer".into())
 }
 
 fn brightness_delta(delta: i32) -> Result<String, String> {
-    let step = format!("{}%{}", delta.abs().max(1), if delta >= 0 { "+" } else { "-" });
+    let step = format!(
+        "{}%{}",
+        delta.abs().max(1),
+        if delta >= 0 { "+" } else { "-" }
+    );
     if util::has("brightnessctl") {
-        return util::run("brightnessctl", &["set", &step])
-            .map(|_| format!("яркость {delta:+}%"));
+        return util::run("brightnessctl", &["set", &step]).map(|_| format!("яркость {delta:+}%"));
     }
     if util::has("light") {
         let arg = if delta >= 0 {
@@ -153,7 +164,11 @@ fn key_combo(combo: &str) -> Result<String, String> {
     if combo.is_empty() {
         return Err("пустая комбинация".into());
     }
-    let parts: Vec<&str> = combo.split('+').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let parts: Vec<&str> = combo
+        .split('+')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
     if parts.is_empty() {
         return Err("пустая комбинация".into());
     }

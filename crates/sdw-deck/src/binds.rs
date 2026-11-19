@@ -9,7 +9,7 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, FontFamily, Layout, Margin, RichText, Stroke, TextEdit, Ui,
     Vec2,
 };
-use sdw_core::model::{Action, Bind, GestureKind, GestureSpec, SwipeDir, Trigger, random_id};
+use sdw_core::model::{random_id, Action, Bind, GestureKind, GestureSpec, SwipeDir, Trigger};
 use sdw_core::{t, Lang};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,12 +267,7 @@ pub fn capture_gesture(app: &mut App, spec: &GestureSpec) {
 }
 
 fn title(ui: &mut Ui, t: &Tokens, text: &str, sub: &str) {
-    ui.label(
-        RichText::new(text)
-            .size(26.0)
-            .strong()
-            .color(t.strong),
-    );
+    ui.label(RichText::new(text).size(26.0).strong().color(t.strong));
     if !sub.is_empty() {
         ui.label(RichText::new(sub).size(13.5).color(t.muted));
     }
@@ -298,13 +293,18 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
             app.binds.editor = Some(BindEditor::new());
             app.binds.capture = true;
         }
-        if theme::ghost(ui, t!(app.lang, "набор по умолчанию", "default set"), t).clicked() {
+        if theme::ghost(ui, t!(app.lang, "набор по умолчанию", "default set"), t).clicked()
+        {
             seed_defaults(app);
         }
         let mut global = app.cfg.global_gestures;
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             theme::switch(ui, &mut global, t);
-            ui.label(RichText::new(t!(app.lang, "свайпы страниц", "page swipes")).size(13.5).color(t.muted));
+            ui.label(
+                RichText::new(t!(app.lang, "свайпы страниц", "page swipes"))
+                    .size(13.5)
+                    .color(t.muted),
+            );
         });
         if global != app.cfg.global_gestures {
             app.cfg.global_gestures = global;
@@ -386,7 +386,11 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
             .fill(t.card)
             .stroke(Stroke::new(
                 1.0,
-                if enabled { t.line } else { t.line.gamma_multiply(0.4) },
+                if enabled {
+                    t.line
+                } else {
+                    t.line.gamma_multiply(0.4)
+                },
             ))
             .corner_radius(CornerRadius::ZERO)
             .inner_margin(Margin::symmetric(18, 14))
@@ -402,7 +406,11 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                 })
                                 .size(16.5)
                                 .strong()
-                                .color(if enabled { t.strong } else { t.muted }),
+                                .color(if enabled {
+                                    t.strong
+                                } else {
+                                    t.muted
+                                }),
                             )
                             .wrap(),
                         );
@@ -435,11 +443,7 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         if theme::switch(ui, &mut enabled, t).changed() {
                             toggle = Some((i, enabled));
                         }
-                        ui.label(
-                            RichText::new(bind.action.label())
-                                .size(13.5)
-                                .color(t.muted),
-                        );
+                        ui.label(RichText::new(bind.action.label()).size(13.5).color(t.muted));
                     });
                 });
             });
@@ -1116,10 +1120,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
             }
             app.binds.capture = false;
             app.save();
-            app.toast(
-                t!(lang, "бинд сохранён", "bind saved"),
-                true,
-            );
+            app.toast(t!(lang, "бинд сохранён", "bind saved"), true);
         }
         Outcome::Delete => {
             if let Some(id) = editor.id.clone() {
@@ -1127,10 +1128,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
             }
             app.binds.capture = false;
             app.save();
-            app.toast(
-                t!(lang, "бинд удалён", "bind deleted"),
-                true,
-            );
+            app.toast(t!(lang, "бинд удалён", "bind deleted"), true);
         }
     }
 }
@@ -1163,9 +1161,7 @@ pub fn kv(ui: &mut Ui, t: &Tokens, key: &str, value: &str) {
                 .size(11.5)
                 .color(t.faint),
         );
-        ui.add(
-            egui::Label::new(RichText::new(value).size(12.5).color(t.muted)).wrap(),
-        );
+        ui.add(egui::Label::new(RichText::new(value).size(12.5).color(t.muted)).wrap());
     });
 }
 

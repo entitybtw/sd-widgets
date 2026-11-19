@@ -63,14 +63,11 @@ impl UpdateInfo {
             };
             by_ext || n.contains(&platform)
         };
-        self.assets
-            .iter()
-            .find(|a| fits(&a.name))
-            .or_else(|| {
-                self.assets
-                    .iter()
-                    .find(|a| a.name.to_ascii_lowercase().contains(&app))
-            })
+        self.assets.iter().find(|a| fits(&a.name)).or_else(|| {
+            self.assets
+                .iter()
+                .find(|a| a.name.to_ascii_lowercase().contains(&app))
+        })
     }
 }
 
@@ -178,11 +175,7 @@ pub fn updates_dir() -> PathBuf {
 
 /// Download an asset into `dest` and report received bytes through `progress`.
 /// Executables get the +x bit on Unix, so an AppImage can be started directly.
-pub fn download(
-    asset: &UpdateAsset,
-    dest: &Path,
-    progress: Arc<AtomicU64>,
-) -> Result<u64, String> {
+pub fn download(asset: &UpdateAsset, dest: &Path, progress: Arc<AtomicU64>) -> Result<u64, String> {
     if let Some(parent) = dest.parent() {
         crate::util::ensure_dir(parent).map_err(|e| e.to_string())?;
     }
@@ -259,10 +252,7 @@ pub fn install(downloaded: &Path) -> Result<String, String> {
         match std::fs::copy(downloaded, &current) {
             Ok(_) => {
                 use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(
-                    &current,
-                    std::fs::Permissions::from_mode(0o755),
-                );
+                let _ = std::fs::set_permissions(&current, std::fs::Permissions::from_mode(0o755));
                 Ok(format!(
                     "обновление установлено: {} (перезапустите приложение)",
                     current.display()

@@ -1,8 +1,35 @@
 //! Home Assistant REST client and entity helpers.
 
-use crate::model::{HaCall, HaEntity, HaStates};
+use crate::model::{HaCall, HaEntity, HaPresetAction, HaStates};
 use serde_json::Value;
 use std::time::Duration;
+
+/// Snapshot every lamp that is on into preset actions: service data only, so
+/// the preset can be re-applied after any restart.
+pub fn capture_light_preset(entities: &[HaEntity]) -> Vec<HaPresetAction> {
+    let mut actions = Vec::new();
+    for e in entities {
+        if e.domain() != "light" || !e.is_on() {
+            continue;
+        }
+        let mut data = serde_json::Map::new();
+        if let Some(pct) = e.brightness_pct() {
+            data.insert("brightness_pct".into(), serde_json::json!(pct));
+        }
+        if let Some(k) = e.color_temp_kelvin() {
+            data.insert("color_temp_kelvin".into(), serde_json::json!(k));
+        }
+        if let Some(rgb) = e.rgb_color() {
+            data.insert("rgb_color".into(), serde_json::json!(rgb));
+        }
+        actions.push(HaPresetAction {
+            entity_id: e.entity_id.clone(),
+            service: "turn_on".into(),
+            data: serde_json::Value::Object(data),
+        });
+    }
+    actions
+}
 
 pub struct HaClient {
     base: String,
@@ -45,7 +72,10 @@ impl HaClient {
         let status = r.status().as_u16();
         let text = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
         if status != 200 {
-            return Err(format!("Home Assistant: HTTP {status}: {}", crate::util::truncate(&text, 240)));
+            return Err(format!(
+                "Home Assistant: HTTP {status}: {}",
+                crate::util::truncate(&text, 240)
+            ));
         }
         serde_json::from_str(&text).map_err(|e| e.to_string())
     }
@@ -136,6 +166,7 @@ impl HaClient {
             fetched_ms: crate::model::now_ms(),
             areas,
             categories: Vec::new(),
+            presets: Vec::new(),
         })
     }
 
@@ -163,7 +194,10 @@ impl HaClient {
         let status = r.status().as_u16();
         let text = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
         if !(200..300).contains(&status) {
-            return Err(format!("Home Assistant: HTTP {status}: {}", crate::util::truncate(&text, 240)));
+            return Err(format!(
+                "Home Assistant: HTTP {status}: {}",
+                crate::util::truncate(&text, 240)
+            ));
         }
         Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
     }
@@ -171,7 +205,11 @@ impl HaClient {
     pub fn toggle(&self, entity_id: &str, on: bool) -> Result<Value, String> {
         self.call(&HaCall {
             domain: "homeassistant".into(),
-            service: if on { "turn_on".into() } else { "turn_off".into() },
+            service: if on {
+                "turn_on".into()
+            } else {
+                "turn_off".into()
+            },
             target: serde_json::json!({ "entity_id": entity_id }),
             data: Value::Null,
         })
@@ -217,12 +255,24 @@ impl HaClient {
 pub fn is_controllable(e: &HaEntity) -> bool {
     matches!(
         e.domain(),
-        "light" | "switch" | "fan" | "input_boolean" | "media_player" | "climate" | "cover" | "scene" | "script" | "button"
+        "light"
+            | "switch"
+            | "fan"
+            | "input_boolean"
+            | "media_player"
+            | "climate"
+            | "cover"
+            | "scene"
+            | "script"
+            | "button"
     )
 }
 
 pub fn is_sensor(e: &HaEntity) -> bool {
-    matches!(e.domain(), "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker")
+    matches!(
+        e.domain(),
+        "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker"
+    )
 }
 
 pub fn domain_label(domain: &str, lang: crate::i18n::Lang) -> &'static str {

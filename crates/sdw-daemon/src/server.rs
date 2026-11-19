@@ -71,7 +71,11 @@ fn handle(state: Arc<AppState>, mut req: Request) {
     }
 
     if !public_client_allowed(&state, ip) {
-        return error(req, 403, "Запросы из публичных сетей выключены в настройках");
+        return error(
+            req,
+            403,
+            "Запросы из публичных сетей выключены в настройках",
+        );
     }
     if !authorized(&state, &req, query) {
         return error(req, 401, "Неверный или отсутствующий токен");
@@ -112,10 +116,17 @@ fn handle(state: Arc<AppState>, mut req: Request) {
         (Method::Post, "/api/v1/monitor/input") => monitor_input(state, req),
         (Method::Get, "/api/v1/monitor/frame") => monitor_frame(state, req),
 
-        (Method::Post, "/api/v1/remote") => remote_command(state, req),
-        (Method::Get, "/api/v1/media") => {
-            respond_json(req, 200, &state.media.snapshot())
+        (Method::Get, "/api/v1/audio") => respond_json(req, 200, &state.audio.status()),
+        (Method::Get, "/api/v1/audio/sources") => respond_json(req, 200, &state.audio.list_apps()),
+        (Method::Post, "/api/v1/audio/start") => audio_start(state, req),
+        (Method::Post, "/api/v1/audio/stop") => {
+            state.audio.stop();
+            respond_json(req, 200, &state.audio.status())
         }
+        (Method::Get, "/api/v1/audio/stream") => audio_stream(state, req),
+
+        (Method::Post, "/api/v1/remote") => remote_command(state, req),
+        (Method::Get, "/api/v1/media") => respond_json(req, 200, &state.media.snapshot()),
         (Method::Post, "/api/v1/media/control") => media_control(state, req),
         (Method::Get, "/api/v1/media/art") => {
             let url = query_param(query, "url").unwrap_or_default();
@@ -155,6 +166,8 @@ fn handle(state: Arc<AppState>, mut req: Request) {
         (Method::Post, "/api/v1/ha/favorites") => ha_favorites(state, req),
         (Method::Get, "/api/v1/ha/categories") => ha_categories_get(state, req),
         (Method::Post, "/api/v1/ha/categories") => ha_categories_set(state, req),
+        (Method::Get, "/api/v1/ha/presets") => ha_presets_get(state, req),
+        (Method::Post, "/api/v1/ha/presets") => ha_presets_set(state, req),
 
         (Method::Post, "/api/v1/security/password") => security_password(state, req),
         (Method::Post, "/api/v1/security/rotate") => security_rotate(state, req),
@@ -221,7 +234,12 @@ fn authorized(state: &AppState, req: &Request, query: &str) -> bool {
     let header = req
         .headers()
         .iter()
-        .find(|h| h.field.as_str().as_str().eq_ignore_ascii_case("authorization"))
+        .find(|h| {
+            h.field
+                .as_str()
+                .as_str()
+                .eq_ignore_ascii_case("authorization")
+        })
         .map(|h| h.value.as_str().to_string())
         .unwrap_or_default();
     let bearer = header
@@ -267,7 +285,9 @@ fn pair(state: Arc<AppState>, mut req: Request, ip: IpAddr) {
         }
         if !sdw_core::auth::verify_password(&body.password, &cfg.api_password_hash) {
             entry.0 += 1;
-            state.logger.warn(format!("Неудачная попытка спаривания с {ip}"));
+            state
+                .logger
+                .warn(format!("Неудачная попытка спаривания с {ip}"));
             return error(req, 403, "Неверный пароль");
         }
         *entry = (0, Instant::now());
@@ -489,6 +509,9 @@ fn remote_command(state: Arc<AppState>, mut req: Request) {
                 } else {
                     Err("Можно открывать только http(s) ссылки".into())
                 }
+            } else if let Some(rest) = command.strip_prefix("addon:") {
+                let (id, action) = rest.split_once(':').unwrap_or((rest, ""));
+                run_addon_action(&state, id, action)
             } else if let Some(app) = command.strip_prefix("launch:") {
                 let app = app.trim();
                 if app.is_empty()
@@ -540,6 +563,173 @@ fn media_control(state: Arc<AppState>, mut req: Request) {
         Ok(message) => respond_json(req, 200, &json!({"ok": true, "message": message})),
         Err(e) => error(req, 400, &e),
     }
+}
+
+/// Run an action declared by an enabled addon. Addon actions are installed by
+/// the user themselves, so `Shell` is allowed here, unlike arbitrary deck input.
+pub(crate) fn run_addon_action(
+    state: &Arc<AppState>,
+    id: &str,
+    action_id: &str,
+) -> Result<String, String> {
+    if id.trim().is_empty() || action_id.trim().is_empty() {
+        return Err("Формат: addon:<id>:<action>".into());
+    }
+    let cfg = state.cfg();
+    if !cfg.addons.is_on(id) {
+        return Err(format!("Аддон {id} выключен"));
+    }
+    let addon = sdw_core::addons::find(id).ok_or_else(|| format!("Нет аддона {id}"))?;
+    let action = addon
+        .manifest
+        .daemon
+        .actions
+        .iter()
+        .find(|a| a.id == action_id)
+        .ok_or_else(|| format!("Нет действия {action_id} у аддона {id}"))?;
+    let label = addon.manifest.name.clone();
+    let result = match &action.action {
+        Action::None => Ok("ok".into()),
+        Action::Shell { command } => run_shell(command),
+        Action::Launch { target } => sdw_core::util::run("gtk-launch", &[target])
+            .or_else(|_| sdw_core::util::run("xdg-open", &[target]))
+            .map(|_| "launched".into()),
+        Action::Url { url } => {
+            if url.starts_with("http://") || url.starts_with("https://") {
+                sdw_core::util::open_url(url).map(|_| "opened".into())
+            } else {
+                Err("Можно открывать только http(s) ссылки".into())
+            }
+        }
+        Action::Volume { delta } => volume_step(&format!("{delta:+}%")),
+        Action::VolumeSet { percent } => {
+            if sdw_core::util::has("wpctl") {
+                sdw_core::util::run(
+                    "wpctl",
+                    &["set-volume", "@DEFAULT_AUDIO_SINK@", &format!("{percent}%")],
+                )
+                .map(|_| "volume".into())
+            } else {
+                Err("Нужен wpctl".into())
+            }
+        }
+        Action::Mute => volume_mute(),
+        Action::Media { command } => {
+            let action = command.replace('_', "-");
+            media_command(&action)
+        }
+        Action::Brightness { delta } => brightness_step(*delta),
+        Action::BrightnessSet { percent } => {
+            if sdw_core::util::has("brightnessctl") {
+                sdw_core::util::run("brightnessctl", &["set", &format!("{percent}%")])
+                    .map(|_| "brightness".into())
+            } else {
+                Err("Нужен brightnessctl".into())
+            }
+        }
+        Action::Key { combo } => {
+            if sdw_core::util::has("wtype") {
+                sdw_core::util::run("wtype", &["-k", combo]).map(|_| "key".into())
+            } else if sdw_core::util::has("ydotool") {
+                sdw_core::util::run("ydotool", &["key", combo]).map(|_| "key".into())
+            } else {
+                Err("Нужен wtype или ydotool".into())
+            }
+        }
+        Action::Page { .. } => Err("Страницы деки не работают на компьютере".into()),
+        Action::Remote { .. } => Err("Вложенные удалённые команды запрещены".into()),
+        Action::Ha { .. } => Err("Home Assistant выполняется на деке".into()),
+    };
+    result.map(|message| {
+        state
+            .logger
+            .info(format!("Аддон {label}: {action_id} -> {message}"));
+        format!("{label}: {message}")
+    })
+}
+
+fn run_shell(command: &str) -> Result<String, String> {
+    let out = std::process::Command::new("sh")
+        .arg("-lc")
+        .arg(command)
+        .output()
+        .map_err(|e| format!("sh: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if out.status.success() {
+        let line = stdout.lines().next().unwrap_or("").trim().to_string();
+        Ok(if line.is_empty() { "ok".into() } else { line })
+    } else {
+        let line = stderr.lines().next().unwrap_or("").trim().to_string();
+        Err(if line.is_empty() {
+            format!("код {}", out.status.code().unwrap_or(-1))
+        } else {
+            line
+        })
+    }
+}
+
+fn brightness_step(delta: i32) -> Result<String, String> {
+    if sdw_core::util::has("brightnessctl") {
+        let arg = if delta >= 0 {
+            format!("{delta}%+")
+        } else {
+            format!("{}%-", -delta)
+        };
+        sdw_core::util::run("brightnessctl", &["set", &arg]).map(|_| "brightness".into())
+    } else {
+        Err("Нужен brightnessctl".into())
+    }
+}
+
+// ---------------------------------------------------------------- audio
+
+fn audio_start(state: Arc<AppState>, mut req: Request) {
+    let body: AudioStart = match read_json(&mut req) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &e),
+    };
+    let cfg = state.cfg();
+    match state.audio.start(&cfg.audio, &body, true) {
+        Ok(status) => {
+            state.logger.info(format!(
+                "Звук с ПК включён: {} · {} Гц",
+                status.source, status.rate
+            ));
+            respond_json(req, 200, &status)
+        }
+        Err(e) => error(req, 400, &e),
+    }
+}
+
+/// Raw `s16le` PCM until the stream stops or the client goes away.
+fn audio_stream(state: Arc<AppState>, req: Request) {
+    let Some(reader) = state.audio.reader() else {
+        return error(req, 409, "Звук с ПК не запущен");
+    };
+    let status = state.audio.status();
+    let header =
+        |name: &str, value: &str| Header::from_bytes(name.as_bytes(), value.as_bytes()).ok();
+    let mut headers = Vec::new();
+    if let Some(h) = header(
+        "Content-Type",
+        &format!(
+            "audio/L16;rate={};channels={}",
+            status.rate, status.channels
+        ),
+    ) {
+        headers.push(h);
+    }
+    if let Some(h) = header("Cache-Control", "no-store") {
+        headers.push(h);
+    }
+    let _ = req.respond(Response::new(
+        tiny_http::StatusCode(200),
+        headers,
+        reader,
+        None,
+        None,
+    ));
 }
 
 fn media_command(action: &str) -> Result<String, String> {
@@ -595,6 +785,7 @@ fn ha_states(state: Arc<AppState>, req: Request) {
         fetched_ms: ha.status.last_sync_ms,
         areas: ha.areas.clone(),
         categories: ha.categories.clone(),
+        presets: ha.presets.clone(),
     };
     drop(ha);
     respond_json(req, 200, &states)
@@ -621,7 +812,15 @@ fn ha_config(state: Arc<AppState>, mut req: Request) {
                 c.ha.token = token;
                 c.ha.favorites = favorites;
             });
-            respond_json(req, 200, &state.ha.lock().map(|h| h.status.clone()).unwrap_or_default())
+            respond_json(
+                req,
+                200,
+                &state
+                    .ha
+                    .lock()
+                    .map(|h| h.status.clone())
+                    .unwrap_or_default(),
+            )
         }
         Err(e) => error(req, 400, &e),
     }
@@ -633,7 +832,11 @@ fn ha_test(state: Arc<AppState>, req: Request) {
         Ok(Ok(())) => respond_json(
             req,
             200,
-            &state.ha.lock().map(|h| h.status.clone()).unwrap_or_default(),
+            &state
+                .ha
+                .lock()
+                .map(|h| h.status.clone())
+                .unwrap_or_default(),
         ),
         Ok(Err(e)) => error(req, 400, &e),
         Err(_) => error(req, 500, "Home Assistant lock"),
@@ -661,7 +864,11 @@ fn ha_favorites(state: Arc<AppState>, mut req: Request) {
     let favorites: Vec<String> = body
         .get("favorites")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let fav2 = favorites.clone();
     if let Err(e) = state.update_cfg(|c| c.ha.favorites = fav2) {
@@ -698,6 +905,34 @@ fn ha_categories_set(state: Arc<AppState>, mut req: Request) {
     };
     let saved = clean.clone();
     if let Err(e) = state.update_cfg(|c| c.ha.categories = saved) {
+        return error(req, 500, &e);
+    }
+    respond_json(req, 200, &clean)
+}
+
+fn ha_presets_get(state: Arc<AppState>, req: Request) {
+    let list = state
+        .ha
+        .lock()
+        .map(|h| h.presets.clone())
+        .unwrap_or_default();
+    respond_json(req, 200, &list)
+}
+
+fn ha_presets_set(state: Arc<AppState>, mut req: Request) {
+    let body: Value = match read_json(&mut req) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &e),
+    };
+    let incoming: Vec<HaPreset> =
+        serde_json::from_value(body.get("presets").cloned().unwrap_or(json!([])))
+            .unwrap_or_default();
+    let clean = match state.ha.lock() {
+        Ok(mut h) => h.set_presets(incoming),
+        Err(_) => return error(req, 500, "Home Assistant lock"),
+    };
+    let saved = clean.clone();
+    if let Err(e) = state.update_cfg(|c| c.ha.presets = saved) {
         return error(req, 500, &e);
     }
     respond_json(req, 200, &clean)
@@ -771,17 +1006,31 @@ fn patch_config(state: Arc<AppState>, mut req: Request) {
         if let Some(v) = body.get("allow_public").and_then(Value::as_bool) {
             c.allow_public = v;
         }
-        if let Some(v) = body.get("notifications").and_then(|v| v.get("enabled")).and_then(Value::as_bool) {
+        if let Some(v) = body
+            .get("notifications")
+            .and_then(|v| v.get("enabled"))
+            .and_then(Value::as_bool)
+        {
             c.notifications.enabled = v;
         }
-        if let Some(v) = body.get("notifications").and_then(|v| v.get("own_service")).and_then(Value::as_bool) {
+        if let Some(v) = body
+            .get("notifications")
+            .and_then(|v| v.get("own_service"))
+            .and_then(Value::as_bool)
+        {
             c.notifications.own_service = v;
         }
         if let Some(m) = body.get("monitor") {
-            if let Some(v) = m.get("mode").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            if let Some(v) = m
+                .get("mode")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+            {
                 c.monitor.mode = v;
             }
-            if let Some(v) = m.get("backend").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            if let Some(v) = m
+                .get("backend")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+            {
                 c.monitor.backend = v;
             }
             if let Some(v) = m.get("output").and_then(Value::as_str) {
@@ -816,7 +1065,10 @@ fn patch_config(state: Arc<AppState>, mut req: Request) {
             if let Some(s) = v.get("usb_addr").and_then(Value::as_str) {
                 c.viiper.usb_addr = s.to_string();
             }
-            if let Some(k) = v.get("default_pad").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+            if let Some(k) = v
+                .get("default_pad")
+                .and_then(|v| serde_json::from_value(v.clone()).ok())
+            {
                 c.viiper.default_pad = k;
             }
         }
@@ -841,7 +1093,11 @@ fn install_start(state: Arc<AppState>, mut req: Request) {
     let components: Vec<String> = body
         .get("components")
         .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     if components.is_empty() {
         return error(req, 400, "Не выбрано ни одного компонента");
@@ -899,6 +1155,7 @@ fn redacted_config(state: &AppState) -> Value {
             "configured": !cfg.ha.url.is_empty() && !cfg.ha.token.is_empty(),
             "favorites": cfg.ha.favorites,
             "categories": cfg.ha.categories,
+            "presets": cfg.ha.presets,
         },
         "clients": cfg.clients,
         "config_dir": sdw_core::util::config_dir().display().to_string(),
@@ -973,7 +1230,8 @@ fn respond_bytes(req: Request, code: u16, content_type: &str, bytes: Vec<u8>) {
     let _ = req.respond(resp);
 }
 
-fn respond_html(req: Request, html: String) {    let resp = Response::from_string(html)
+fn respond_html(req: Request, html: String) {
+    let resp = Response::from_string(html)
         .with_status_code(200)
         .with_header(header("Content-Type", "text/html; charset=utf-8"))
         .with_header(header("Cache-Control", "no-store"));

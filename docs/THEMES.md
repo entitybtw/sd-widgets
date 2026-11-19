@@ -58,9 +58,24 @@ edges are a product decision, not a theme option.
 | `nord` | Nord |
 | `gruvbox` | Gruvbox |
 | `terminal` | Terminal |
+| `catppuccin-mocha` | Catppuccin Mocha |
+| `catppuccin-macchiato` | Catppuccin Macchiato |
+| `catppuccin-frappe` | Catppuccin Frappé |
+| `catppuccin-latte` | Catppuccin Latte |
 
 Presets only replace the CSS and the grid defaults. Layout and behaviour knobs are
 preserved.
+
+Besides the built-ins, two kinds of packs appear in the same list:
+
+- **Custom packs** — `*.css` files in `~/.config/sd-widgets/themes/`, listed as
+  `custom:<file-stem>`; the Look page can save the current CSS as one.
+- **Addon themes** — an installed addon with a `theme` file, listed as
+  `addon:<id>`. Extra CSS from the manifest is appended. See
+  [`ADDONS.md`](ADDONS.md).
+
+New presets can also be added from the UI: edit the CSS, name it, save. No
+rebuild is needed for custom or addon packs.
 
 ## Layout knobs (`ThemeCfg`)
 
