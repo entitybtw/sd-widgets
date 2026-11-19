@@ -638,23 +638,39 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
             |v| format!("{:.0}%", v * 100.0),
         ) {}
         ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(rt(t!(app.lang, "акцент", "accent"), 12.0, t.faint));
-            color_edit(ui, &mut cfg.accent, t);
-            ui.add_space(10.0);
-            ui.label(rt(
-                t!(app.lang, "фон сверху", "background top"),
-                12.0,
+        // Colours are the theme's unless the clock was taken off it: a disabled
+        // row says so instead of silently ignoring the pickers.
+        let custom = !cfg.follow_theme && !cfg.mono;
+        if !custom {
+            theme::small(
+                ui,
+                t!(
+                    app.lang,
+                    "цвета берутся из активной темы; выключите «из темы», чтобы задать свои.",
+                    "colours come from the active theme; switch “follow theme” off to pick your own."
+                ),
                 t.faint,
-            ));
-            color_edit(ui, &mut cfg.bg_top, t);
-            ui.add_space(10.0);
-            ui.label(rt(
-                t!(app.lang, "фон снизу", "background bottom"),
-                12.0,
-                t.faint,
-            ));
-            color_edit(ui, &mut cfg.bg_bottom, t);
+            );
+        }
+        ui.add_enabled_ui(custom, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(rt(t!(app.lang, "акцент", "accent"), 12.0, t.faint));
+                color_edit(ui, &mut cfg.accent, t);
+                ui.add_space(10.0);
+                ui.label(rt(
+                    t!(app.lang, "фон сверху", "background top"),
+                    12.0,
+                    t.faint,
+                ));
+                color_edit(ui, &mut cfg.bg_top, t);
+                ui.add_space(10.0);
+                ui.label(rt(
+                    t!(app.lang, "фон снизу", "background bottom"),
+                    12.0,
+                    t.faint,
+                ));
+                color_edit(ui, &mut cfg.bg_bottom, t);
+            });
         });
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {

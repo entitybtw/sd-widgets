@@ -11,7 +11,7 @@ pub fn load() -> DeckConfig {
     let p = path();
     match std::fs::read_to_string(&p) {
         Ok(s) => match serde_json::from_str(&s) {
-            Ok(cfg) => cfg,
+            Ok(cfg) => migrate(cfg),
             Err(e) => {
                 eprintln!(
                     "sd-widgets: ignoring unreadable config {}: {e}",
@@ -24,7 +24,60 @@ pub fn load() -> DeckConfig {
     }
 }
 
+/// Older files pinned the clock to the built-in blue/slate palette. The clock
+/// follows the theme now, so those exact values are handed back to it; a colour
+/// the user actually chose is left alone.
+fn migrate(mut cfg: DeckConfig) -> DeckConfig {
+    let clock = &mut cfg.clock;
+    let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b);
+    if !clock.mono
+        && !clock.follow_theme
+        && same(&clock.accent, "#a6c8ff")
+        && same(&clock.bg_top, "#121820")
+        && same(&clock.bg_bottom, "#10141b")
+    {
+        clock.follow_theme = true;
+        clock.accent.clear();
+        clock.bg_top.clear();
+        clock.bg_bottom.clear();
+    }
+    cfg
+}
+
 pub fn save(cfg: &DeckConfig) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(cfg).map_err(|e| e.to_string())?;
     crate::util::atomic_write(&path(), &json).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_follows_theme_by_default() {
+        let cfg = DeckConfig::default();
+        assert!(cfg.clock.follow_theme);
+        assert!(cfg.clock.accent.is_empty());
+        assert!(cfg.clock.bg_top.is_empty());
+        assert!(cfg.clock.bg_bottom.is_empty());
+    }
+
+    #[test]
+    fn old_clock_palette_is_handed_back_to_the_theme() {
+        let mut cfg = DeckConfig::default();
+        cfg.clock.follow_theme = false;
+        cfg.clock.accent = "#A6C8FF".into();
+        cfg.clock.bg_top = "#121820".into();
+        cfg.clock.bg_bottom = "#10141b".into();
+        let cfg = migrate(cfg);
+        assert!(cfg.clock.follow_theme);
+        assert!(cfg.clock.accent.is_empty());
+
+        let mut custom = DeckConfig::default();
+        custom.clock.follow_theme = false;
+        custom.clock.accent = "#ff0000".into();
+        let custom = migrate(custom);
+        assert!(!custom.clock.follow_theme);
+        assert_eq!(custom.clock.accent, "#ff0000");
+    }
 }

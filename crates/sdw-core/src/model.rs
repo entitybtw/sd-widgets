@@ -1529,9 +1529,9 @@ pub struct ClockCfg {
     pub h24: bool,
     /// Multiplies every clock font size.
     pub font_scale: f32,
-    /// Accent colour, `#rrggbb`.
+    /// Accent colour, `#rrggbb`. Empty means "take the theme accent".
     pub accent: String,
-    /// Background gradient ends, `#rrggbb`.
+    /// Background gradient ends, `#rrggbb`. Empty means "take the theme".
     pub bg_top: String,
     pub bg_bottom: String,
     /// A short line under the time, for example a name or a city.
@@ -1544,6 +1544,8 @@ pub struct ClockCfg {
     /// auto, wide or mono. `auto` follows the style's own face.
     pub font: String,
     /// Take the colours from the active theme instead of the three below.
+    /// This is the default: every theme, preset and CSS file repaints the
+    /// clock, and only an explicit colour makes it independent.
     pub follow_theme: bool,
 }
 
@@ -1561,15 +1563,15 @@ impl Default for ClockCfg {
             mono: false,
             h24: true,
             font_scale: 1.0,
-            accent: "#a6c8ff".into(),
-            bg_top: "#121820".into(),
-            bg_bottom: "#10141b".into(),
+            accent: String::new(),
+            bg_top: String::new(),
+            bg_bottom: String::new(),
             caption: String::new(),
             show_headset: true,
             show_notifications: true,
             position: "left".into(),
             font: "auto".into(),
-            follow_theme: false,
+            follow_theme: true,
         }
     }
 }
