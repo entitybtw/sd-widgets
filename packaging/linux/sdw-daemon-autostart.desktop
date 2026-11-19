@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=sd-widgets daemon
+Comment=Start the sd-widgets daemon with the session
+Exec=sdw-daemon --headless
+Terminal=false
+X-GNOME-Autostart-enabled=true

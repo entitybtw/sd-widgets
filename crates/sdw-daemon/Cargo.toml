@@ -1,0 +1,36 @@
+[package]
+name = "sdw-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "sd-widgets PC daemon: virtual gamepads, extra monitor, notifications and Home Assistant"
+
+[[bin]]
+name = "sdw-daemon"
+path = "src/main.rs"
+
+[features]
+default = ["gui"]
+gui = ["dep:eframe", "dep:qrcode"]
+
+[dependencies]
+sdw-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+ureq.workspace = true
+dirs.workspace = true
+clap.workspace = true
+tiny_http.workspace = true
+viiper-client = { path = "../../vendor/viiper-client" }
+eframe = { workspace = true, optional = true }
+image.workspace = true
+qrcode = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

@@ -1,0 +1,17 @@
+[Unit]
+Description=sd-widgets daemon
+Documentation=https://git.entitybtw.ru/entitybtw/sd-widgets
+After=graphical-session.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/sdw-daemon --headless
+Restart=on-failure
+RestartSec=2
+# The daemon needs access to the session bus for notifications and to the
+# display for capture, so do not enable any filesystem sandboxing here.
+Environment=RUST_BACKTRACE=1
+
+[Install]
+WantedBy=default.target

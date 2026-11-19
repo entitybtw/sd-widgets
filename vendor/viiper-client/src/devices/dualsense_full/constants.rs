@@ -1,0 +1,21 @@
+pub const DEVICE_TYPE: &str = "dualsense_full";
+pub const DEVICE_TYPE_EDGE: &str = "dualsenseedge_full";
+
+pub const OUTPUT_SIZE: usize = crate::devices::dualsense::OUTPUT_SIZE + 6;
+
+pub const POWER_SAVE_CONTROL_MICROPHONE_MUTE: u8 = 16;
+pub const AUDIO_CONTROL_OUTPUT_PATH: u8 = 48;
+
+pub const OUTPUT_REPORT_OFFSET_SPEAKER_VOLUME: usize = 6;
+pub const OUTPUT_REPORT_OFFSET_MICROPHONE_VOLUME: usize = 7;
+pub const OUTPUT_REPORT_OFFSET_AUDIO_CONTROL: usize = 8;
+pub const OUTPUT_REPORT_OFFSET_MIC_MUTE_LED: usize = 9;
+pub const OUTPUT_REPORT_OFFSET_POWER_SAVE_CONTROL: usize = 10;
+pub const OUTPUT_REPORT_OFFSET_AUDIO_CONTROL2: usize = 38;
+
+pub const AUDIO_SAMPLE_RATE: usize = 48000;
+pub const AUDIO_BYTES_PER_SAMPLE: usize = 2;
+pub const AUDIO_OUTPUT_CHANNELS: usize = 4;
+pub const AUDIO_MICROPHONE_CHANNELS: usize = 2;
+pub const AUDIO_OUTPUT_PACKET_SIZE: usize = AUDIO_SAMPLE_RATE / 1000 * AUDIO_OUTPUT_CHANNELS * AUDIO_BYTES_PER_SAMPLE;
+pub const AUDIO_MICROPHONE_PACKET_SIZE: usize = AUDIO_SAMPLE_RATE / 1000 * AUDIO_MICROPHONE_CHANNELS * AUDIO_BYTES_PER_SAMPLE;

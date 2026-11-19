@@ -1,0 +1,357 @@
+//! Blocking HTTP client for the daemon API. Used by the Deck app and by the daemon's own tests.
+
+use crate::model::*;
+use serde::de::DeserializeOwned;
+use serde_json::Value;
+use std::time::Duration;
+
+const UA: &str = concat!("sd-widgets/", env!("CARGO_PKG_VERSION"));
+
+#[derive(Debug, Clone)]
+pub struct ApiError {
+    pub status: u16,
+    pub message: String,
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.status == 0 {
+            write!(f, "{}", self.message)
+        } else {
+            write!(f, "{} (HTTP {})", self.message, self.status)
+        }
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+pub type ApiResult<T> = Result<T, ApiError>;
+
+fn agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .user_agent(UA)
+        .build()
+        .into()
+}
+
+pub fn normalize_base(base: &str) -> String {
+    let base = base.trim().trim_end_matches('/');
+    if base.starts_with("http://") || base.starts_with("https://") {
+        base.to_string()
+    } else {
+        format!("http://{base}")
+    }
+}
+
+pub fn ping(base: &str) -> ApiResult<Ping> {
+    let base = normalize_base(base);
+    let a = agent(Duration::from_secs(5));
+    let mut r = a
+        .get(&format!("{base}/api/v1/ping"))
+        .call()
+        .map_err(|e| ApiError {
+            status: 0,
+            message: e.to_string(),
+        })?;
+    let status = r.status().as_u16();
+    let text = r.body_mut().read_to_string().map_err(|e| ApiError {
+        status,
+        message: e.to_string(),
+    })?;
+    if status != 200 {
+        return Err(ApiError {
+            status,
+            message: error_from_body(&text),
+        });
+    }
+    serde_json::from_str(&text).map_err(|e| ApiError {
+        status,
+        message: e.to_string(),
+    })
+}
+
+pub fn pair(base: &str, password: &str, client_name: &str, client_id: &str) -> ApiResult<PairResponse> {
+    let base = normalize_base(base);
+    let a = agent(Duration::from_secs(10));
+    let body = PairRequest {
+        password: password.to_string(),
+        client_name: client_name.to_string(),
+        client_id: client_id.to_string(),
+    };
+    let mut r = a
+        .post(&format!("{base}/api/v1/pair"))
+        .send_json(&body)
+        .map_err(|e| ApiError {
+            status: 0,
+            message: e.to_string(),
+        })?;
+    let status = r.status().as_u16();
+    let text = r.body_mut().read_to_string().map_err(|e| ApiError {
+        status,
+        message: e.to_string(),
+    })?;
+    if status != 200 {
+        return Err(ApiError {
+            status,
+            message: error_from_body(&text),
+        });
+    }
+    serde_json::from_str(&text).map_err(|e| ApiError {
+        status,
+        message: e.to_string(),
+    })
+}
+
+fn error_from_body(text: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<Value>(text) {
+        if let Some(e) = v.get("error").and_then(Value::as_str) {
+            return e.to_string();
+        }
+        if let Some(e) = v.get("detail").and_then(Value::as_str) {
+            return e.to_string();
+        }
+    }
+    if text.trim().is_empty() {
+        "сервер не ответил".into()
+    } else {
+        crate::util::truncate(text.trim(), 300)
+    }
+}
+
+pub struct Client {
+    base: String,
+    token: String,
+    agent: ureq::Agent,
+}
+
+impl Client {
+    pub fn new(base: &str, token: &str) -> Self {
+        Self {
+            base: normalize_base(base),
+            token: token.to_string(),
+            agent: agent(Duration::from_secs(12)),
+        }
+    }
+
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
+    fn url(&self, path: &str) -> String {
+        if path.starts_with('/') {
+            format!("{}{}", self.base, path)
+        } else {
+            format!("{}/{}", self.base, path)
+        }
+    }
+
+    fn request<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> ApiResult<T> {
+        let url = self.url(path);
+        let auth = format!("Bearer {}", self.token);
+        let mut r = match method {
+            "POST" => {
+                let req = self.agent.post(&url).header("Authorization", &auth);
+                req.send_json(body.unwrap_or(&Value::Null))
+            }
+            "PATCH" => {
+                let req = self.agent.patch(&url).header("Authorization", &auth);
+                req.send_json(body.unwrap_or(&Value::Null))
+            }
+            "DELETE" => self.agent.delete(&url).header("Authorization", &auth).call(),
+            _ => self.agent.get(&url).header("Authorization", &auth).call(),
+        }
+        .map_err(|e| ApiError {
+            status: 0,
+            message: e.to_string(),
+        })?;
+        let status = r.status().as_u16();
+        let text = r.body_mut().read_to_string().map_err(|e| ApiError {
+            status,
+            message: e.to_string(),
+        })?;
+        if status != 200 {
+            return Err(ApiError {
+                status,
+                message: error_from_body(&text),
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| ApiError {
+            status,
+            message: e.to_string(),
+        })
+    }
+
+    pub fn status(&self) -> ApiResult<DaemonStatus> {
+        self.request("GET", "/api/v1/status", None)
+    }
+
+    pub fn config(&self) -> ApiResult<Value> {
+        self.request("GET", "/api/v1/config", None)
+    }
+
+    pub fn patch_config(&self, patch: Value) -> ApiResult<Value> {
+        self.request("PATCH", "/api/v1/config", Some(&patch))
+    }
+
+    pub fn logs(&self, since: u64) -> ApiResult<Vec<LogEntry>> {
+        self.request("GET", &format!("/api/v1/logs?since={since}"), None)
+    }
+
+    pub fn pads(&self) -> ApiResult<Vec<PadInfo>> {
+        self.request("GET", "/api/v1/pads", None)
+    }
+
+    pub fn create_pad(&self, name: &str, kind: PadKind) -> ApiResult<PadCreated> {
+        let body = serde_json::json!({"name": name, "kind": kind});
+        self.request("POST", "/api/v1/pads", Some(&body))
+    }
+
+    pub fn delete_pad(&self, id: &str) -> ApiResult<Value> {
+        self.request("DELETE", &format!("/api/v1/pads/{id}"), None)
+    }
+
+    pub fn pad_feedback(&self, id: &str) -> ApiResult<PadFeedback> {
+        self.request("GET", &format!("/api/v1/pads/{id}/feedback"), None)
+    }
+
+    pub fn viiper(&self) -> ApiResult<ViiperStatus> {
+        self.request("GET", "/api/v1/viiper", None)
+    }
+
+    pub fn viiper_action(&self, action: &str) -> ApiResult<Value> {
+        let body = serde_json::json!({ "action": action });
+        self.request("POST", "/api/v1/viiper/action", Some(&body))
+    }
+
+    pub fn set_viiper_password(&self, password: &str) -> ApiResult<Value> {
+        let body = serde_json::json!({ "password": password });
+        self.request("POST", "/api/v1/viiper/password", Some(&body))
+    }
+
+    pub fn monitor(&self) -> ApiResult<MonitorStatus> {
+        self.request("GET", "/api/v1/monitor", None)
+    }
+
+    pub fn start_monitor(&self, req: &MonitorStart) -> ApiResult<MonitorStatus> {
+        let body = serde_json::to_value(req).unwrap_or_default();
+        self.request("POST", "/api/v1/monitor/start", Some(&body))
+    }
+
+    pub fn stop_monitor(&self) -> ApiResult<MonitorStatus> {
+        self.request("POST", "/api/v1/monitor/stop", None)
+    }
+
+    pub fn monitor_input(&self, input: &MonitorInput) -> ApiResult<Value> {
+        let body = serde_json::to_value(input).unwrap_or_default();
+        self.request("POST", "/api/v1/monitor/input", Some(&body))
+    }
+
+    pub fn monitor_frame(&self) -> ApiResult<Vec<u8>> {
+        let url = self.url("/api/v1/monitor/frame");
+        let mut r = self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| ApiError {
+                status: 0,
+                message: e.to_string(),
+            })?;
+        let status = r.status().as_u16();
+        if status != 200 {
+            let text = r.body_mut().read_to_string().unwrap_or_default();
+            return Err(ApiError {
+                status,
+                message: error_from_body(&text),
+            });
+        }
+        r.body_mut().read_to_vec().map_err(|e| ApiError {
+            status,
+            message: e.to_string(),
+        })
+    }
+
+    pub fn notifications(&self, since: u64) -> ApiResult<Vec<Notification>> {
+        self.request("GET", &format!("/api/v1/notifications?since={since}"), None)
+    }
+
+    pub fn clear_notifications(&self) -> ApiResult<Value> {
+        self.request("POST", "/api/v1/notifications/clear", None)
+    }
+
+    pub fn dismiss_notification(&self, id: u64) -> ApiResult<Value> {
+        self.request("POST", &format!("/api/v1/notifications/{id}/dismiss"), None)
+    }
+
+    pub fn test_notification(&self) -> ApiResult<Value> {
+        self.request("POST", "/api/v1/notifications/test", None)
+    }
+
+    /// Run a whitelisted media / desktop command on the computer.
+    pub fn remote(&self, command: &str) -> ApiResult<Value> {
+        let body = serde_json::json!({ "command": command });
+        self.request("POST", "/api/v1/remote", Some(&body))
+    }
+
+    pub fn ha_states(&self) -> ApiResult<HaStates> {
+        self.request("GET", "/api/v1/ha/states", None)
+    }
+
+    pub fn ha_config(&self, url: &str, token: &str, favorites: &[String]) -> ApiResult<HaStatus> {
+        let body = serde_json::json!({
+            "url": url,
+            "token": token,
+            "favorites": favorites,
+        });
+        self.request("POST", "/api/v1/ha/config", Some(&body))
+    }
+
+    pub fn ha_test(&self) -> ApiResult<HaStatus> {
+        self.request("POST", "/api/v1/ha/test", None)
+    }
+
+    pub fn ha_call(&self, call: &HaCall) -> ApiResult<Value> {
+        let body = serde_json::to_value(call).unwrap_or_default();
+        self.request("POST", "/api/v1/ha/call", Some(&body))
+    }
+
+    pub fn set_favorites(&self, favorites: &[String]) -> ApiResult<Value> {
+        let body = serde_json::json!({ "favorites": favorites });
+        self.request("POST", "/api/v1/ha/favorites", Some(&body))
+    }
+
+    pub fn set_password(&self, password: &str) -> ApiResult<PairResponse> {
+        let body = serde_json::json!({ "password": password });
+        self.request("POST", "/api/v1/security/password", Some(&body))
+    }
+
+    pub fn rotate_token(&self) -> ApiResult<PairResponse> {
+        self.request("POST", "/api/v1/security/rotate", None)
+    }
+
+    pub fn install(&self, components: &[String], sudo_password: &str) -> ApiResult<Value> {
+        let body = serde_json::json!({
+            "components": components,
+            "sudo_password": sudo_password,
+        });
+        self.request("POST", "/api/v1/install", Some(&body))
+    }
+
+    pub fn install_status(&self) -> ApiResult<Value> {
+        self.request("GET", "/api/v1/install/status", None)
+    }
+
+    pub fn discover(&self) -> ApiResult<Vec<DiscoveryResponse>> {
+        crate::discovery::scan(Duration::from_millis(1200)).map_err(|message| ApiError {
+            status: 0,
+            message,
+        })
+    }
+}

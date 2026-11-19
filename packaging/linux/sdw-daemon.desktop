@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=sd-widgets daemon
+GenericName=PC companion daemon
+Comment=Virtual gamepads, extra monitor and notifications for the Steam Deck
+Exec=sdw-daemon
+Icon=sdw-widgets
+Terminal=false
+Categories=Utility;System;RemoteAccess;
+Keywords=steam;deck;gamepad;viiper;monitor;
+StartupWMClass=sdw-daemon

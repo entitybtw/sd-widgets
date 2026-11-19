@@ -1,0 +1,76 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libudev-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxi-dev libgl1-mesa-dev libfuse2 file curl
+      - name: cargo cache
+        uses: Swatinem/rust-cache@v2
+      - name: check
+        run: cargo check --workspace
+      - name: build appimages
+        run: |
+          chmod +x packaging/linux/build-appimage.sh
+          packaging/linux/build-appimage.sh all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimages
+          path: dist/*.AppImage
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: build
+        run: cargo build --release -p sdw-daemon --target x86_64-pc-windows-msvc
+      - name: stage
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $stage = "target/windows-stage/sdw-daemon"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item "target/x86_64-pc-windows-msvc/release/sdw-daemon.exe" $stage
+          Copy-Item README.md, LICENSE $stage
+          Copy-Item "packaging/windows/README-windows.txt" $stage
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist-sdw-daemon-$v-windows-x86_64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-daemon
+          path: dist-sdw-daemon-*-windows-x86_64.zip
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: build arm64
+        run: |
+          chmod +x packaging/macos/build-dmg.sh
+          packaging/macos/build-dmg.sh arm64
+      - name: build x86_64
+        run: packaging/macos/build-dmg.sh x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/*.dmg

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=sd-widgets
+GenericName=Steam Deck control surface
+Comment=Gamepad, extra screen, notifications and Home Assistant for the Deck
+Exec=sdw-deck
+Icon=sdw-widgets
+Terminal=false
+Categories=Utility;System;RemoteAccess;
+Keywords=steam;deck;gamepad;remote;monitor;
+StartupWMClass=sd-widgets

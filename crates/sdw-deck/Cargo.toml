@@ -1,0 +1,27 @@
+[package]
+name = "sdw-deck"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "sd-widgets for the Steam Deck: touch gestures, binds, virtual gamepad and remote control"
+
+[[bin]]
+name = "sdw-deck"
+path = "src/main.rs"
+
+[dependencies]
+sdw-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+dirs.workspace = true
+clap.workspace = true
+eframe.workspace = true
+image.workspace = true
+libc.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
