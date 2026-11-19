@@ -236,6 +236,15 @@ pub struct App {
     pub last_button: Option<(u16, String, Instant)>,
     pub last_gesture: Option<(GestureSpec, Instant)>,
 
+    /// Virtual pointer used when the deck's own gamepad drives the interface.
+    pub pad_cursor: Option<egui::Pos2>,
+    pub pad_cursor_at: Instant,
+    pub pad_buttons: u32,
+    pub pad_release: bool,
+    pub pad_seen: bool,
+    /// Finger swipe from a screen edge, used when the compositor sends touch as mouse.
+    pub edge_swipe: Option<(egui::Pos2, egui::Pos2)>,
+
     pub stream: StreamState,
     pub ha: HaState,
     pub binds: BindsState,
@@ -265,7 +274,8 @@ impl App {
         theme::install_fonts(&cc.egui_ctx);
         theme::set_style(&cfg.style);
         theme::apply(&cc.egui_ctx, cfg.dark);
-        cc.egui_ctx.set_zoom_factor(cfg.ui_scale.clamp(0.8, 1.4));
+        cc.egui_ctx
+            .set_zoom_factor(cfg.ui_scale.clamp(0.75, max_ui_scale()));
         if cfg.active_host.is_none() {
             if let Some(first) = cfg.hosts.first() {
                 cfg.active_host = Some(first.id.clone());
@@ -323,6 +333,12 @@ impl App {
             pressed: HashSet::new(),
             last_button: None,
             last_gesture: None,
+            pad_cursor: None,
+            pad_cursor_at: Instant::now() - Duration::from_secs(10),
+            pad_buttons: 0,
+            pad_release: false,
+            pad_seen: false,
+            edge_swipe: None,
             stream: StreamState {
                 feed: None,
                 texture: None,
@@ -381,7 +397,7 @@ impl App {
             last_clock: Instant::now(),
             battery: None,
             last_battery: Instant::now() - Duration::from_secs(60),
-            applied_scale: cfg.ui_scale,
+            applied_scale: 0.0,
             style_draft: cfg.style.css.clone(),
             last_frame_rect: None,
             quit_confirm: false,
@@ -392,6 +408,249 @@ impl App {
     }
 
     // ------------------------------------------------------------ helpers
+
+    /// The deck reports whatever scale factor gamescope feels like, which can
+    /// make a 1280x800 screen render at 1.5x or 2x and look enormous. Pin the
+    /// deck to roughly one point per pixel and keep the rest of the platforms
+    /// at their native density.
+    pub fn apply_scale(&mut self, ctx: &egui::Context) {
+        let native = ctx.native_pixels_per_point().unwrap_or(1.0).max(0.1);
+        let limit = max_ui_scale();
+        let ui = self.cfg.ui_scale.clamp(0.75, limit);
+        let target = if deck_mode() { ui } else { native * ui };
+        let zoom = (target / native).clamp(0.5, 3.0);
+        if (self.applied_scale - zoom).abs() > 0.005 {
+            self.applied_scale = zoom;
+            ctx.set_zoom_factor(zoom);
+        }
+    }
+
+    /// Turn the deck's own controls into a virtual mouse and page shortcuts.
+    ///
+    /// This runs in [`eframe::App::raw_input_hook`], before egui builds its
+    /// input state. Pushing events from `ui()` is too late: pointer state for
+    /// the frame has already been built, so a synthetic click would land one
+    /// frame behind the cursor (or not at all).
+    fn pad_ui(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let buttons = self.gamepad.buttons;
+        let prev = self.pad_buttons;
+        let pressed = |bit: u32| buttons & bit != 0 && prev & bit == 0;
+
+        // While the pad is forwarded to a computer (or a bind is being
+        // captured) the same buttons must not also drive this interface.
+        if self.gamepad_on || self.binds.capture {
+            self.pad_buttons = buttons;
+            self.pad_release = false;
+            return;
+        }
+
+        let rect = raw.screen_rect.unwrap_or_else(|| ctx.content_rect());
+        let dt = raw.predicted_dt.clamp(0.001, 0.05);
+        let mut moved = false;
+
+        // left stick and d-pad move the virtual pointer
+        let mut dx = deadzone(self.gamepad.lx, 0.18) * 980.0;
+        let mut dy = -deadzone(self.gamepad.ly, 0.18) * 980.0;
+        if buttons & sdw_core::udp::BTN_DPAD_LEFT != 0 {
+            dx -= 760.0;
+        }
+        if buttons & sdw_core::udp::BTN_DPAD_RIGHT != 0 {
+            dx += 760.0;
+        }
+        if buttons & sdw_core::udp::BTN_DPAD_UP != 0 {
+            dy -= 760.0;
+        }
+        if buttons & sdw_core::udp::BTN_DPAD_DOWN != 0 {
+            dy += 760.0;
+        }
+        if dx != 0.0 || dy != 0.0 {
+            let pos =
+                self.pad_cursor.unwrap_or_else(|| rect.center()) + Vec2::new(dx * dt, dy * dt);
+            let pos = egui::pos2(
+                pos.x.clamp(rect.left() + 2.0, rect.right() - 2.0),
+                pos.y.clamp(rect.top() + 2.0, rect.bottom() - 2.0),
+            );
+            self.pad_cursor = Some(pos);
+            self.pad_cursor_at = Instant::now();
+            self.pad_seen = true;
+            raw.events.push(egui::Event::PointerMoved(pos));
+            moved = true;
+        }
+
+        // right stick scrolls, so long pages work without a touchscreen
+        let sx = deadzone(self.gamepad.rx, 0.20) * 1100.0;
+        let sy = deadzone(self.gamepad.ry, 0.20) * 1100.0;
+        if sx != 0.0 || sy != 0.0 {
+            raw.events.push(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: Vec2::new(-sx * dt, sy * dt),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Unknown,
+                modifiers: egui::Modifiers::default(),
+            });
+            self.pad_seen = true;
+            moved = true;
+        }
+
+        // A clicks at the virtual pointer, with the release one frame later so
+        // widgets see a real press/release pair.
+        if pressed(sdw_core::udp::BTN_A) {
+            if self.pad_cursor.is_none() {
+                self.pad_cursor = Some(rect.center());
+                raw.events.push(egui::Event::PointerMoved(rect.center()));
+            }
+            self.pad_seen = true;
+            self.pad_cursor_at = Instant::now();
+            let pos = self.pad_cursor.unwrap_or_else(|| rect.center());
+            raw.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::default(),
+            });
+            self.pad_release = true;
+            moved = true;
+        }
+        if self.pad_release {
+            let pos = self.pad_cursor.unwrap_or_else(|| rect.center());
+            raw.events.push(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::default(),
+            });
+            self.pad_release = false;
+            moved = true;
+        }
+
+        if pressed(sdw_core::udp::BTN_B) {
+            self.go_back(ctx);
+        }
+        if pressed(sdw_core::udp::BTN_LB) {
+            self.nav_step(-1);
+        }
+        if pressed(sdw_core::udp::BTN_RB) {
+            self.nav_step(1);
+        }
+        if pressed(sdw_core::udp::BTN_Y) {
+            self.set_page(Page::Home);
+        }
+        if pressed(sdw_core::udp::BTN_BACK) {
+            self.set_page(Page::Settings);
+        }
+
+        if moved {
+            ctx.request_repaint();
+        }
+        self.pad_buttons = buttons;
+    }
+
+    /// Horizontal swipe starting at a screen edge. gamescope often hands the
+    /// deck touchscreen to egui as a plain mouse, so egui never treats it as a
+    /// touch device and drag-to-scroll stays off. This gives pages a gesture
+    /// that does not depend on touch detection at all.
+    fn edge_swipe_tick(&mut self, ctx: &egui::Context) {
+        if !deck_mode() || self.gamepad_on || self.binds.capture {
+            self.edge_swipe = None;
+            return;
+        }
+        let (pressed, down, released, pos) = ctx.input(|i| {
+            (
+                i.pointer.any_pressed(),
+                i.pointer.any_down(),
+                i.pointer.any_released(),
+                i.pointer.interact_pos(),
+            )
+        });
+        let rect = ctx.content_rect();
+        if pressed {
+            if let Some(p) = pos {
+                let edge = p.x <= rect.left() + 56.0 || p.x >= rect.right() - 56.0;
+                self.edge_swipe = edge.then_some((p, p));
+            }
+        }
+        if let Some((start, _)) = self.edge_swipe {
+            if down {
+                if let Some(p) = pos {
+                    self.edge_swipe = Some((start, p));
+                }
+            } else if released {
+                if let Some(p) = pos {
+                    let dx = p.x - start.x;
+                    let dy = p.y - start.y;
+                    if dx.abs() > 140.0 && dx.abs() > dy.abs() * 1.4 {
+                        self.nav_step(if dx < 0.0 { 1 } else { -1 });
+                    }
+                }
+                self.edge_swipe = None;
+            } else {
+                self.edge_swipe = None;
+            }
+        }
+    }
+
+    fn go_back(&mut self, ctx: &egui::Context) {
+        if self.stream.fullscreen {
+            self.set_fullscreen(ctx, false);
+        } else if self.osk_open {
+            self.osk_open = false;
+        } else if self.binds.editor.is_some() {
+            self.binds.editor = None;
+            self.binds.capture = false;
+        } else if self.page != Page::Home {
+            self.set_page(Page::Home);
+        }
+    }
+
+    fn pad_cursor_ui(&self, ctx: &egui::Context) {
+        let Some(pos) = self.pad_cursor else {
+            return;
+        };
+        if self.gamepad_on || self.binds.capture {
+            return;
+        }
+        if self.pad_cursor_at.elapsed() > Duration::from_secs(3) {
+            return;
+        }
+        let fade = (1.0
+            - (self.pad_cursor_at.elapsed().as_secs_f32() - 1.8).max(0.0) / 1.2)
+            .clamp(0.0, 1.0);
+        let t = Tokens::get(ctx);
+        let painter = ctx.layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            Id::new("pad-cursor"),
+        ));
+        let r = Rect::from_center_size(pos, Vec2::splat(20.0));
+        painter.rect_filled(
+            r,
+            0.0,
+            Color32::from_rgba_unmultiplied(0, 0, 0, (150.0 * fade) as u8),
+        );
+        painter.rect_stroke(
+            r,
+            0.0,
+            Stroke::new(2.0, t.accent.gamma_multiply(fade.max(0.35))),
+            egui::StrokeKind::Inside,
+        );
+        let arm = 5.0;
+        painter.line_segment(
+            [
+                egui::pos2(pos.x - arm, pos.y),
+                egui::pos2(pos.x + arm, pos.y),
+            ],
+            Stroke::new(1.5, Color32::WHITE.gamma_multiply(fade)),
+        );
+        painter.line_segment(
+            [
+                egui::pos2(pos.x, pos.y - arm),
+                egui::pos2(pos.x, pos.y + arm),
+            ],
+            Stroke::new(1.5, Color32::WHITE.gamma_multiply(fade)),
+        );
+        if fade < 1.0 {
+            ctx.request_repaint_after(Duration::from_millis(40));
+        }
+    }
 
     pub fn save(&mut self) {
         self.cfg.deck_view = self.deck_view.cfg.clone();
@@ -1241,10 +1500,7 @@ impl App {
             theme::apply(ctx, self.dark);
             self.applied_dark = self.dark;
         }
-        if (self.cfg.ui_scale - self.applied_scale).abs() > 0.01 {
-            self.applied_scale = self.cfg.ui_scale;
-            ctx.set_zoom_factor(self.cfg.ui_scale.clamp(0.8, 1.4));
-        }
+        self.apply_scale(ctx);
         if self.last_clock.elapsed() >= Duration::from_secs(1) {
             self.last_clock = Instant::now();
             self.clock = theme::clock_text();
@@ -1280,17 +1536,10 @@ impl App {
             self.toast = None;
         }
 
+        self.edge_swipe_tick(ctx);
+
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            if self.stream.fullscreen {
-                self.set_fullscreen(ctx, false);
-            } else if self.osk_open {
-                self.osk_open = false;
-            } else if self.binds.editor.is_some() {
-                self.binds.editor = None;
-                self.binds.capture = false;
-            } else if self.page != Page::Home {
-                self.set_page(Page::Home);
-            }
+            self.go_back(ctx);
         }
     }
 
@@ -1568,6 +1817,13 @@ impl App {
                 ui.add_space((1.0 - ease) * 8.0);
                 ScrollArea::vertical()
                     .auto_shrink([false, false])
+                    .scroll_source(egui::scroll_area::ScrollSource {
+                        scroll_bar: false,
+                        // gamescope often reports the deck touchscreen as a
+                        // mouse, so egui's OnTouch default never turns on.
+                        drag: egui::scroll_area::DragScroll::Always,
+                        mouse_wheel: true,
+                    })
                     .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
@@ -2103,6 +2359,10 @@ impl App {
 }
 
 impl eframe::App for App {
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.pad_ui(ctx, raw);
+    }
+
     fn ui(&mut self, root: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         self.maybe_check_updates();
@@ -2114,10 +2374,13 @@ impl eframe::App for App {
         }
         self.osk_ui(&ctx);
         self.toast_ui(&ctx);
+        self.pad_cursor_ui(&ctx);
 
         let ms = if self.stream.feed.is_some() {
             24
-        } else if self.gamepad_on || self.binds.capture {
+        } else if self.gamepad_on || self.binds.capture || deck_mode() {
+            // The pad is read on a background thread; poll the frame often
+            // enough that the virtual cursor does not feel laggy.
             33
         } else {
             350
@@ -2198,4 +2461,25 @@ pub fn notification_color(t: &Tokens, n: &Notification) -> Color32 {
 
 pub fn brightness_map() -> HashMap<String, u8> {
     HashMap::new()
+}
+
+/// Running on a handheld where the compositor may scale a small screen.
+fn deck_mode() -> bool {
+    std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some()
+        || sdw_core::util::is_steam_deck()
+}
+
+/// Upper bound for the ui scale slider. A 1280x800 deck screen cannot carry
+/// the same 1.4x zoom a desktop window can.
+pub fn max_ui_scale() -> f32 {
+    if deck_mode() { 1.15 } else { 1.4 }
+}
+
+/// Radial-ish deadzone: keep the centre still, then ramp to full speed.
+fn deadzone(v: f32, dz: f32) -> f32 {
+    if v.abs() <= dz {
+        0.0
+    } else {
+        (v - dz.copysign(v)) / (1.0 - dz)
+    }
 }

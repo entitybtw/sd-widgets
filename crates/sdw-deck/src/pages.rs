@@ -272,6 +272,42 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
     });
     ui.add_space(14.0);
 
+    if cfg!(target_os = "linux") && app.input_devices.is_empty() {
+        theme::card(ui, t, |ui| {
+            ui.label(theme::hud(
+                t!(app.lang, "нет доступа к контролам", "no controller access"),
+                t.warn,
+            ));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "геймпад и экран деки не читаются. добавьте пользователя в группу input и перезапустите приложение.",
+                    "the deck's controls cannot be read. add your user to the input group and restart the app."
+                ))
+                .size(13.5)
+                .color(t.muted),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("sudo usermod -aG input $USER")
+                        .family(FontFamily::Monospace)
+                        .size(12.5)
+                        .color(t.strong),
+                );
+                if theme::ghost(ui, t!(app.lang, "копировать", "copy"), t).clicked() {
+                    ui.ctx().copy_text("sudo usermod -aG input $USER".into());
+                    app.toast(t!(app.lang, "команда скопирована", "command copied"), true);
+                }
+            });
+            for e in &app.input_errors {
+                ui.label(RichText::new(e).size(12.0).color(t.bad));
+            }
+        });
+        ui.add_space(14.0);
+    }
+
     if app.cfg.hosts.is_empty() {
         let size = Vec2::new(ui.available_width(), 220.0);
         let resp = theme::tile(
@@ -2581,7 +2617,7 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             );
             ui.add_space(16.0);
             ui.label(RichText::new(t!(app.lang, "масштаб ui", "ui scale")).size(13.0).color(t.muted));
-            let r = ui.add(egui::Slider::new(&mut app.cfg.ui_scale, 0.8..=1.4));
+            let r = ui.add(egui::Slider::new(&mut app.cfg.ui_scale, 0.75..=crate::app::max_ui_scale()));
             if r.drag_stopped() {
                 app.save();
             }
@@ -2855,7 +2891,7 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui.add_space(18.0);
             ui.label(RichText::new(t!(app.lang, "масштаб ui", "ui scale")).size(13.0).color(t.muted));
             if ui
-                .add(egui::Slider::new(&mut app.cfg.ui_scale, 0.8..=1.4).fixed_decimals(2))
+                .add(egui::Slider::new(&mut app.cfg.ui_scale, 0.75..=crate::app::max_ui_scale()).fixed_decimals(2))
                 .drag_stopped()
             {
                 app.save();

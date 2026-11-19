@@ -34,8 +34,12 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Settings** | Device name, language, theme, UI scale, input devices, updates. |
 
 Every page can be reached by the **visible left/right arrows**, by the floating
-glyph dock, by three-finger swipes, or by keyboard. Page swaps animate with a
-fade, a small rise and a directional slide; tiles stagger in behind it.
+glyph dock, by three-finger swipes, by keyboard, or with the deck's own controls:
+the left stick and d-pad move a cursor, the right stick scrolls, **A** clicks,
+**B** goes back, **LB/RB** change pages, **Y** opens Home and **View** opens
+Settings. Drag anywhere on a page to scroll; a horizontal swipe from a screen
+edge also switches pages. Page swaps animate with a fade, a small rise and a
+directional slide; tiles stagger in behind it.
 
 ### On the computer (`sdw-daemon`)
 
@@ -65,8 +69,8 @@ fade, a small rise and a directional slide; tiles stagger in behind it.
 **Deck side**
 
 - Linux (SteamOS, CachyOS handheld, any distro), Wayland or X11.
-- `input` group membership for raw device reads (optional; gestures fall back to
-  touch events).
+- `input` group membership for the deck's own controls and gestures. Touch and
+  the on-screen UI still work without it; Home shows the exact command to run.
 - Build: Rust 1.88+.
 
 **Computer side**
