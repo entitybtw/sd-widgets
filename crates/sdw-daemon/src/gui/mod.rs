@@ -2531,26 +2531,73 @@ impl App {
                             ),
                         );
                     });
-                    if matches!(
+                    // VKMS is the part that makes niri, sway and a virtual
+                    // machine work, so show its readiness and prepare it in
+                    // one press instead of leaving the user with a snippet.
+                    let wants_vkms = matches!(
                         self.screen.backend,
                         MonitorBackend::Vkms | MonitorBackend::Auto
-                    ) && s.monitor.compositor == "niri"
-                    {
-                        ui.add_space(6.0);
-                        ui.label(hud(
-                            t!(self.lang, "пароль sudo для vkms", "sudo password for vkms"),
+                    ) && self.screen.mode == MonitorMode::Extend
+                        && cfg!(target_os = "linux");
+                    if wants_vkms {
+                        ui.add_space(8.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(hud(t!(self.lang, "готовность", "readiness"), t.faint));
+                            let checks = [
+                                (
+                                    t!(self.lang, "vkms в ядре", "vkms in the kernel"),
+                                    s.monitor.vkms,
+                                ),
+                                (
+                                    t!(self.lang, "vkms загружен", "vkms loaded"),
+                                    s.monitor.vkms_loaded,
+                                ),
+                                (
+                                    t!(self.lang, "выход найден", "output found"),
+                                    !s.monitor.output.is_empty(),
+                                ),
+                                (
+                                    t!(self.lang, "конфиг", "config"),
+                                    !s.monitor.config_file.is_empty(),
+                                ),
+                            ];
+                            for (label, ok) in checks {
+                                tag(ui, label, if ok { t.good } else { t.warn });
+                            }
+                            if !s.monitor.vm.is_empty() {
+                                tag(ui, &s.monitor.vm, t.muted);
+                            }
+                        });
+                        small(
+                            ui,
+                            t!(
+                                self.lang,
+                                "одна кнопка загрузит vkms и оставит его включённым после перезагрузки — вручную ничего писать не нужно",
+                                "one button loads vkms and keeps it enabled after a reboot — no manual files to write"
+                            ),
                             t.faint,
-                        ));
-                        ui.add(
-                            TextEdit::singleline(&mut self.screen.sudo)
-                                .password(true)
-                                .hint_text(t!(
-                                    self.lang,
-                                    "нужен для modprobe vkms",
-                                    "needed for modprobe vkms"
-                                ))
-                                .desired_width(300.0),
                         );
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                TextEdit::singleline(&mut self.screen.sudo)
+                                    .password(true)
+                                    .hint_text(t!(
+                                        self.lang,
+                                        "пароль sudo, если спросят",
+                                        "sudo password, if asked"
+                                    ))
+                                    .desired_width(240.0),
+                            );
+                            if primary(ui, t!(self.lang, "подготовить vkms", "prepare vkms"), t)
+                                .clicked()
+                            {
+                                let state = self.state.clone();
+                                let password = self.screen.sudo.clone();
+                                self.spawn(move || {
+                                    TaskResult::Msg(state.monitor.prepare_vkms(&password))
+                                });
+                            }
+                        });
                     }
                 }
                 _ => {

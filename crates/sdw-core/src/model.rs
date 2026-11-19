@@ -321,6 +321,15 @@ pub struct MonitorStatus {
     /// Non-fatal message, e.g. an automatic fallback to mirroring.
     #[serde(default)]
     pub note: String,
+    /// How the computer is virtualised ("kvm", "vmware", …), empty on metal.
+    #[serde(default)]
+    pub vm: String,
+    /// The kernel has a `vkms` module that can provide a virtual output.
+    #[serde(default)]
+    pub vkms: bool,
+    /// `vkms` is loaded right now.
+    #[serde(default)]
+    pub vkms_loaded: bool,
     pub started_at: u64,
 }
 

@@ -142,6 +142,9 @@ impl MonitorManager {
             config_file: inner.config_file.clone(),
             last_error: inner.last_error.clone(),
             note: inner.note.clone(),
+            vm: vm_kind(),
+            vkms: vkms_available(),
+            vkms_loaded: vkms_loaded(),
             started_at: inner.started_at,
         }
     }
@@ -149,6 +152,15 @@ impl MonitorManager {
     pub fn latest_frame(&self) -> Option<Vec<u8>> {
         let f = self.frame.lock().ok()?;
         (!f.bytes.is_empty()).then(|| f.bytes.clone())
+    }
+
+    /// One button in the GUI: load VKMS and make it survive a reboot. This is
+    /// the whole "make the extra screen work on niri or in a VM" path.
+    pub fn prepare_vkms(&self, sudo_password: &str) -> Result<String, String> {
+        run_vkms(sudo_password)?;
+        install_vkms_autoload(sudo_password)?;
+        self.refresh();
+        Ok("vkms загружен и включён в автозагрузку".into())
     }
 
     pub fn refresh(&self) {
@@ -268,25 +280,35 @@ impl MonitorManager {
                     }
                     let before: Vec<String> = outputs.iter().map(|o| o.name.clone()).collect();
                     run_vkms(&req.sudo_password)?;
-                    std::thread::sleep(Duration::from_millis(1600));
-                    self.refresh();
-                    let now = self.outputs();
-                    let new = now
-                        .iter()
-                        .find(|o| !before.contains(&o.name) && !o.name.starts_with("eDP"))
-                        .or_else(|| now.iter().find(|o| o.virtual_output))
-                        .or_else(|| now.iter().find(|o| !before.contains(&o.name)));
-                    let Some(new) = new else {
+                    // A VM can take a few seconds to enumerate a fresh DRM
+                    // connector; poll instead of trusting one short sleep.
+                    let mut found = None;
+                    for _ in 0..24 {
+                        std::thread::sleep(Duration::from_millis(300));
+                        self.refresh();
+                        let now = self.outputs();
+                        found = now
+                            .iter()
+                            .find(|o| !before.contains(&o.name) && !o.name.starts_with("eDP"))
+                            .or_else(|| now.iter().find(|o| o.virtual_output))
+                            .or_else(|| now.iter().find(|o| !before.contains(&o.name)))
+                            .map(|o| o.name.clone());
+                        if found.is_some() {
+                            break;
+                        }
+                    }
+                    let Some(name) = found else {
                         let hint = self
                             .inner
                             .lock()
                             .map(|i| i.config_hint.clone())
                             .unwrap_or_default();
                         return Err(format!(
-                            "VKMS загружен, но новый выход не появился. Подсказка по конфигу:\n{hint}"
+                            "VKMS загружен, но новый выход не появился. Проверьте, что модуль \
+                             виден системе (`ls /sys/class/drm`), и подсказку по конфигу:\n{hint}"
                         ));
                     };
-                    output = new.name.clone();
+                    output = name;
                     std::thread::sleep(Duration::from_millis(700));
                     self.refresh();
                     rect = output_rect(&self.outputs(), &output);
@@ -602,9 +624,13 @@ fn default_backend(compositor: &str, mode: MonitorMode) -> MonitorBackend {
         "hyprland" => MonitorBackend::Hyprland,
         "niri" | "sway" | "wayland" => MonitorBackend::Vkms,
         "kde" => MonitorBackend::Krfb,
+        // GNOME and an unidentified desktop have no output API the daemon can
+        // drive, but VKMS still adds a real connector the compositor picks up.
+        "gnome" if cfg!(target_os = "linux") && vkms_available() => MonitorBackend::Vkms,
         "x11" => MonitorBackend::X11,
         "windows" => MonitorBackend::Gdigrab,
         "macos" => MonitorBackend::MacCapture,
+        _ if cfg!(target_os = "linux") && vkms_available() => MonitorBackend::Vkms,
         _ => MonitorBackend::Mirror,
     }
 }
@@ -1524,13 +1550,111 @@ fn config_file_for(compositor: &str) -> String {
 
 // ---------------------------------------------------------------- privileged helper
 
+/// Where this machine runs: "kvm", "vmware", "hyperv", … or empty on metal.
+/// A virtual machine is why VKMS is the reliable route for an extra screen.
+fn vm_kind() -> String {
+    static CACHE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CACHE.get_or_init(vm_kind_probe).clone()
+}
+
+fn vm_kind_probe() -> String {
+    #[cfg(target_os = "linux")]
+    {
+        if sdw_core::util::has("systemd-detect-virt") {
+            if let Ok(out) = sdw_core::util::run("systemd-detect-virt", &["--vm"]) {
+                let out = out.trim();
+                if !out.is_empty() && out != "none" {
+                    return out.to_string();
+                }
+            }
+        }
+        if let Ok(cpu) = std::fs::read_to_string("/proc/cpuinfo") {
+            if cpu
+                .lines()
+                .any(|l| l.starts_with("flags") && l.contains("hypervisor"))
+            {
+                if let Ok(model) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
+                    let model = model.trim().to_ascii_lowercase();
+                    if !model.is_empty() {
+                        return format!("vm · {model}");
+                    }
+                }
+                return "vm".into();
+            }
+        }
+    }
+    String::new()
+}
+
+fn vkms_loaded() -> bool {
+    std::path::Path::new("/sys/module/vkms").exists()
+}
+
+/// Whether this kernel ships the module at all. On a VM without a DRM output
+/// this is the one thing worth checking before blaming the compositor.
+fn vkms_available() -> bool {
+    if vkms_loaded() {
+        return true;
+    }
+    // The module does not appear or vanish during a run; probing once keeps the
+    // 900 ms status poll free of extra processes.
+    static CACHE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(vkms_available_probe)
+}
+
+fn vkms_available_probe() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    if sdw_core::util::has("modinfo")
+        && sdw_core::util::run("modinfo", &["-n", "vkms"])
+            .map(|p| !p.trim().is_empty())
+            .unwrap_or(false)
+    {
+        return true;
+    }
+    sdw_core::util::has("modprobe") && sdw_core::util::run("modprobe", &["-n", "vkms"]).is_ok()
+}
+
+/// Load VKMS as directly as the system allows. Passwordless paths go first so a
+/// desktop session does not get a password box when it is not needed; `pkexec`
+/// is next, and the typed password only last.
 fn run_vkms(sudo_password: &str) -> Result<(), String> {
-    if sdw_core::util::run("modprobe", &["vkms", "num_outputs=1"]).is_ok() {
+    if vkms_loaded() {
         return Ok(());
     }
-    // Already loaded is fine.
-    if std::fs::read_to_string("/sys/module/vkms/parameters/num_outputs").is_ok() {
+    if !vkms_available() {
+        let vm = vm_kind();
+        return Err(if vm.is_empty() {
+            "в ядре нет модуля vkms: установите linux-modules-extra для своего ядра и повторите"
+                .into()
+        } else {
+            format!(
+                "в ядре этой машины ({vm}) нет модуля vkms: установите linux-modules-extra \
+                 или ядро с vkms и повторите"
+            )
+        });
+    }
+    let args = ["vkms", "num_outputs=1"];
+    let direct = sdw_core::util::run("modprobe", &args).is_ok() && vkms_loaded();
+    if direct {
         return Ok(());
+    }
+    // A sudo rule or a session that is already root needs no prompting.
+    if sdw_core::util::run("sudo", &["-n", "modprobe", "vkms", "num_outputs=1"]).is_ok()
+        && vkms_loaded()
+    {
+        return Ok(());
+    }
+    let mut last = String::new();
+    if sdw_core::util::has("pkexec") {
+        match Command::new("pkexec").args(args).output() {
+            Ok(out) if out.status.success() && vkms_loaded() => return Ok(()),
+            Ok(out) => {
+                last = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            }
+            Err(e) => last = format!("pkexec: {e}"),
+        }
     }
     if !sudo_password.is_empty() {
         let mut child = Command::new("sudo")
@@ -1544,28 +1668,64 @@ fn run_vkms(sudo_password: &str) -> Result<(), String> {
             let _ = writeln!(stdin, "{sudo_password}");
         }
         let out = child.wait_with_output().map_err(|e| e.to_string())?;
-        if out.status.success() {
+        if out.status.success() && vkms_loaded() {
             return Ok(());
         }
-        return Err(format!(
-            "не удалось загрузить VKMS: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        last = String::from_utf8_lossy(&out.stderr).trim().to_string();
     }
-    if sdw_core::util::has("pkexec") {
-        let out = Command::new("pkexec")
-            .args(["modprobe", "vkms", "num_outputs=1"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if out.status.success() {
-            return Ok(());
+    Err(if last.is_empty() {
+        "для vkms нужен root: введите пароль sudo в мастере или выполните \
+         `sudo modprobe vkms num_outputs=1`"
+            .into()
+    } else {
+        format!("не удалось загрузить vkms: {last}")
+    })
+}
+
+/// Write the two small files that keep VKMS loaded after a reboot. Called from
+/// the GUI button, never behind the user's back.
+fn install_vkms_autoload(sudo_password: &str) -> Result<(), String> {
+    let script = "mkdir -p /etc/modules-load.d /etc/modprobe.d && \
+         printf 'vkms\\n' > /etc/modules-load.d/sd-widgets.conf && \
+         printf 'options vkms num_outputs=1\\n' > /etc/modprobe.d/sd-widgets.conf";
+    if !sudo_password.is_empty() {
+        let mut child = Command::new("sudo")
+            .args(["-S", "-p", "", "sh", "-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("sudo: {e}"))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = writeln!(stdin, "{sudo_password}");
         }
-        return Err(format!(
-            "pkexec: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
+        let out = child.wait_with_output().map_err(|e| e.to_string())?;
+        return if out.status.success() {
+            Ok(())
+        } else {
+            Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+        };
     }
-    Err("Для VKMS нужен root: выполните `sudo modprobe vkms num_outputs=1` и повторите.".into())
+    let mut cmd = if sdw_core::util::has("pkexec") {
+        Command::new("pkexec")
+    } else {
+        Command::new("sudo")
+    };
+    if cmd.get_program() == "sudo" {
+        cmd.arg("-n");
+    }
+    cmd.args(["sh", "-c", script]);
+    let out = cmd.output().map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if err.is_empty() {
+            "не удалось записать автозагрузку vkms: нужен root".into()
+        } else {
+            err
+        })
+    }
 }
 
 // ---------------------------------------------------------------- capture loops
