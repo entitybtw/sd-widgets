@@ -95,6 +95,7 @@ impl NotificationStore {
             summary: "Проверка связи".into(),
             body: "Уведомления с компьютера приходят на Steam Deck.".into(),
             icon: String::new(),
+            image: String::new(),
             urgency: 0,
             ts: now_ms(),
             has_actions: false,
@@ -112,6 +113,7 @@ impl NotificationStore {
         urgency: u8,
         has_actions: bool,
         replaces: u64,
+        image: &[u8],
     ) -> u64 {
         let mut inner = match self.inner.lock() {
             Ok(i) => i,
@@ -139,6 +141,11 @@ impl NotificationStore {
             summary: summary.trim().to_string(),
             body: body.trim().to_string(),
             icon: icon.trim().to_string(),
+            image: if image.is_empty() {
+                String::new()
+            } else {
+                sdw_core::util::b64_encode(image)
+            },
             urgency,
             ts: now_ms(),
             has_actions,
@@ -410,6 +417,7 @@ impl NotificationStore {
             summary,
             body,
             icon: unescape(&p.strings[1]),
+            image: String::new(),
             urgency,
             ts: now_ms(),
             has_actions: p.strings.len() > 4,
@@ -502,6 +510,105 @@ fn unescape(s: &str) -> String {
         .replace("\\\\", "\\")
 }
 
+/// The `image-data` hint of a notification: width, height, row stride, alpha,
+/// bits per sample, channels, then the pixels. Converted to a PNG the Deck can
+/// draw without knowing anything about the format.
+#[cfg(target_os = "linux")]
+fn image_hint(value: &zbus::zvariant::OwnedValue) -> Option<Vec<u8>> {
+    type Raw = (i32, i32, i32, bool, i32, i32, Vec<u8>);
+    let (w, h, rowstride, _alpha, _bits, channels, data) = Raw::try_from(&**value).ok()?;
+    if w <= 0 || h <= 0 || w > 1024 || h > 1024 || !(3..=4).contains(&channels) {
+        return None;
+    }
+    let (w, h, stride, ch) = (
+        w as usize,
+        h as usize,
+        rowstride.max(0) as usize,
+        channels as usize,
+    );
+    if stride < w * ch || data.len() < stride * h {
+        return None;
+    }
+    let mut rgba = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        let row = &data[y * stride..y * stride + w * ch];
+        for px in row.chunks_exact(ch) {
+            rgba.extend_from_slice(&[px[0], px[1], px[2], if ch == 4 { px[3] } else { 255 }]);
+        }
+    }
+    let img = image::RgbaImage::from_raw(w as u32, h as u32, rgba)?;
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(img)
+        .write_to(&mut cursor, image::ImageFormat::Png)
+        .ok()?;
+    normalize_png(&cursor.into_inner(), 192)
+}
+
+/// Resolve a freedesktop icon name (or an absolute path) to a small PNG. The
+/// Deck has none of the PC's icon themes, so the bytes travel with the
+/// notification.
+#[cfg(target_os = "linux")]
+fn icon_png(name: &str) -> Option<Vec<u8>> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    let path = std::path::Path::new(name);
+    if path.is_absolute() {
+        candidates.push(path.to_path_buf());
+    } else {
+        let stem = name
+            .strip_suffix(".png")
+            .or_else(|| name.strip_suffix(".xpm"))
+            .unwrap_or(name);
+        for dir in ["/usr/share/icons/hicolor", "/usr/local/share/icons/hicolor"] {
+            for size in ["256x256", "128x128", "96x96", "64x64", "48x48"] {
+                candidates.push(
+                    std::path::Path::new(dir)
+                        .join(size)
+                        .join("apps")
+                        .join(format!("{stem}.png")),
+                );
+            }
+        }
+        candidates.push(std::path::Path::new("/usr/share/pixmaps").join(format!("{stem}.png")));
+        if let Some(home) = dirs::home_dir() {
+            candidates.push(
+                home.join(".local/share/icons/hicolor/128x128/apps")
+                    .join(format!("{stem}.png")),
+            );
+        }
+    }
+    for candidate in candidates {
+        if let Ok(bytes) = std::fs::read(&candidate) {
+            if let Some(png) = normalize_png(&bytes, 128) {
+                return Some(png);
+            }
+        }
+    }
+    None
+}
+
+/// Decode, shrink and re-encode any image the `image` crate understands, so
+/// the payload stays small and the Deck only ever sees PNG.
+fn normalize_png(bytes: &[u8], max: u32) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let img = if img.width() > max || img.height() > max {
+        img.resize(max, max, image::imageops::FilterType::Triangle)
+    } else {
+        img
+    };
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut cursor, image::ImageFormat::Png).ok()?;
+    let data = cursor.into_inner();
+    if data.len() > 512 * 1024 {
+        None
+    } else {
+        Some(data)
+    }
+}
+
 // ---------------------------------------------------------------- built-in server
 
 #[cfg(target_os = "linux")]
@@ -546,6 +653,12 @@ impl NotifServer {
                     .map(|v| v as u8)
             })
             .unwrap_or(0);
+        let picture = hints
+            .get("image-data")
+            .or_else(|| hints.get("image_data"))
+            .or_else(|| hints.get("icon_data"))
+            .and_then(image_hint)
+            .or_else(|| icon_png(app_icon));
         let id = self.store.record(
             app_name,
             summary,
@@ -554,6 +667,7 @@ impl NotifServer {
             urgency,
             !actions.is_empty(),
             replaces_id as u64,
+            picture.as_deref().unwrap_or(&[]),
         );
         id as u32
     }

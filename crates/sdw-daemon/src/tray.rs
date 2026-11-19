@@ -73,18 +73,15 @@ fn start_linux(state: Arc<AppState>) -> Option<TrayHandle> {
                 pixmaps: icon_pixmaps(),
                 menu: menu_path(),
             };
-            let menu = Menu {
-                tx,
-                lang,
-                port,
-            };
-            let built = Connection::session().and_then(|builder| {
-                builder
-                    .serve_at("/StatusNotifierItem", sni)
-                    .and_then(|b| b.serve_at("/MenuBar", menu))
-                    .and_then(|b| b.name(bus_name.clone()))
-                    .and_then(|b| b.build())
-            });
+            let menu = Menu { tx, lang, port };
+            let name_for_conn = bus_name.clone();
+            let built = (move || -> zbus::Result<Connection> {
+                let conn = Connection::session()?;
+                conn.object_server().at("/StatusNotifierItem", sni)?;
+                conn.object_server().at("/MenuBar", menu)?;
+                conn.request_name(name_for_conn)?;
+                Ok(conn)
+            })();
             let conn = match built {
                 Ok(c) => c,
                 Err(e) => {
@@ -117,7 +114,9 @@ fn start_linux(state: Arc<AppState>) -> Option<TrayHandle> {
         })
         .ok()?;
 
-    let ok = ready_rx.recv_timeout(Duration::from_secs(3)).unwrap_or(false);
+    let ok = ready_rx
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap_or(false);
     if !ok {
         let _ = &stop; // the thread already stopped on its own
         return None;
@@ -218,14 +217,9 @@ impl Menu {
     }
 
     /// One menu entry as a dbusmenu `(ia{sv}av)` structure.
-    fn item(
-        &self,
-        id: i32,
-        label: &str,
-        enabled: bool,
-    ) -> zbus::zvariant::Value<'static> {
+    fn item(&self, id: i32, label: &str, enabled: bool) -> zbus::zvariant::Value<'static> {
         let mut props: HashMap<String, zbus::zvariant::OwnedValue> = HashMap::new();
-        props.insert("label".into(), owned(label));
+        props.insert("label".into(), owned(label.to_string()));
         props.insert("enabled".into(), owned(enabled));
         props.insert("visible".into(), owned(true));
         if label.is_empty() {
@@ -234,9 +228,7 @@ impl Menu {
             props.insert("type".into(), owned("standard"));
         }
         let children: Vec<zbus::zvariant::Value<'static>> = Vec::new();
-        zbus::zvariant::Value::Structure(zbus::zvariant::Structure::from((
-            id, props, children,
-        )))
+        zbus::zvariant::Value::Structure(zbus::zvariant::Structure::from((id, props, children)))
     }
 
     fn layout(&self) -> zbus::zvariant::Value<'static> {
@@ -282,14 +274,7 @@ impl Menu {
             Vec<zbus::zvariant::Value<'static>>,
         ),
     ) {
-        (
-            1,
-            (
-                0,
-                HashMap::new(),
-                vec![self.layout()],
-            ),
-        )
+        (1, (0, HashMap::new(), vec![self.layout()]))
     }
 
     fn get_group_properties(
@@ -314,11 +299,7 @@ impl Menu {
         out
     }
 
-    fn get_property(
-        &self,
-        id: i32,
-        name: &str,
-    ) -> zbus::fdo::Result<zbus::zvariant::OwnedValue> {
+    fn get_property(&self, id: i32, name: &str) -> zbus::fdo::Result<zbus::zvariant::OwnedValue> {
         let (label, enabled) = match id {
             1 => (self.open_label(), true),
             2 => (self.web_label(), true),
@@ -334,13 +315,7 @@ impl Menu {
         })
     }
 
-    fn event(
-        &self,
-        id: i32,
-        event_id: &str,
-        _data: zbus::zvariant::Value<'_>,
-        _timestamp: u32,
-    ) {
+    fn event(&self, id: i32, event_id: &str, _data: zbus::zvariant::Value<'_>, _timestamp: u32) {
         if event_id != "clicked" {
             return;
         }
@@ -378,7 +353,10 @@ fn owned(value: impl Into<zbus::zvariant::Value<'static>>) -> zbus::zvariant::Ow
 /// StatusNotifierItem expects. Alpha is premultiplied.
 #[cfg(target_os = "linux")]
 fn icon_pixmaps() -> Vec<(i32, i32, Vec<u8>)> {
-    const PNG: &[u8] = include_bytes!("../../../assets/icons/sdw-widgets-64.png");
+    const PNG: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/icons/sd-widgets-64.png"
+    ));
     let Ok(img) = image::load_from_memory(PNG) else {
         return Vec::new();
     };

@@ -4428,6 +4428,22 @@ impl App {
                     }
                 },
             );
+            row(
+                ui,
+                t,
+                t!(self.lang, "иконка в трее", "tray icon"),
+                t!(
+                    self.lang,
+                    "применяется после перезапуска демона",
+                    "applies after the daemon restarts"
+                ),
+                |ui| {
+                    let mut on = cfg.tray;
+                    if switch(ui, &mut on, t).changed() {
+                        self.save(|c| c.tray = on);
+                    }
+                },
+            );
             ui.add_space(8.0);
             divider(ui);
             ui.horizontal(|ui| {

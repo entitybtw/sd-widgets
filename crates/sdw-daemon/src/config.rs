@@ -19,6 +19,9 @@ pub struct DaemonConfig {
     pub lang: String,
     pub dark: bool,
     pub autostart: bool,
+    /// Show a StatusNotifierItem icon while the daemon runs.
+    #[serde(default = "default_true")]
+    pub tray: bool,
     pub allow_public: bool,
     pub started_once: bool,
     pub viiper: ViiperCfg,
@@ -108,6 +111,10 @@ pub struct ClientRecord {
     pub last_seen_ms: u64,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 impl Default for DaemonConfig {
     fn default() -> Self {
         Self {
@@ -121,6 +128,7 @@ impl Default for DaemonConfig {
             lang: "ru".into(),
             dark: true,
             autostart: true,
+            tray: true,
             allow_public: false,
             started_once: false,
             viiper: ViiperCfg::default(),

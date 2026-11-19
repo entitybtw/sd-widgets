@@ -10,6 +10,7 @@ mod monitor;
 mod notifications;
 mod server;
 mod state;
+mod tray;
 mod viiper;
 
 use clap::Parser;
@@ -137,6 +138,13 @@ fn main() {
     if !state.cfg().viiper.password.is_empty() {
         let _ = state.viiper.write_key(&state.cfg().viiper.password);
     }
+    // The tray keeps the daemon reachable while every window is closed. It is
+    // optional: some sessions have no StatusNotifierWatcher at all.
+    let _tray = if state.cfg().tray {
+        tray::start(state.clone())
+    } else {
+        None
+    };
 
     let want_window = !cli.headless && has_display();
     #[cfg(not(feature = "gui"))]
