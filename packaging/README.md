@@ -16,7 +16,7 @@ curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packagi
 curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- daemon
 ```
 
-`--local dist/sdw-deck-0.4.0-x86_64.AppImage` installs a build from this checkout
+`--local dist/sdw-deck-0.4.1-x86_64.AppImage` installs a build from this checkout
 without downloading. The full list of options is in
 [`docs/INSTALL.md`](../docs/INSTALL.md).
 
