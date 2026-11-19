@@ -243,7 +243,14 @@ pub fn download(
 /// place, which is exactly how an AppImage updates itself. Windows keeps the
 /// file locked, so there we only report the downloaded path.
 pub fn install(downloaded: &Path) -> Result<String, String> {
-    let current = std::env::current_exe().map_err(|e| format!("текущий файл: {e}"))?;
+    // Inside an AppImage, current_exe() points into the read-only squashfs mount.
+    // The AppImage runtime exposes the real file in $APPIMAGE, which is the file
+    // we must replace.
+    let current = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_file())
+        .map(Ok)
+        .unwrap_or_else(|| std::env::current_exe().map_err(|e| format!("текущий файл: {e}")))?;
     #[cfg(unix)]
     {
         let backup = current.with_extension("old");
