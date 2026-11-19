@@ -822,7 +822,7 @@ impl Default for DeckViewCfg {
 pub struct ThemeCfg {
     #[serde(default = "default_css")]
     pub css: String,
-    /// 0 = hard edges, 24 = soft pills. Applies to every surface.
+    /// 0 = hard grid edges, 24 = soft pills. Applies to every surface.
     #[serde(default)]
     pub radius: f32,
     #[serde(default = "default_true")]

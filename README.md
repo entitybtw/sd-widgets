@@ -7,6 +7,8 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 - **One repo, two binaries**: `sdw-deck` (runs on the Deck) and `sdw-daemon` (runs on the computer).
 - **Grid** visual language: no rounding anywhere, hairline borders, 32 px cells,
   and a minimal set of **Material Symbols** icons.
+  The grid theme is fully inspired by **Quadra**, a gorgeous hard-edge Steam Deck
+  theme — go try it, it's great.
 - **Full customisation**: CSS themes, palette pickers, density, tile grid, page and
   tile visibility, interface sounds, per-event sound files.
 - **Bilingual**: English and Russian, dark and light.

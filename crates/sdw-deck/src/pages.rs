@@ -2188,11 +2188,20 @@ fn palette(ui: &mut Ui, t: &Tokens, style: &mut ThemeCfg, prefix: &str, lang: La
     let mut dirty = false;
     for (key, label) in [
         ("bg", t!(lang, "фон", "background")),
+        ("bg2", t!(lang, "фон 2", "background 2")),
         ("card", t!(lang, "карточки", "cards")),
+        ("well", t!(lang, "колодцы", "wells")),
         ("ink", t!(lang, "текст", "text")),
+        ("strong", t!(lang, "яркий текст", "strong text")),
         ("muted", t!(lang, "вторичный", "secondary")),
+        ("faint", t!(lang, "тихий", "faint")),
         ("line", t!(lang, "линии", "lines")),
+        ("line-strong", t!(lang, "контуры", "outlines")),
         ("accent", t!(lang, "акцент", "accent")),
+        ("accent-soft", t!(lang, "акцент мягкий", "accent soft")),
+        ("good", t!(lang, "успех", "success")),
+        ("warn", t!(lang, "внимание", "warning")),
+        ("bad", t!(lang, "ошибка", "error")),
     ] {
         dirty |= color_row(ui, t, style, &p(key), label);
     }

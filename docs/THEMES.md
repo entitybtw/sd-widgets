@@ -43,7 +43,10 @@ use the `light-` prefix.
 Accepted colours: `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb(r,g,b)`,
 `rgba(r,g,b,a)` (alpha `0..1` or `0..255`).
 
-Rounding is **always zero** in the Grid look, even if `--radius` is set: hard
+The default **grid** look is fully inspired by **Quadra**, a great hard-edge Steam
+Deck theme — try it.
+
+Rounding is **always zero** in the grid look, even if `--radius` is set: hard
 edges are a product decision, not a theme option.
 
 ## Presets

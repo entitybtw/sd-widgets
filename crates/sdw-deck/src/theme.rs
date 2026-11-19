@@ -564,7 +564,7 @@ pub fn mix(a: Color32, b: Color32, k: f32) -> Color32 {
     )
 }
 
-/// The grid grid backdrop: a faint square lattice with two soft ambient glows.
+/// The grid backdrop: a faint square lattice with two soft ambient glows.
 /// Painted on the panel before the content, so every page shares it.
 pub fn backdrop(ui: &Ui, t: &Tokens) {
     let rect = ui.max_rect();
@@ -576,7 +576,7 @@ pub fn backdrop(ui: &Ui, t: &Tokens) {
         return;
     }
     let p = ui.painter();
-    // Grid's grid: 32 px cells, 1 px lines of rgba(128,158,197,0.09).
+    // the grid: 32 px cells, 1 px lines of rgba(128,158,197,0.09).
     let step = st.grid_step.clamp(8.0, 160.0);
     let alpha = st.grid_alpha.clamp(0.0, 60.0).round() as u8;
     let line = if t.dark {
@@ -603,40 +603,40 @@ pub fn backdrop(ui: &Ui, t: &Tokens) {
     }
 }
 
-/// A floating page arrow. Big enough for a thumb, quiet enough to disappear.
+/// A floating page arrow: one square, blue outline, blue glyph.
 pub fn nav_arrow(ui: &mut Ui, t: &Tokens, glyph: &str, enabled: bool) -> Response {
-    let size = Vec2::new(54.0, 84.0);
+    let size = Vec2::splat(48.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let hover = ui
         .ctx()
         .animate_bool_responsive(resp.id.with("hover"), resp.hovered());
     let fill = if t.dark {
-        Color32::from_rgba_premultiplied(0x18, 0x18, 0x24, 200)
+        Color32::from_rgba_premultiplied(0x10, 0x14, 0x1b, 220)
     } else {
-        Color32::from_rgba_premultiplied(0xff, 0xff, 0xff, 220)
+        Color32::from_rgba_premultiplied(0xff, 0xff, 0xff, 235)
     };
     let p = ui.painter();
     p.rect_filled(rect, t.r(0.0), fill);
+    let line = if enabled {
+        t.accent.gamma_multiply(0.55 + hover * 0.45)
+    } else {
+        t.line_strong
+    };
     p.rect_stroke(
         rect,
         0.0,
-        Stroke::new(
-            1.0,
-            t.line_strong.gamma_multiply(0.45 + hover * 0.5),
-        ),
+        Stroke::new(if hover > 0.5 { 1.6 } else { 1.0 }, line),
         egui::StrokeKind::Inside,
     );
     p.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
         glyph,
-        FontId::new(30.0, glyph_family(glyph)),
+        FontId::new(26.0, glyph_family(glyph)),
         if !enabled {
             t.faint
-        } else if hover > 0.5 {
-            t.strong
         } else {
-            t.muted
+            t.accent.gamma_multiply(0.85 + hover * 0.15)
         },
     );
     resp
@@ -796,7 +796,7 @@ pub fn tile(ui: &mut Ui, t: &Tokens, tile: &Tile, size: Vec2) -> Response {
     let p = ui.painter();
     let accent = if tile.dim { t.faint } else { t.accent };
 
-    // Flat Grid panel: hard edges, a card fill and a hairline border.
+    // Flat grid panel: hard edges, a card fill and a hairline border.
     p.rect_filled(rect, t.r(0.0), t.card);
     p.rect_stroke(
         rect,
