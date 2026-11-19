@@ -426,7 +426,7 @@ impl MonitorManager {
             inner.output_rect = rect;
             inner.created_output = created.clone();
             inner.rfb = rfb;
-            let outputs_now = self.outputs();
+            let outputs_now = inner.outputs.clone();
             inner.config_hint = config_hint(&compositor, &output, width, height, fps, position, &outputs_now);
             inner.config_file = config_file_for(&compositor);
         }
