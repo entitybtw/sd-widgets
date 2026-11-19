@@ -219,6 +219,9 @@ pub struct UpdateState {
 pub struct BindsState {
     pub editor: Option<BindEditor>,
     pub capture: bool,
+    /// When capture was switched on. The first ~300 ms are ignored so the tap
+    /// that opened the editor cannot become the recorded control.
+    pub capture_since: Option<Instant>,
     pub filter: String,
 }
 
@@ -226,6 +229,27 @@ pub struct Toast {
     pub text: String,
     pub ok: bool,
     pub at: Instant,
+}
+
+/// A notification mirrored as a smooth in-app popup. It lives for a few
+/// seconds, fades in from the edge and can be dismissed with a tap.
+#[derive(Clone)]
+pub struct NotifPopup {
+    pub id: u64,
+    pub app: String,
+    pub summary: String,
+    pub body: String,
+    /// PNG in base64, empty when the notification carries no picture.
+    pub image: String,
+    pub urgency: u8,
+    pub at: Instant,
+}
+
+/// Battery of a Bluetooth or USB headset, as UPower reports it.
+#[derive(Debug, Clone)]
+pub struct Headset {
+    pub name: String,
+    pub percent: u8,
 }
 
 pub enum Task {
@@ -253,6 +277,7 @@ pub enum Task {
     Audio(Result<AudioStatus, String>),
     AudioApps(Result<Vec<AudioApp>, String>),
     Msg(Result<String, String>),
+    Headset(Option<Headset>),
 }
 
 /// Multi-finger touch state from `egui::Event::Touch`.
@@ -321,6 +346,16 @@ impl TouchTrack {
         self.last.insert(id, pos);
     }
 
+    /// Horizontal travel of the fingers since the gesture started, in points.
+    fn drag_px(&self, rect: Rect) -> Option<Vec2> {
+        let anchor = self.anchor?;
+        let now = self.centroid(&self.points, rect);
+        Some(Vec2::new(
+            (now.0 - anchor.0) * rect.width(),
+            (now.1 - anchor.1) * rect.height(),
+        ))
+    }
+
     /// Returns a finished gesture once the last finger lifts.
     fn end(&mut self, id: u64, pos: egui::Pos2, rect: Rect, now: Instant) -> Option<GestureSpec> {
         self.last.insert(id, pos);
@@ -375,11 +410,18 @@ pub struct App {
     pub page_epoch: u64,
     /// +1 when walking forward through the pages, -1 when walking back.
     pub page_dir: f32,
+    /// Live horizontal offset while a finger swipe is in progress, in points.
+    /// It makes the page follow the finger instead of jumping on release.
+    pub page_slide: f32,
     pub page_at: Instant,
     pub status: Option<DaemonStatus>,
     pub status_err: String,
     pub status_pending: bool,
     pub last_status: Instant,
+    /// Debounced config write: a slider drag saves once, not on every frame.
+    pub save_at: Option<Instant>,
+    /// The clock is drawn over the whole window, without chrome.
+    pub clock_full: bool,
     pub notifications: Vec<Notification>,
     pub notif_last_id: u64,
     pub notif_unread: u32,
@@ -447,12 +489,20 @@ pub struct App {
     pub osk_symbols: bool,
 
     pub toast: Option<Toast>,
+    pub popups: Vec<NotifPopup>,
+    /// Decoded notification pictures, keyed by notification id.
+    pub notif_art: HashMap<u64, Option<egui::TextureHandle>>,
+    /// The system on-screen keyboard is open for the focused field.
+    pub kb_open: bool,
     pub task_tx: Sender<Task>,
     pub task_rx: Receiver<Task>,
     pub clock: String,
     pub last_clock: Instant,
     pub battery: Option<u8>,
     pub last_battery: Instant,
+    /// Bluetooth/USB headset battery, read from UPower now and then.
+    pub headset: Option<Headset>,
+    pub last_headset: Instant,
     pub applied_scale: f32,
     /// Working copy of the theme CSS while the appearance page is open.
     pub style_draft: String,
@@ -500,11 +550,14 @@ impl App {
             page,
             page_epoch: 1,
             page_dir: 1.0,
+            page_slide: 0.0,
             page_at: Instant::now(),
             status: None,
             status_err: String::new(),
             status_pending: false,
             last_status: Instant::now() - Duration::from_secs(5),
+            save_at: None,
+            clock_full: false,
             notifications: Vec::new(),
             notif_last_id: 0,
             notif_unread: 0,
@@ -596,6 +649,7 @@ impl App {
             binds: BindsState {
                 editor: None,
                 capture: false,
+                capture_since: None,
                 filter: String::new(),
             },
             update: UpdateState {
@@ -616,12 +670,17 @@ impl App {
             osk_shift: false,
             osk_symbols: false,
             toast: None,
+            popups: Vec::new(),
+            notif_art: HashMap::new(),
+            kb_open: false,
             task_tx,
             task_rx,
             clock: theme::clock_text(),
             last_clock: Instant::now(),
             battery: None,
             last_battery: Instant::now() - Duration::from_secs(60),
+            headset: None,
+            last_headset: Instant::now() - Duration::from_secs(60),
             applied_scale: 0.0,
             style_draft: cfg.style.css.clone(),
             addon_import: String::new(),
@@ -807,7 +866,22 @@ impl App {
                 }
             }
         }
+        if finished.is_none()
+            && theme::style().animations
+            && !self.gamepad_on
+            && !self.binds.capture
+            && self.touch.max >= 3
+            && self.touch.points.len() >= 3
+        {
+            if let Some(delta) = self.touch.drag_px(rect) {
+                if delta.x.abs() > delta.y.abs() {
+                    let w = rect.width().max(1.0);
+                    self.page_slide = delta.x.clamp(-w * 0.6, w * 0.6);
+                }
+            }
+        }
         if let Some(spec) = finished {
+            self.page_slide = 0.0;
             self.on_input(DeckEvent::Gesture(spec));
         }
     }
@@ -849,6 +923,18 @@ impl App {
             if down {
                 if let Some(p) = pos {
                     self.edge_swipe = Some((start, p, at));
+                    let dx = p.x - start.x;
+                    let dy = p.y - start.y;
+                    if theme::style().animations
+                        && !self.swipe_blocked
+                        && dx.abs() > 6.0
+                        && dx.abs() > dy.abs() * 1.2
+                    {
+                        let w = rect.width().max(1.0);
+                        self.page_slide = dx.clamp(-w * 0.6, w * 0.6);
+                    } else if !self.swipe_blocked {
+                        self.page_slide = 0.0;
+                    }
                 }
             } else if released {
                 if let Some(p) = pos {
@@ -866,6 +952,7 @@ impl App {
                         && dx.abs() > min
                         && dx.abs() > dy.abs() * 1.4
                     {
+                        self.page_slide = 0.0;
                         self.nav_step(if dx < 0.0 { 1 } else { -1 });
                     }
                 }
@@ -877,10 +964,15 @@ impl App {
     }
 
     fn go_back(&mut self, ctx: &egui::Context) {
-        if self.stream.fullscreen {
+        if self.clock_full {
+            self.clock_full = false;
+        } else if self.stream.fullscreen {
             self.set_fullscreen(ctx, false);
         } else if self.osk_open {
             self.osk_open = false;
+        } else if self.binds.capture {
+            self.binds.capture = false;
+            self.binds.capture_since = None;
         } else if self.binds.editor.is_some() {
             self.binds.editor = None;
             self.binds.capture = false;
@@ -945,6 +1037,11 @@ impl App {
         if let Err(e) = sdw_core::config::save(&self.cfg) {
             self.toast(format!("не удалось сохранить: {e}"), false);
         }
+    }
+
+    /// Save once the user stops dragging, instead of on every changed frame.
+    pub fn save_soon(&mut self) {
+        self.save_at = Some(Instant::now());
     }
 
     pub fn toast(&mut self, text: impl Into<String>, ok: bool) {
@@ -1067,6 +1164,26 @@ impl App {
         self.cfg.style.pages.is_empty() || self.cfg.style.pages.iter().any(|p| p == page.key())
     }
 
+    /// Pages in dock order. The stored list is both the filter and the order;
+    /// an empty list means "all pages in the default order".
+    pub fn dock_pages(&self) -> Vec<Page> {
+        if self.cfg.style.pages.is_empty() {
+            return Page::ORDER
+                .iter()
+                .copied()
+                .filter(|p| self.page_shown(*p))
+                .collect();
+        }
+        let mut out: Vec<Page> = Vec::new();
+        for key in &self.cfg.style.pages {
+            let page = Page::from_key(key);
+            if !out.contains(&page) {
+                out.push(page);
+            }
+        }
+        out
+    }
+
     /// Whether a home tile is visible.
     pub fn tile_shown(&self, key: &str) -> bool {
         self.cfg.style.home_tiles.is_empty() || self.cfg.style.home_tiles.iter().any(|k| k == key)
@@ -1105,6 +1222,7 @@ impl App {
         self.status_pending = false;
         self.last_status = Instant::now() - Duration::from_secs(5);
         self.notifications.clear();
+        self.notif_art.clear();
         self.notif_last_id = 0;
         self.notif_unread = 0;
         self.notif_pending = false;
@@ -1666,6 +1784,48 @@ impl App {
         }
     }
 
+    /// Decode and cache a notification picture. Returns a cheap handle clone;
+    /// `None` when the notification has no picture or it cannot be decoded.
+    pub fn notif_texture(
+        &mut self,
+        ctx: &egui::Context,
+        id: u64,
+        image: &str,
+    ) -> Option<egui::TextureHandle> {
+        if image.is_empty() {
+            return None;
+        }
+        if let Some(slot) = self.notif_art.get(&id) {
+            return slot.clone();
+        }
+        let tex = sdw_core::util::b64_decode(image)
+            .and_then(|bytes| image::load_from_memory(&bytes).ok())
+            .map(|img| {
+                let img = img.to_rgba8();
+                let (w, h) = img.dimensions();
+                let img = if w.max(h) > 192 {
+                    let scale = 192.0 / w.max(h) as f32;
+                    let nw = (w as f32 * scale).max(1.0) as u32;
+                    let nh = (h as f32 * scale).max(1.0) as u32;
+                    image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle)
+                } else {
+                    img
+                };
+                let (w, h) = img.dimensions();
+                let color = egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    img.as_raw(),
+                );
+                ctx.load_texture(
+                    format!("notif-art-{id}"),
+                    color,
+                    egui::TextureOptions::LINEAR,
+                )
+            });
+        self.notif_art.insert(id, tex.clone());
+        tex
+    }
+
     fn ensure_media_art(&mut self, ctx: &egui::Context) {
         let id = self.media.state.art_id.clone();
         if id.is_empty() {
@@ -1824,6 +1984,14 @@ impl App {
 
     // ------------------------------------------------------------ actions
 
+    /// Start or stop listening for a control to bind. The timestamp arms a
+    /// short settle window, and buttons already down (a finger on the glass)
+    /// are ignored by `on_input`.
+    pub fn set_bind_capture(&mut self, on: bool) {
+        self.binds.capture = on;
+        self.binds.capture_since = on.then(Instant::now);
+    }
+
     pub fn execute_bind(&mut self, bind: &Bind) {
         let action = bind.action.clone();
         self.execute_action(&action);
@@ -1946,7 +2114,17 @@ impl App {
                             }
                         }
                         if self.binds.capture {
-                            binds::capture_button(self, code, &label, &device);
+                            let armed = self
+                                .binds
+                                .capture_since
+                                .map(|at| at.elapsed() >= Duration::from_millis(300))
+                                .unwrap_or(true);
+                            // 0x14a is BTN_TOUCH: a finger on the glass is not a
+                            // control the user meant to bind.
+                            if fresh && armed && !input::is_touch_event(code) {
+                                binds::capture_button(self, code, &label, &device);
+                                return;
+                            }
                             return;
                         }
                         self.run_button_binds(code);
@@ -2006,11 +2184,7 @@ impl App {
     }
 
     fn nav_step(&mut self, delta: i32) {
-        let pages: Vec<Page> = Page::ORDER
-            .iter()
-            .copied()
-            .filter(|p| self.page_shown(*p))
-            .collect();
+        let pages = self.dock_pages();
         if pages.is_empty() {
             return;
         }
@@ -2027,6 +2201,16 @@ impl App {
             self.applied_dark = self.dark;
         }
         self.apply_scale(ctx);
+        // A swipe that did not commit eases back to zero instead of snapping.
+        let dragging = self.edge_swipe.is_some() || !self.touch.points.is_empty();
+        if !dragging && self.page_slide != 0.0 {
+            self.page_slide = if self.page_slide.abs() < 1.0 {
+                0.0
+            } else {
+                self.page_slide * 0.72
+            };
+            ctx.request_repaint();
+        }
         if self.last_clock.elapsed() >= Duration::from_secs(1) {
             self.last_clock = Instant::now();
             self.clock = theme::clock_text();
@@ -2034,6 +2218,10 @@ impl App {
         if self.last_battery.elapsed() >= Duration::from_secs(30) {
             self.last_battery = Instant::now();
             self.battery = read_battery();
+        }
+        if self.last_headset.elapsed() >= Duration::from_secs(60) {
+            self.last_headset = Instant::now();
+            self.spawn(|| Task::Headset(read_headset()));
         }
 
         while let Ok(task) = self.task_rx.try_recv() {
@@ -2069,6 +2257,26 @@ impl App {
             .is_some_and(|t| t.at.elapsed() > Duration::from_secs(4))
         {
             self.toast = None;
+        }
+
+        // A capture that never sees a button must not leave the Deck listening
+        // forever: give up after a few seconds and keep the editor open.
+        if self.binds.capture
+            && self
+                .binds
+                .capture_since
+                .is_some_and(|at| at.elapsed() > Duration::from_secs(12))
+        {
+            self.binds.capture = false;
+            self.binds.capture_since = None;
+            self.toast(
+                t!(
+                    self.lang,
+                    "запись отменена: кнопка не нажата",
+                    "capture cancelled: no button pressed"
+                ),
+                false,
+            );
         }
 
         self.swipe_tick(ctx);
@@ -2268,6 +2476,20 @@ impl App {
                 for n in list {
                     if !self.notifications.iter().any(|x| x.id == n.id) {
                         self.notif_last_id = self.notif_last_id.max(n.id);
+                        if self.cfg.notify_popup && self.page != Page::Notifications {
+                            self.popups.push(NotifPopup {
+                                id: n.id,
+                                app: n.app.clone(),
+                                summary: n.summary.clone(),
+                                body: n.body.clone(),
+                                image: n.image.clone(),
+                                urgency: n.urgency,
+                                at: Instant::now(),
+                            });
+                            if self.popups.len() > 3 {
+                                self.popups.remove(0);
+                            }
+                        }
                         self.notifications.push(n);
                         added += 1;
                     }
@@ -2277,6 +2499,8 @@ impl App {
                     let cut = self.notifications.len() - 80;
                     self.notifications.drain(..cut);
                 }
+                let live: HashSet<u64> = self.notifications.iter().map(|n| n.id).collect();
+                self.notif_art.retain(|id, _| live.contains(id));
                 if self.page == Page::Notifications {
                     self.notif_unread = 0;
                 } else {
@@ -2382,6 +2606,7 @@ impl App {
                 self.last_status = Instant::now() - Duration::from_secs(5);
             }
             Task::Msg(Err(e)) => self.toast(e, false),
+            Task::Headset(found) => self.headset = found,
         }
     }
 
@@ -2393,14 +2618,19 @@ impl App {
         // slides in from the side you came from. Margins move with it so the
         // content never spills outside the panel.
         let anim = if theme::style().animations {
-            ctx.animate_bool_with_time(Id::new(("page", self.page_epoch)), true, 0.22)
+            ctx.animate_bool_with_time(Id::new(("page", self.page_epoch)), true, 0.28)
         } else {
             1.0
         };
         let ease = 1.0 - (1.0 - anim).powi(3);
-        let slide = (1.0 - ease) * 26.0 * self.page_dir;
+        let width = ctx.content_rect().width().max(1.0);
+        // A wider travel than before: the new space clearly comes from the
+        // side the swipe went, while the live finger offset is added on top.
+        let travel = (width * 0.12).clamp(36.0, 220.0);
+        let slide = (1.0 - ease) * travel * self.page_dir + self.page_slide;
         let left = (34.0 + slide).max(4.0) as i8;
         let right = (34.0 - slide).max(4.0) as i8;
+        let drag_fade = 1.0 - (self.page_slide.abs() / width * 0.5).min(0.35);
         egui::Panel::top("deck-top")
             .exact_size(50.0)
             .frame(
@@ -2418,8 +2648,8 @@ impl App {
             }))
             .show(root, |ui| {
                 theme::backdrop(ui, &t);
-                ui.set_opacity(ease);
-                ui.add_space((1.0 - ease) * 8.0);
+                ui.set_opacity(ease * drag_fade);
+                ui.add_space((1.0 - ease) * 14.0);
                 ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .scroll_source(egui::scroll_area::ScrollSource {
@@ -2556,7 +2786,11 @@ impl App {
                     {
                         match at {
                             0 => self.set_page(Page::Settings),
-                            1 => self.osk_open = !self.osk_open,
+                            1 => {
+                                if !open_system_keyboard() {
+                                    self.osk_open = !self.osk_open;
+                                }
+                            }
                             _ => self.set_dark(!self.dark),
                         }
                     }
@@ -2608,8 +2842,13 @@ impl App {
         let lang = self.lang;
         let current = self.page;
         let unread = self.notif_unread;
+        let anchor = if st.dock_top {
+            (egui::Align2::CENTER_TOP, egui::vec2(0.0, 8.0))
+        } else {
+            (egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0))
+        };
         egui::Area::new(Id::new("deck-dock"))
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -8.0))
+            .anchor(anchor.0, anchor.1)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 let dock_fill = if t.dark {
@@ -2629,14 +2868,17 @@ impl App {
                             }
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 1.0;
-                                for page in Page::ORDER.into_iter().filter(|p| self.page_shown(*p))
-                                {
+                                for page in self.dock_pages() {
                                     let active = current == page;
                                     let resp = ui
                                         .add(
                                             egui::Button::new(theme::icon(
                                                 page.icon(),
-                                                if active { 18.0 } else { 17.0 },
+                                                if active {
+                                                    st.dock_icon + 1.0
+                                                } else {
+                                                    st.dock_icon
+                                                },
                                                 if active { t.strong } else { t.muted },
                                             ))
                                             .fill(if active {
@@ -2650,7 +2892,10 @@ impl App {
                                                 Stroke::NONE
                                             })
                                             .corner_radius(CornerRadius::ZERO)
-                                            .min_size(Vec2::new(36.0, 32.0)),
+                                            .min_size(Vec2::new(
+                                                st.dock_icon + 19.0,
+                                                st.dock_icon + 15.0,
+                                            )),
                                         )
                                         .on_hover_text(page.label(lang));
                                     if page == Page::Notifications && unread > 0 {
@@ -2955,6 +3200,134 @@ impl App {
             });
     }
 
+    /// When a text field takes focus, call the system on-screen keyboard
+    /// (the Steam Deck one, via Steam) instead of drawing our own. The built-in
+    /// keyboard is only a fallback for machines without Steam.
+    fn keyboard_tick(&mut self, ctx: &egui::Context) {
+        let wants = ctx.egui_wants_keyboard_input();
+        if wants && !self.kb_open {
+            self.kb_open = true;
+            if !open_system_keyboard() {
+                self.osk_open = true;
+            }
+        } else if !wants && self.kb_open {
+            self.kb_open = false;
+        }
+    }
+
+    /// Notification popups: a small Grid card that eases in from the right,
+    /// lives for about five seconds and can be tapped away.
+    fn popup_ui(&mut self, ctx: &egui::Context) {
+        if self.popups.is_empty() {
+            return;
+        }
+        let t = Tokens::get(ctx);
+        let now = Instant::now();
+        self.popups
+            .retain(|p| now.duration_since(p.at) < Duration::from_millis(5400));
+        let mut dismiss: Option<u64> = None;
+        let items: Vec<NotifPopup> = self.popups.clone();
+        for (i, p) in items.iter().enumerate() {
+            let art = self.notif_texture(ctx, p.id, &p.image);
+            let age = now.duration_since(p.at).as_secs_f32();
+            let appear = (age / 0.22).clamp(0.0, 1.0);
+            let ease = 1.0 - (1.0 - appear).powi(3);
+            let fade = ((5.4 - age) / 0.4).clamp(0.0, 1.0);
+            let alpha = ease.min(fade).clamp(0.0, 1.0);
+            let color = match p.urgency {
+                0 => t.accent,
+                1 => t.warn,
+                _ => t.bad,
+            };
+            let offset = Vec2::new(-18.0, 64.0 + i as f32 * 108.0 - (1.0 - ease) * 14.0);
+            egui::Area::new(Id::new(("notif-popup", p.id)))
+                .anchor(Align2::RIGHT_TOP, offset)
+                .order(egui::Order::Tooltip)
+                .show(ctx, |ui| {
+                    ui.set_opacity(alpha);
+                    ui.set_max_width(360.0);
+                    egui::Frame::new()
+                        .fill(t.bg2)
+                        .stroke(Stroke::new(1.0, color.gamma_multiply(0.65)))
+                        .corner_radius(CornerRadius::ZERO)
+                        .inner_margin(Margin::symmetric(14, 12))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if let Some(tex) = &art {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        Vec2::splat(40.0),
+                                        egui::Sense::hover(),
+                                    );
+                                    let uv = egui::Rect::from_min_max(
+                                        egui::pos2(0.0, 0.0),
+                                        egui::pos2(1.0, 1.0),
+                                    );
+                                    ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        CornerRadius::ZERO,
+                                        Stroke::new(1.0, t.line),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    ui.add_space(10.0);
+                                }
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        if art.is_none() {
+                                            ui.label(theme::icon(
+                                                crate::pages::notif_glyph(&p.app, ""),
+                                                15.0,
+                                                color,
+                                            ));
+                                        }
+                                        ui.label(
+                                            RichText::new(if p.app.is_empty() {
+                                                "system"
+                                            } else {
+                                                &p.app
+                                            })
+                                            .family(FontFamily::Monospace)
+                                            .size(10.5)
+                                            .color(color),
+                                        );
+                                    });
+                                    ui.label(
+                                        RichText::new(&p.summary)
+                                            .size(15.0)
+                                            .strong()
+                                            .color(t.strong),
+                                    );
+                                    if !p.body.is_empty() {
+                                        ui.label(
+                                            RichText::new(sdw_core::util::truncate(&p.body, 120))
+                                                .size(12.0)
+                                                .color(t.muted),
+                                        );
+                                    }
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                    if ui
+                                        .add(
+                                            egui::Button::new(theme::hud("×", t.muted))
+                                                .fill(Color32::TRANSPARENT)
+                                                .stroke(Stroke::NONE),
+                                        )
+                                        .clicked()
+                                    {
+                                        dismiss = Some(p.id);
+                                    }
+                                });
+                            });
+                        });
+                });
+        }
+        if let Some(id) = dismiss {
+            self.popups.retain(|p| p.id != id);
+        }
+        // Keep the fade smooth while at least one popup is alive.
+        ctx.request_repaint_after(Duration::from_millis(16));
+    }
+
     fn toast_ui(&mut self, ctx: &egui::Context) {
         let Some(toast) = &self.toast else {
             return;
@@ -2987,14 +3360,24 @@ impl eframe::App for App {
         let ctx = root.ctx().clone();
         self.maybe_check_updates();
         self.tick(&ctx);
+        self.keyboard_tick(&ctx);
+        if let Some(at) = self.save_at {
+            if at.elapsed() >= Duration::from_millis(400) {
+                self.save_at = None;
+                self.save();
+            }
+        }
         crate::audio_ui::tick(self);
-        if self.stream.fullscreen {
+        if self.clock_full {
+            crate::clock::fullscreen(self, root, &ctx);
+        } else if self.stream.fullscreen {
             self.fullscreen_ui(root, &ctx);
         } else {
             self.chrome_ui(root, &ctx);
         }
         crate::audio_ui::confirm_modal(self, &ctx);
         self.osk_ui(&ctx);
+        self.popup_ui(&ctx);
         self.toast_ui(&ctx);
         self.pad_cursor_ui(&ctx);
 
@@ -3042,6 +3425,122 @@ fn read_battery() -> Option<u8> {
         }
     }
     None
+}
+
+/// Ask the system for its keyboard. On the Steam Deck this is Steam's own
+/// on-screen keyboard; on a desktop with Steam installed it is the same one.
+fn open_system_keyboard() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::{Command, Stdio};
+        let mut cmd = Command::new("steam");
+        cmd.arg("steam://open/keyboard")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        return cmd.spawn().is_ok();
+    }
+    #[allow(unreachable_code)]
+    false
+}
+
+/// Battery of a connected headset. UPower knows about Bluetooth earbuds, and a
+/// few USB headsets expose a plain power supply; try both, cheapest first.
+fn read_headset() -> Option<Headset> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(found) = headset_from_sysfs() {
+            return Some(found);
+        }
+        if let Some(found) = headset_from_upower() {
+            return Some(found);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn headset_from_sysfs() -> Option<Headset> {
+    let dir = std::fs::read_dir("/sys/class/power_supply").ok()?;
+    for entry in dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if !["head", "bud", "ear"].iter().any(|k| name.contains(k)) {
+            continue;
+        }
+        let base = entry.path();
+        let percent = std::fs::read_to_string(base.join("capacity"))
+            .ok()
+            .and_then(|text| text.trim().parse::<u8>().ok());
+        let Some(percent) = percent else {
+            continue;
+        };
+        let model = std::fs::read_to_string(base.join("model_name"))
+            .ok()
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| entry.file_name().to_string_lossy().to_string());
+        return Some(Headset {
+            name: model,
+            percent: percent.min(100),
+        });
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn headset_from_upower() -> Option<Headset> {
+    let out = std::process::Command::new("upower")
+        .arg("-d")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut blocks: Vec<(bool, String, Option<u8>)> = Vec::new();
+    let mut current: Option<(bool, String, Option<u8>)> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Device:") {
+            if let Some(block) = current.take() {
+                blocks.push(block);
+            }
+            let device = rest.trim().to_lowercase();
+            let head = ["headphone", "headset"].iter().any(|k| device.contains(k));
+            current = Some((head, String::new(), None));
+            continue;
+        }
+        let Some(block) = current.as_mut() else {
+            continue;
+        };
+        let text = line.trim();
+        if text.eq_ignore_ascii_case("headphones") || text.eq_ignore_ascii_case("headset") {
+            block.0 = true;
+        }
+        if let Some(value) = text.strip_prefix("model:") {
+            block.1 = value.trim().to_string();
+        }
+        if let Some(value) = text.strip_prefix("percentage:") {
+            block.2 = value
+                .trim()
+                .trim_end_matches('%')
+                .parse::<u8>()
+                .ok()
+                .map(|p| p.min(100));
+        }
+    }
+    if let Some(block) = current {
+        blocks.push(block);
+    }
+    blocks
+        .into_iter()
+        .find(|(head, _, percent)| *head && percent.is_some())
+        .map(|(_, model, percent)| Headset {
+            name: if model.is_empty() {
+                "headset".into()
+            } else {
+                model
+            },
+            percent: percent.unwrap_or(0),
+        })
 }
 
 fn udp_addr(url: &str) -> Option<SocketAddr> {

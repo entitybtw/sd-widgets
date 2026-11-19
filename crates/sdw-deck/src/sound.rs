@@ -202,6 +202,33 @@ fn recipe(pack: &str, cue: Cue) -> Vec<Note> {
                 note(550.0, 550.0, 0.26, 0.18, Wave::Sine),
             ],
         },
+        // Pop: round, plucked and a little wet — a friendly "pock" per tap.
+        "pop" => match cue {
+            Cue::Click => vec![note(660.0, 420.0, 0.05, 0.30, Wave::Sine)],
+            Cue::Navigate => vec![note(520.0, 640.0, 0.08, 0.24, Wave::Sine)],
+            Cue::Open => vec![
+                note(420.0, 700.0, 0.07, 0.26, Wave::Sine),
+                with_tail(note(700.0, 700.0, 0.05, 0.18, Wave::Sine), 0.01),
+            ],
+            Cue::Back => vec![
+                note(700.0, 420.0, 0.07, 0.26, Wave::Sine),
+                with_tail(note(420.0, 420.0, 0.05, 0.18, Wave::Sine), 0.01),
+            ],
+            Cue::Notify => vec![
+                note(600.0, 600.0, 0.06, 0.22, Wave::Sine),
+                with_tail(note(900.0, 860.0, 0.10, 0.20, Wave::Sine), 0.02),
+            ],
+            Cue::Error => vec![
+                note(300.0, 240.0, 0.10, 0.26, Wave::Sine),
+                note(200.0, 160.0, 0.16, 0.24, Wave::Sine),
+            ],
+            Cue::Startup => vec![
+                note(392.0, 392.0, 0.07, 0.20, Wave::Sine),
+                note(523.0, 523.0, 0.07, 0.20, Wave::Sine),
+                note(659.0, 659.0, 0.07, 0.20, Wave::Sine),
+                note(784.0, 784.0, 0.18, 0.20, Wave::Sine),
+            ],
+        },
         // Chip: square edges, quick decay, arcade feel.
         "chip" => match cue {
             Cue::Click => vec![note(1046.0, 1046.0, 0.035, 0.14, Wave::Square)],

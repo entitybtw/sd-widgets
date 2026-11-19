@@ -180,7 +180,12 @@ pub fn show(
     input: DeckInput<'_>,
 ) -> Option<DeckControl> {
     let avail = ui.available_width();
-    let width = (avail * view.cfg.scale.clamp(0.6, 1.4)).min(1120.0);
+    // Never ask for more width than the page has: at a large interface scale
+    // the Deck art must shrink with the column instead of overflowing it.
+    let width = (avail * view.cfg.scale.clamp(0.6, 1.4))
+        .min(1120.0)
+        .min(avail)
+        .max(1.0);
     // The Deck is 298 x 117 mm, so the front is about 2.55:1. A little margin
     // above the body keeps room for the triggers.
     let size = Vec2::new(width, width / 2.62);

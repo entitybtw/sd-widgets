@@ -291,7 +291,7 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
     ui.horizontal(|ui| {
         if theme::primary(ui, t!(app.lang, "+ новый бинд", "+ new bind"), t).clicked() {
             app.binds.editor = Some(BindEditor::new());
-            app.binds.capture = true;
+            app.set_bind_capture(true);
         }
         if theme::ghost(ui, t!(app.lang, "набор по умолчанию", "default set"), t).clicked()
         {
@@ -721,7 +721,19 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                     }
                                 }
                             });
-                        ui.add(egui::Slider::new(&mut fingers, 1..=4));
+                        ui.label(
+                            RichText::new(t!(lang, "пальцев", "fingers"))
+                                .size(12.0)
+                                .color(t.muted),
+                        );
+                        for n in 1..=4u8 {
+                            if ui
+                                .selectable_label(fingers == n, n.to_string())
+                                .clicked()
+                            {
+                                fingers = n;
+                            }
+                        }
                     });
                     if kind == GestureKind::Swipe {
                         ui.horizontal(|ui| {
@@ -804,6 +816,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .clicked()
                 {
                     capture = true;
+                    app.set_bind_capture(true);
                     app.toast(
                         t!(
                             lang,
@@ -875,19 +888,59 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     ui.add(TextEdit::singleline(target).desired_width(f32::INFINITY));
                 }
                 Action::Volume { delta } => {
-                    ui.add(egui::Slider::new(delta, -50..=50).suffix("%"));
+                    let mut v = *delta as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(lang, "громкость ±", "volume ±"),
+                        &mut v,
+                        -50.0..=50.0,
+                        |v| format!("{v:+.0}%"),
+                    ) {
+                        *delta = v.round() as i32;
+                    }
                 }
                 Action::VolumeSet { percent } => {
-                    ui.add(egui::Slider::new(percent, 0..=100).suffix("%"));
+                    let mut v = *percent as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(lang, "громкость", "volume"),
+                        &mut v,
+                        0.0..=100.0,
+                        |v| format!("{v:.0}%"),
+                    ) {
+                        *percent = v.round().clamp(0.0, 100.0) as u8;
+                    }
                 }
                 Action::Mute => {
                     ui.label(RichText::new(t!(lang, "переключить mute", "toggle mute")).size(13.5).color(t.muted));
                 }
                 Action::Brightness { delta } => {
-                    ui.add(egui::Slider::new(delta, -50..=50).suffix("%"));
+                    let mut v = *delta as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(lang, "яркость ±", "brightness ±"),
+                        &mut v,
+                        -50.0..=50.0,
+                        |v| format!("{v:+.0}%"),
+                    ) {
+                        *delta = v.round() as i32;
+                    }
                 }
                 Action::BrightnessSet { percent } => {
-                    ui.add(egui::Slider::new(percent, 0..=100).suffix("%"));
+                    let mut v = *percent as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(lang, "яркость", "brightness"),
+                        &mut v,
+                        0.0..=100.0,
+                        |v| format!("{v:.0}%"),
+                    ) {
+                        *percent = v.round().clamp(0.0, 100.0) as u8;
+                    }
                 }
                 Action::Media { command } => {
                     ui.horizontal(|ui| {

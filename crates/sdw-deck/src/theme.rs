@@ -626,6 +626,8 @@ pub mod icon {
     pub const SUN: &str = "\u{e518}";
     pub const PALETTE: &str = "\u{e40a}";
     pub const TUNE: &str = "\u{e429}";
+    pub const FULLSCREEN: &str = "\u{e5d0}";
+    pub const HEADPHONES: &str = "\u{e310}";
     pub const ADDON: &str = "\u{e87b}";
 }
 
@@ -923,6 +925,7 @@ pub fn separator(ui: &mut Ui, t: &Tokens) {
 }
 
 /// Big touch tile with a soft gradient and a hover lift.
+#[derive(Clone)]
 pub struct Tile {
     pub title: String,
     pub subtitle: String,
@@ -1085,4 +1088,232 @@ pub fn local_now() -> NowParts {
             year: 1970,
         }
     }
+}
+
+// ---------------------------------------------------------------- controls
+
+/// A Grid slider laid out as a settings row: the name on the left, a square
+/// track in the middle with hairline ticks, the value on the right. It is sized
+/// for a finger and works with the virtual cursor.
+pub fn slider(
+    ui: &mut Ui,
+    t: &Tokens,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    fmt: impl Fn(f32) -> String,
+) -> bool {
+    slider_ex(ui, t, label, value, range, fmt).0
+}
+
+/// The slider with a second flag: `true` when the finger or mouse was let go,
+/// which is the moment to send a value to a remote device.
+pub fn slider_ex(
+    ui: &mut Ui,
+    t: &Tokens,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    fmt: impl Fn(f32) -> String,
+) -> (bool, bool) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let span = (hi - lo).max(f32::EPSILON);
+    let height = 40.0;
+    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+    let label_w = (row.width() * 0.34).clamp(64.0, 200.0);
+    let value_w = 66.0;
+    let track = egui::Rect::from_min_max(
+        egui::pos2(row.left() + label_w, row.center().y - 5.0),
+        egui::pos2(row.right() - value_w, row.center().y + 5.0),
+    );
+    let resp = ui.interact(
+        egui::Rect::from_min_max(
+            egui::pos2(track.left() - 6.0, row.top()),
+            egui::pos2(row.right(), row.bottom()),
+        ),
+        ui.id().with(("slider", label)),
+        Sense::click_and_drag(),
+    );
+    let mut changed = false;
+    if (resp.dragged() || resp.clicked()) {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let nk = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
+            let raw = lo + nk * span;
+            // Integers snap; everything else keeps a hundredth.
+            let next = if span <= 12.0 {
+                raw.round()
+            } else {
+                (raw * 100.0).round() / 100.0
+            };
+            if (next - *value).abs() > f32::EPSILON {
+                *value = next;
+                changed = true;
+            }
+        }
+    }
+    let k = ((*value - lo) / span).clamp(0.0, 1.0);
+    let kx = track.left() + track.width() * k;
+    let p = ui.painter();
+    p.text(
+        egui::pos2(row.left(), row.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::new(12.5, FontFamily::Proportional),
+        t.muted,
+    );
+    p.rect_filled(track, t.r(0.0), t.well);
+    p.rect_stroke(
+        track,
+        t.r(0.0),
+        Stroke::new(
+            1.0,
+            if resp.hovered() || resp.dragged() {
+                t.line_strong
+            } else {
+                t.line
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    for step in 1..4 {
+        let x = track.left() + track.width() * step as f32 / 4.0;
+        p.line_segment(
+            [
+                egui::pos2(x, track.top() + 1.0),
+                egui::pos2(x, track.bottom() - 1.0),
+            ],
+            Stroke::new(1.0, t.line),
+        );
+    }
+    if kx > track.left() + 1.0 {
+        p.rect_filled(
+            egui::Rect::from_min_max(track.min, egui::pos2(kx, track.bottom())),
+            t.r(0.0),
+            t.accent.gamma_multiply(0.55),
+        );
+    }
+    let knob = egui::Rect::from_center_size(egui::pos2(kx, row.center().y), Vec2::new(12.0, 26.0));
+    p.rect_filled(knob, t.r(0.0), t.accent);
+    p.rect_stroke(
+        knob,
+        t.r(0.0),
+        Stroke::new(
+            1.5,
+            if resp.dragged() {
+                t.strong
+            } else {
+                t.line_strong
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    p.text(
+        egui::pos2(row.right(), row.center().y),
+        egui::Align2::RIGHT_CENTER,
+        fmt(*value),
+        FontId::new(12.5, FontFamily::Monospace),
+        if resp.hovered() || resp.dragged() {
+            t.strong
+        } else {
+            t.muted
+        },
+    );
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let released = resp.drag_stopped() || (changed && !resp.dragged());
+    (changed, released)
+}
+
+/// The same slider for whole numbers.
+pub fn slider_u32(
+    ui: &mut Ui,
+    t: &Tokens,
+    label: &str,
+    value: &mut u32,
+    range: std::ops::RangeInclusive<u32>,
+) -> bool {
+    let mut current = *value as f32;
+    let changed = slider(
+        ui,
+        t,
+        label,
+        &mut current,
+        *range.start() as f32..=*range.end() as f32,
+        |v| format!("{:.0}", v),
+    );
+    if changed {
+        *value = current.round() as u32;
+    }
+    changed
+}
+
+/// A palette swatch with its name underneath. Clicking opens the picker right
+/// under the chip, so a 15-token palette stays readable on a small screen.
+pub fn color_chip(ui: &mut Ui, t: &Tokens, color: &mut Color32, label: &str) -> bool {
+    let mut changed = false;
+    ui.vertical(|ui| {
+        let (rect, resp) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width().min(96.0), 40.0),
+            Sense::click(),
+        );
+        let p = ui.painter();
+        p.rect_filled(rect, t.r(0.0), *color);
+        p.rect_stroke(
+            rect,
+            t.r(0.0),
+            Stroke::new(1.0, t.line_strong),
+            egui::StrokeKind::Inside,
+        );
+        // A 2 px accent cap reads as "this chip is a control".
+        p.rect_filled(
+            egui::Rect::from_min_size(rect.min, Vec2::new(rect.width(), 2.0)),
+            t.r(0.0),
+            t.accent,
+        );
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        egui::Popup::from_toggle_button_response(&resp)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_max_width(240.0);
+                if egui::color_picker::color_picker_color32(
+                    ui,
+                    color,
+                    egui::color_picker::Alpha::Opaque,
+                ) {
+                    changed = true;
+                }
+            });
+        ui.label(RichText::new(label).size(10.5).color(t.muted));
+    });
+    changed
+}
+
+/// A square icon button used across the pages: hairline border, no rounding.
+pub fn icon_button(ui: &mut Ui, glyph: &str, t: &Tokens, size: f32, active: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    let fill = if resp.hovered() {
+        t.well
+    } else if active {
+        t.accent.gamma_multiply(0.22)
+    } else {
+        t.card
+    };
+    ui.painter().rect_filled(rect, t.r(0.0), fill);
+    ui.painter().rect_stroke(
+        rect,
+        t.r(0.0),
+        Stroke::new(1.0, if active { t.accent } else { t.line }),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        FontId::new(size * 0.5, glyph_family(glyph)),
+        if active { t.accent } else { t.muted },
+    );
+    resp
 }

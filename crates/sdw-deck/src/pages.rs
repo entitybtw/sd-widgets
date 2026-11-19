@@ -68,6 +68,12 @@ fn monitor_state(app: &App) -> MonitorStatus {
         .unwrap_or_default()
 }
 
+/// One entry of the home grid: a page shortcut or an addon action.
+enum HomeItem {
+    Page(Tile, Page, f32),
+    Action(Tile, sdw_core::model::Action, f32),
+}
+
 fn quick_action(
     app: &mut App,
     ui: &mut Ui,
@@ -346,28 +352,27 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
         return;
     }
 
-    // The grid: big landscape tiles on a deck-sized screen.
+    // The grid: big landscape tiles on a deck-sized screen. Rows are chunked by
+    // hand instead of using `horizontal_wrapped`: with wrapping, a rounding
+    // error of a few tenths of a point makes the third tile drop onto its own
+    // line, which is exactly what the Deck must never show.
     let st = theme::style();
     let width = ui.available_width();
-    // The Deck screen is wide enough for three tiles per row; never fall back
-    // to two there just because an old config saved a smaller value.
     let cols = if crate::app::deck_mode() {
-        st.tile_columns.clamp(3, 4) as usize
+        3
     } else {
         st.tile_columns.clamp(1, 4) as usize
     };
-    let cols = if width < 720.0 { cols.min(2) } else { cols };
+    let cols = if width < 620.0 { cols.min(2) } else { cols };
     let gap = 14.0;
-    let tile_w = ((width - gap * (cols as f32 - 1.0)) / cols as f32).max(160.0);
+    let tile_w = ((width - gap * (cols as f32 - 1.0)) / cols as f32).max(140.0);
     let tile_h = st.tile_height.clamp(120.0, 300.0);
     let size = Vec2::new(tile_w, tile_h);
 
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing = Vec2::new(gap, gap);
-        quick_action(
-            app,
-            ui,
-            t,
+    let mut items: Vec<HomeItem> = Vec::new();
+
+    if app.tile_shown("gamepad") {
+        items.push(HomeItem::Page(
             Tile {
                 title: t!(app.lang, "геймпад", "gamepad").into(),
                 subtitle: if app.gamepad_on {
@@ -388,14 +393,12 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 dim: !app.gamepad_on,
                 reveal: 1.0,
             },
-            size,
             Page::Gamepad,
             0.0,
-        );
-        quick_action(
-            app,
-            ui,
-            t,
+        ));
+    }
+    if app.tile_shown("screen") {
+        items.push(HomeItem::Page(
             Tile {
                 title: t!(app.lang, "экран", "screen").into(),
                 subtitle: if monitor.running {
@@ -417,14 +420,12 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 dim: !monitor.running,
                 reveal: 1.0,
             },
-            size,
             Page::Screen,
             1.0,
-        );
-        quick_action(
-            app,
-            ui,
-            t,
+        ));
+    }
+    if app.tile_shown("notifications") {
+        items.push(HomeItem::Page(
             Tile {
                 title: t!(app.lang, "уведомления", "notifications").into(),
                 subtitle: if app.notifications.is_empty() {
@@ -442,14 +443,12 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 dim: app.notifications.is_empty(),
                 reveal: 1.0,
             },
-            size,
             Page::Notifications,
             2.0,
-        );
-        quick_action(
-            app,
-            ui,
-            t,
+        ));
+    }
+    if app.tile_shown("ha") {
+        items.push(HomeItem::Page(
             Tile {
                 title: t!(app.lang, "home assistant", "home assistant").into(),
                 subtitle: status
@@ -479,14 +478,12 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .unwrap_or(true),
                 reveal: 1.0,
             },
-            size,
             Page::HomeAssistant,
             3.0,
-        );
-        quick_action(
-            app,
-            ui,
-            t,
+        ));
+    }
+    if app.tile_shown("binds") {
+        items.push(HomeItem::Page(
             Tile {
                 title: t!(app.lang, "бинды", "binds").into(),
                 subtitle: format!(
@@ -502,14 +499,12 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 dim: app.cfg.binds.is_empty(),
                 reveal: 1.0,
             },
-            size,
             Page::Binds,
             4.0,
-        );
-        quick_action(
-            app,
-            ui,
-            t,
+        ));
+    }
+    if app.tile_shown("computers") {
+        items.push(HomeItem::Page(
             Tile {
                 title: t!(app.lang, "компьютеры", "computers").into(),
                 subtitle: format!("{} · {}", app.cfg.hosts.len(), host),
@@ -520,12 +515,66 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 dim: false,
                 reveal: 1.0,
             },
-            size,
             Page::Computers,
             5.0,
-        );
-        addon_tiles(app, ui, t, size);
-    });
+        ));
+    }
+
+    // Tiles contributed by enabled addons. They run any action, local or remote.
+    let addons = app.cfg.addons.clone();
+    let mut index = 6.0;
+    for addon in sdw_core::addons::list() {
+        if !addons.is_on(addon.id()) {
+            continue;
+        }
+        for tile in &addon.manifest.deck.tiles {
+            let color = theme::parse_color(&tile.accent).unwrap_or(t.accent);
+            let glyph = if tile.icon.trim().is_empty() {
+                theme::icon::ADDON.to_string()
+            } else {
+                tile.icon.clone()
+            };
+            items.push(HomeItem::Action(
+                Tile {
+                    title: tile.title.clone(),
+                    subtitle: tile.subtitle.clone(),
+                    glyph,
+                    accent: color,
+                    badge: Some(addon.manifest.name.clone()),
+                    badge_color: color,
+                    dim: false,
+                    reveal: 1.0,
+                },
+                tile.action.clone(),
+                index,
+            ));
+            index += 1.0;
+        }
+    }
+
+    for row in items.chunks(cols) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for item in row {
+                match item {
+                    HomeItem::Page(tile, page, index) => {
+                        quick_action(app, ui, t, tile.clone(), size, *page, *index);
+                    }
+                    HomeItem::Action(tile, action, index) => {
+                        let mut tile = tile.clone();
+                        tile.reveal = app.reveal(*index);
+                        if tile.reveal < 1.0 {
+                            ui.ctx().request_repaint();
+                        }
+                        if theme::tile(ui, t, &tile, size).clicked() {
+                            app.execute_action(action);
+                        }
+                    }
+                }
+            }
+        });
+        ui.add_space(gap);
+    }
 
     // A quiet stream of the newest notifications, one line each.
     if !app.notifications.is_empty() {
@@ -570,50 +619,6 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     );
                 });
             });
-        }
-    }
-}
-
-/// Tiles contributed by enabled addons. They run any action, local or remote.
-fn addon_tiles(app: &mut App, ui: &mut Ui, t: &Tokens, size: Vec2) {
-    let cfg = app.cfg.addons.clone();
-    let mut items: Vec<(f32, Tile, sdw_core::model::Action)> = Vec::new();
-    let mut index = 6.0;
-    for addon in sdw_core::addons::list() {
-        if !cfg.is_on(addon.id()) {
-            continue;
-        }
-        for tile in &addon.manifest.deck.tiles {
-            let color = theme::parse_color(&tile.accent).unwrap_or(t.accent);
-            let glyph = if tile.icon.trim().is_empty() {
-                theme::icon::ADDON.to_string()
-            } else {
-                tile.icon.clone()
-            };
-            items.push((
-                index,
-                Tile {
-                    title: tile.title.clone(),
-                    subtitle: tile.subtitle.clone(),
-                    glyph,
-                    accent: color,
-                    badge: Some(addon.manifest.name.clone()),
-                    badge_color: color,
-                    dim: false,
-                    reveal: 1.0,
-                },
-                tile.action.clone(),
-            ));
-            index += 1.0;
-        }
-    }
-    for (i, mut tile, action) in items {
-        tile.reveal = app.reveal(i);
-        if tile.reveal < 1.0 {
-            ui.ctx().request_repaint();
-        }
-        if theme::tile(ui, t, &tile, size).clicked() {
-            app.execute_action(&action);
         }
     }
 }
@@ -1313,7 +1318,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     let mut editor = BindEditor::for_trigger(control.name(), control.trigger());
                     editor.name = control.name().to_string();
                     app.binds.editor = Some(editor);
-                    app.binds.capture = true;
+                    app.set_bind_capture(true);
                 }
                 if ui
                     .selectable_label(
@@ -1517,6 +1522,15 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
         });
     });
 
+    theme::small(
+        ui,
+        t!(
+            app.lang,
+            "по умолчанию: расширить, авто-бэкенд и 1280×800 — лучший вариант для деки. выход создаётся одной кнопкой.",
+            "defaults: extend, auto backend and 1280×800 — the best fit for the deck. one press creates the output."
+        ),
+        t.faint,
+    );
     ui.add_space(8.0);
 
     let area = ui.available_rect_before_wrap();
@@ -1648,21 +1662,23 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
             });
         });
         ui.add_space(6.0);
+        let mut fps = app.stream.fps;
+        if theme::slider_u32(ui, t, t!(app.lang, "fps", "fps"), &mut fps, 5..=60) {
+            app.stream.fps = fps;
+            app.save_soon();
+        }
+        let mut quality = app.stream.quality as u32;
+        if theme::slider_u32(
+            ui,
+            t,
+            t!(app.lang, "качество", "quality"),
+            &mut quality,
+            30..=95,
+        ) {
+            app.stream.quality = quality.min(95) as u8;
+            app.save_soon();
+        }
         ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "fps", "fps"))
-                    .size(12.5)
-                    .color(t.muted),
-            );
-            ui.add(egui::Slider::new(&mut app.stream.fps, 5..=60).show_value(true));
-            ui.add_space(12.0);
-            ui.label(
-                RichText::new(t!(app.lang, "качество", "quality"))
-                    .size(12.5)
-                    .color(t.muted),
-            );
-            ui.add(egui::Slider::new(&mut app.stream.quality, 30..=95).suffix("%"));
-            ui.add_space(12.0);
             theme::switch(ui, &mut app.stream.input, t);
             ui.label(
                 RichText::new(t!(app.lang, "мышь и клавиатура", "mouse and keyboard"))
@@ -1692,6 +1708,84 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
 }
 
 // ---------------------------------------------------------------- notifications
+
+/// A small Grid tile with the notification picture, or a domain icon when the
+/// daemon had no image to send.
+fn notification_thumb(
+    ui: &mut Ui,
+    t: &Tokens,
+    n: &Notification,
+    art: Option<&egui::TextureHandle>,
+    color: Color32,
+) {
+    let side = 48.0;
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), egui::Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::ZERO, t.well);
+    match art {
+        Some(tex) => {
+            let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+            ui.painter().image(tex.id(), rect, uv, Color32::WHITE);
+        }
+        None => {
+            ui.painter().text(
+                rect.center(),
+                Align2::CENTER_CENTER,
+                notif_glyph(&n.app, &n.icon),
+                egui::FontId::new(side * 0.5, theme::icon_family()),
+                color,
+            );
+        }
+    }
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::ZERO,
+        Stroke::new(1.0, t.line),
+        egui::StrokeKind::Inside,
+    );
+    ui.add_space(12.0);
+}
+
+/// A rough guess at the app family, so a plain notification still gets a
+/// meaningful glyph instead of a generic bell.
+pub(crate) fn notif_glyph(app: &str, icon: &str) -> &'static str {
+    let key = format!("{} {}", app, icon).to_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| key.contains(n));
+    if has(&[
+        "spotify",
+        "music",
+        "player",
+        "vlc",
+        "audacious",
+        "rhythmbox",
+    ]) {
+        theme::icon::MUSIC
+    } else if has(&["camera", "photo", "screenshot", "obs", "spectacle"]) {
+        theme::icon::CAMERA
+    } else if has(&[
+        "code",
+        "terminal",
+        "konsole",
+        "kitty",
+        "alacritty",
+        "vscode",
+    ]) {
+        theme::icon::CODE
+    } else if has(&["steam", "game", "lutris", "heroic"]) {
+        theme::icon::GAMEPAD
+    } else if has(&["volume", "audio", "sound", "pulse", "pipewire"]) {
+        theme::icon::SPEAKER
+    } else if has(&["battery", "power", "charger", "upower"]) {
+        theme::icon::BATTERY
+    } else if has(&["download", "update", "sync", "backup"]) {
+        theme::icon::ADDON
+    } else if has(&[
+        "mail", "message", "chat", "discord", "telegram", "signal", "element",
+    ]) {
+        theme::icon::PERSON
+    } else {
+        theme::icon::NOTIFICATIONS
+    }
+}
 
 pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
     page_title(
@@ -1782,6 +1876,7 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut dismiss: Option<u64> = None;
     for n in list {
         let color = notification_color(t, &n);
+        let art = app.notif_texture(ui.ctx(), n.id, &n.image);
         egui::Frame::new()
             .fill(t.card)
             .stroke(Stroke::new(1.0, color.gamma_multiply(0.35)))
@@ -1789,6 +1884,7 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
             .inner_margin(Margin::symmetric(18, 14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    notification_thumb(ui, t, &n, art.as_ref(), color);
                     ui.vertical(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(
@@ -2050,37 +2146,38 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 });
 
                 ui.add_space(8.0);
+                // Four equal squares: same side, same gap, centred in the row.
+                let playing = st.playing();
+                let avail = ui.available_width();
+                let gap = 8.0;
+                let side = ((avail - gap * 3.0) / 4.0).clamp(44.0, 68.0);
+                let total = side * 4.0 + gap * 3.0;
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-                    if media_button(ui, t, theme::icon::PREV, 52.0, false) {
+                    ui.add_space(((avail - total) * 0.5).max(0.0));
+                    ui.spacing_mut().item_spacing.x = gap;
+                    if media_button(ui, t, theme::icon::PREV, side, false) {
                         app.media_command("prev", 0.0);
                     }
-                    let playing = st.playing();
-                    if media_button(ui, t, theme::icon::PLAY_PAUSE, 66.0, playing) {
+                    if media_button(ui, t, theme::icon::PLAY_PAUSE, side, playing) {
                         app.media_command("play_pause", 0.0);
                     }
-                    if media_button(ui, t, theme::icon::NEXT, 52.0, false) {
+                    if media_button(ui, t, theme::icon::NEXT, side, false) {
                         app.media_command("next", 0.0);
                     }
-                    if media_button(ui, t, theme::icon::STOP, 52.0, false) {
+                    if media_button(ui, t, theme::icon::STOP, side, false) {
                         app.media_command("stop", 0.0);
                     }
-                    ui.add_space(10.0);
-                    ui.label(
-                        RichText::new(if st.error.is_empty() {
-                            util::truncate(&st.player, 34)
-                        } else {
-                            util::truncate(&st.error, 44)
-                        })
-                        .family(FontFamily::Monospace)
-                        .size(10.5)
-                        .color(if st.error.is_empty() {
-                            t.faint
-                        } else {
-                            t.warn
-                        }),
-                    );
                 });
+                ui.label(
+                    RichText::new(if st.error.is_empty() {
+                        util::truncate(&st.player, 34)
+                    } else {
+                        util::truncate(&st.error, 44)
+                    })
+                    .family(FontFamily::Monospace)
+                    .size(10.5)
+                    .color(if st.error.is_empty() { t.faint } else { t.warn }),
+                );
             });
         });
     });
@@ -2124,7 +2221,7 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     } else {
                         theme::icon::VOLUME_UP
                     },
-                    46.0,
+                    38.0,
                     st.muted,
                 ) {
                     app.media_command("mute", 0.0);
@@ -2151,10 +2248,10 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .strong()
                     .color(t.strong),
             );
-            if media_button(ui, t, theme::icon::VOLUME_DOWN, 34.0, false) {
+            if media_button(ui, t, theme::icon::VOLUME_DOWN, 38.0, false) {
                 app.media_command("volume_down", 0.0);
             }
-            if media_button(ui, t, theme::icon::VOLUME_UP, 34.0, false) {
+            if media_button(ui, t, theme::icon::VOLUME_UP, 38.0, false) {
                 app.media_command("volume_up", 0.0);
             }
         });
@@ -2242,17 +2339,21 @@ const LIGHT_COLORS: &[(&str, [u8; 3])] = &[
 fn ha_glyph(domain: &str) -> &'static str {
     match domain {
         "light" => theme::icon::BULB,
-        "switch" | "input_boolean" => theme::icon::POWER,
-        "sensor" => theme::icon::SENSORS,
+        "switch" | "input_boolean" | "siren" => theme::icon::POWER,
+        "sensor" | "humidifier" | "water_heater" => theme::icon::SENSORS,
         "binary_sensor" => theme::icon::CHECK,
         "climate" => theme::icon::THERMOSTAT,
         "media_player" => theme::icon::PLAY,
-        "cover" => theme::icon::BLINDS,
+        "cover" | "valve" => theme::icon::BLINDS,
         "lock" => theme::icon::LOCK,
         "scene" => theme::icon::SCENE,
-        "script" => theme::icon::CODE,
-        "camera" => theme::icon::CAMERA,
-        "person" => theme::icon::PERSON,
+        "script" | "event" => theme::icon::CODE,
+        "camera" | "image" => theme::icon::CAMERA,
+        "person" | "device_tracker" => theme::icon::PERSON,
+        "number" | "input_number" | "select" | "input_select" => theme::icon::TUNE,
+        "fan" => theme::icon::SPEAKER,
+        "vacuum" => theme::icon::WIDGETS,
+        "update" => theme::icon::ADDON,
         _ => theme::icon::WIDGETS,
     }
 }
@@ -2369,27 +2470,14 @@ fn ha_visible(e: &HaEntity) -> bool {
         .and_then(|v| v.as_str())
         .unwrap_or("");
     match e.domain() {
+        // Any sensor with a unit or a plain number is worth a tile: this is
+        // what makes integration sensors (Proxmox, NAS, routers) show up
+        // without teaching the deck every integration by name.
         "sensor" => {
-            matches!(
-                device_class,
-                "temperature"
-                    | "humidity"
-                    | "illuminance"
-                    | "pressure"
-                    | "carbon_dioxide"
-                    | "battery"
-                    | "power"
-                    | "energy"
-            ) || matches!(
-                e.unit().as_str(),
-                "°C" | "°F" | "%" | "lx" | "hPa" | "W" | "kWh"
-            )
+            !e.unit().is_empty() || e.state.parse::<f64>().is_ok() || !device_class.is_empty()
         }
-        "binary_sensor" => matches!(
-            device_class,
-            "door" | "window" | "motion" | "occupancy" | "smoke" | "moisture" | "opening"
-        ),
-        "weather" | "person" => true,
+        "binary_sensor" => !matches!(device_class, "update"),
+        "weather" | "person" | "event" | "image" | "update" => true,
         _ => false,
     }
 }
@@ -2962,7 +3050,246 @@ fn ha_card(
                         });
                     }
                 }
-                "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker" => {
+                "fan" => {
+                    ui.horizontal(|ui| {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::POWER,
+                            on,
+                            t!(lang, "вкл/выкл", "on/off"),
+                        ) {
+                            actions.push(HaAction {
+                                call: ha_toggle(e, !on),
+                                entity: e.entity_id.clone(),
+                                state: Some(if on { "off" } else { "on" }.into()),
+                            });
+                        }
+                        let mut pct = e
+                            .attributes
+                            .get("percentage")
+                            .and_then(|v| v.as_f64())
+                            .map(|v| v.round() as i32)
+                            .unwrap_or(if on { 100 } else { 0 });
+                        ui.spacing_mut().interact_size.y = 34.0;
+                        let r = ui.add_sized(
+                            [(width - 130.0).max(90.0), 34.0],
+                            egui::Slider::new(&mut pct, 0..=100)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        );
+                        if r.drag_stopped() {
+                            actions.push(HaAction {
+                                call: ha_service(e, "set_percentage", json!({ "percentage": pct })),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
+                        }
+                        ui.label(
+                            RichText::new(format!("{pct}%"))
+                                .family(FontFamily::Monospace)
+                                .size(12.0)
+                                .color(t.faint),
+                        );
+                    });
+                }
+                "number" | "input_number" => {
+                    let attr = |key: &str, fallback: f32| {
+                        e.attributes
+                            .get(key)
+                            .and_then(|v| v.as_f64())
+                            .map(|v| v as f32)
+                            .unwrap_or(fallback)
+                    };
+                    let min = attr("min", 0.0);
+                    let max = attr("max", 100.0).max(min + 0.001);
+                    let mut value = e.state.parse::<f32>().unwrap_or(min).clamp(min, max);
+                    let (_, released) =
+                        theme::slider_ex(ui, t, &e.name(), &mut value, min..=max, |v| {
+                            if max <= 10.0 {
+                                format!("{v:.1}")
+                            } else {
+                                format!("{v:.0}")
+                            }
+                        });
+                    if released {
+                        actions.push(HaAction {
+                            call: ha_service(e, "set_value", json!({ "value": value })),
+                            entity: e.entity_id.clone(),
+                            state: None,
+                        });
+                    }
+                }
+                "select" | "input_select" => {
+                    let options: Vec<String> = e
+                        .attributes
+                        .get("options")
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.label(theme::icon(theme::icon::VIEW, 16.0, t.faint));
+                        ui.menu_button(
+                            RichText::new(ha_state_text(e, lang))
+                                .size(14.0)
+                                .color(t.ink),
+                            |ui| {
+                                for option in &options {
+                                    if ui
+                                        .selectable_label(&e.state == option, option.as_str())
+                                        .clicked()
+                                    {
+                                        actions.push(HaAction {
+                                            call: ha_service(
+                                                e,
+                                                "select_option",
+                                                json!({ "option": option }),
+                                            ),
+                                            entity: e.entity_id.clone(),
+                                            state: Some(option.clone()),
+                                        });
+                                        ui.close();
+                                    }
+                                }
+                                if options.is_empty() {
+                                    ui.label(
+                                        RichText::new(t!(lang, "нет вариантов", "no options"))
+                                            .size(11.5)
+                                            .color(t.muted),
+                                    );
+                                }
+                            },
+                        );
+                    });
+                }
+                "vacuum" => {
+                    ui.horizontal(|ui| {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::PLAY,
+                            e.state == "cleaning",
+                            t!(lang, "старт", "start"),
+                        ) {
+                            actions.push(HaAction {
+                                call: ha_service(e, "start", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: Some("cleaning".into()),
+                            });
+                        }
+                        if ha_icon_button(ui, t, theme::icon::STOP, false, t!(lang, "стоп", "stop"))
+                        {
+                            actions.push(HaAction {
+                                call: ha_service(e, "stop", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: Some("idle".into()),
+                            });
+                        }
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::HOME,
+                            false,
+                            t!(lang, "на базу", "dock"),
+                        ) {
+                            actions.push(HaAction {
+                                call: ha_service(e, "return_to_base", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: Some("returning".into()),
+                            });
+                        }
+                        ui.label(
+                            RichText::new(ha_state_text(e, lang))
+                                .family(FontFamily::Monospace)
+                                .size(11.5)
+                                .color(t.faint),
+                        );
+                    });
+                }
+                "valve" => {
+                    ui.horizontal(|ui| {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::ARROW_UP,
+                            false,
+                            t!(lang, "открыть", "open"),
+                        ) {
+                            actions.push(HaAction {
+                                call: ha_service(e, "open_valve", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: Some("open".into()),
+                            });
+                        }
+                        if ha_icon_button(ui, t, theme::icon::STOP, false, t!(lang, "стоп", "stop"))
+                        {
+                            actions.push(HaAction {
+                                call: ha_service(e, "stop_valve", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
+                        }
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::ARROW_DOWN,
+                            false,
+                            t!(lang, "закрыть", "close"),
+                        ) {
+                            actions.push(HaAction {
+                                call: ha_service(e, "close_valve", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: Some("closed".into()),
+                            });
+                        }
+                    });
+                }
+                "update" => {
+                    let latest = e
+                        .attributes
+                        .get("latest_version")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let state_text = ha_state_text(e, lang);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(if latest.is_empty() {
+                                state_text.clone()
+                            } else {
+                                format!("{state_text} → {latest}")
+                            })
+                            .family(FontFamily::Monospace)
+                            .size(12.0)
+                            .color(t.muted),
+                        );
+                        if e.state == "on"
+                            && ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(t!(lang, "обновить", "install"))
+                                            .size(13.0)
+                                            .color(accent),
+                                    )
+                                    .fill(accent.gamma_multiply(0.12))
+                                    .stroke(Stroke::new(1.0, accent.gamma_multiply(0.4)))
+                                    .corner_radius(CornerRadius::ZERO)
+                                    .min_size(Vec2::new(0.0, 30.0)),
+                                )
+                                .clicked()
+                        {
+                            actions.push(HaAction {
+                                call: ha_service(e, "install", serde_json::Value::Null),
+                                entity: e.entity_id.clone(),
+                                state: None,
+                            });
+                        }
+                    });
+                }
+                "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker" | "event" => {
                     let unit = e.unit();
                     ui.label(
                         RichText::new(format!(
@@ -4060,58 +4387,33 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
         });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "масштаб ui", "ui scale"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let mut scale = app.cfg.ui_scale;
-            let resp = ui.add(
-                egui::Slider::new(&mut scale, 0.75..=crate::app::max_ui_scale())
-                    .step_by(0.05)
-                    .show_value(false),
-            );
-            if resp.changed() {
-                app.cfg.ui_scale = scale;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "масштаб ui", "ui scale"),
+                &mut app.cfg.ui_scale,
+                0.75..=crate::app::max_ui_scale(),
+                |v| format!("{:.0}%", v * 100.0),
+            ) {
+                app.save_soon();
             }
-            if resp.drag_stopped() {
-                app.save();
+            ui.horizontal(|ui| {
+                if theme::ghost(ui, "1×", t).clicked() {
+                    app.cfg.ui_scale = 1.0;
+                    app.save();
+                }
+            });
+            ui.add_space(4.0);
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "рисунок", "drawing"),
+                &mut app.deck_view.cfg.scale,
+                0.6..=1.4,
+                |v| format!("{:.0}%", v * 100.0),
+            ) {
+                app.save_soon();
             }
-            ui.label(
-                RichText::new(format!("{:.0}%", app.cfg.ui_scale * 100.0))
-                    .family(FontFamily::Monospace)
-                    .size(12.0)
-                    .color(t.muted),
-            );
-            if theme::ghost(ui, "1×", t).clicked() {
-                app.cfg.ui_scale = 1.0;
-                app.save();
-            }
-            ui.add_space(8.0);
-            let deck_scale = app.deck_view.cfg.scale;
-            ui.label(
-                RichText::new(t!(app.lang, "рисунок", "drawing"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let mut drawing = deck_scale;
-            let resp = ui.add(
-                egui::Slider::new(&mut drawing, 0.6..=1.4)
-                    .step_by(0.05)
-                    .show_value(false),
-            );
-            if resp.changed() {
-                app.deck_view.cfg.scale = drawing;
-            }
-            if resp.drag_stopped() {
-                app.save();
-            }
-            ui.label(
-                RichText::new(format!("{:.0}%", drawing * 100.0))
-                    .family(FontFamily::Monospace)
-                    .size(12.0)
-                    .color(t.muted),
-            );
         });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
@@ -4147,30 +4449,17 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
         });
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "размер стрелок", "arrow size"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let mut arrow = app.cfg.style.arrow_size;
-            let resp = ui.add(
-                egui::Slider::new(&mut arrow, 28.0..=96.0)
-                    .step_by(4.0)
-                    .show_value(false),
-            );
-            if resp.changed() {
-                app.cfg.style.arrow_size = arrow;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "размер стрелок", "arrow size"),
+                &mut app.cfg.style.arrow_size,
+                28.0..=96.0,
+                |v| format!("{v:.0} px"),
+            ) {
                 app.apply_style(ui.ctx());
+                app.save_soon();
             }
-            if resp.drag_stopped() {
-                app.save();
-            }
-            ui.label(
-                RichText::new(format!("{:.0}", arrow))
-                    .family(FontFamily::Monospace)
-                    .size(12.0)
-                    .color(t.muted),
-            );
         });
         ui.label(
             RichText::new(t!(
@@ -4189,30 +4478,17 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             t!(app.lang, "геймпад и вид", "gamepad and view"),
             t.faint,
         ));
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "масштаб рисунка", "drawing scale"),
+            &mut app.deck_view.cfg.scale,
+            0.6..=1.4,
+            |v| format!("{:.0}%", v * 100.0),
+        ) {
+            app.save_soon();
+        }
         ui.horizontal_wrapped(|ui| {
-            let mut cfg = app.deck_view.cfg.clone();
-            ui.label(
-                RichText::new(t!(app.lang, "масштаб рисунка", "drawing scale"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let r = ui.add(
-                egui::Slider::new(&mut cfg.scale, 0.6..=1.4)
-                    .step_by(0.05)
-                    .show_value(false),
-            );
-            if r.changed() {
-                app.deck_view.cfg.scale = cfg.scale;
-            }
-            if r.drag_stopped() {
-                app.save();
-            }
-            ui.label(
-                RichText::new(format!("{:.0}%", cfg.scale * 100.0))
-                    .family(FontFamily::Monospace)
-                    .size(12.0)
-                    .color(t.muted),
-            );
             ui.add_space(14.0);
             theme::switch(ui, &mut app.deck_view.cfg.labels, t);
             ui.label(
@@ -4289,50 +4565,76 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.add_space(8.0);
     theme::card(ui, t, |ui| {
-        ui.label(theme::hud(t!(app.lang, "звук с пк", "pc audio"), t.faint));
+        ui.label(theme::hud(
+            t!(app.lang, "уведомления", "notifications"),
+            t.faint,
+        ));
         ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "громкость", "volume"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let mut vol = app.cfg.audio.volume;
-            let r = ui.add(
-                egui::Slider::new(&mut vol, 0..=100)
-                    .suffix("%")
-                    .show_value(true),
-            );
-            if r.changed() {
-                app.cfg.audio.volume = vol;
-            }
-            if r.drag_stopped() {
-                app.save();
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "подтверждений", "confirmations"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let mut n = app.cfg.audio.confirmations as u32;
-            let r = ui.add(egui::DragValue::new(&mut n).range(0..=3));
-            if r.changed() {
-                app.cfg.audio.confirmations = n.min(3) as u8;
-            }
-            if r.drag_stopped() {
+            let mut popup = app.cfg.notify_popup;
+            theme::switch(ui, &mut popup, t);
+            if popup != app.cfg.notify_popup {
+                app.cfg.notify_popup = popup;
+                if !popup {
+                    app.popups.clear();
+                }
                 app.save();
             }
             ui.label(
                 RichText::new(t!(
                     app.lang,
-                    "сколько раз спросить «вы точно хотите перевести звук»",
-                    "how many times to ask “are you sure about moving the sound”"
+                    "плавные всплывающие окна",
+                    "smooth popup windows"
                 ))
-                .size(11.5)
-                .color(t.faint),
+                .size(13.0)
+                .color(t.muted),
             );
         });
+        ui.label(
+            RichText::new(t!(
+                app.lang,
+                "новое уведомление с пк появляется плавной карточкой поверх интерфейса; на компьютере оно остаётся системным.",
+                "a new notification from the pc slides in as a card over the interface; on the computer it stays a system one."
+            ))
+            .size(11.5)
+            .color(t.faint),
+        );
+    });
+
+    ui.add_space(8.0);
+    theme::card(ui, t, |ui| {
+        ui.label(theme::hud(t!(app.lang, "звук с пк", "pc audio"), t.faint));
+        let mut vol = app.cfg.audio.volume as f32;
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "громкость", "volume"),
+            &mut vol,
+            0.0..=100.0,
+            |v| format!("{v:.0}%"),
+        ) {
+            app.cfg.audio.volume = vol.round().clamp(0.0, 100.0) as u8;
+            app.save_soon();
+        }
+        let mut n = app.cfg.audio.confirmations as u32;
+        if theme::slider_u32(
+            ui,
+            t,
+            t!(app.lang, "подтверждений", "confirmations"),
+            &mut n,
+            0..=10,
+        ) {
+            app.cfg.audio.confirmations = n.min(10) as u8;
+            app.save_soon();
+        }
+        ui.label(
+            RichText::new(t!(
+                app.lang,
+                "сколько раз спросить «вы точно хотите перевести звук»",
+                "how many times to ask “are you sure about moving the sound”"
+            ))
+            .size(11.5)
+            .color(t.faint),
+        );
     });
 
     ui.add_space(8.0);
@@ -4382,31 +4684,7 @@ fn hex_of(c: Color32) -> String {
     format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
 }
 
-fn color_row(ui: &mut Ui, t: &Tokens, style: &mut ThemeCfg, name: &str, label: &str) -> bool {
-    let raw = theme::css_var(&style.css, name)
-        .or_else(|| theme::css_var(&style.css, &format!("light-{name}")));
-    let c = raw.as_deref().and_then(theme::parse_color).unwrap_or(t.ink);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new(label).size(12.5).color(t.muted));
-        let mut rgb = [c.r(), c.g(), c.b()];
-        let resp = ui.color_edit_button_srgb(&mut rgb);
-        if resp.changed() {
-            let c = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-            theme::css_set(&mut style.css, name, &hex_of(c));
-            return true;
-        }
-        ui.label(
-            RichText::new(hex_of(c))
-                .family(FontFamily::Monospace)
-                .size(11.0)
-                .color(t.faint),
-        );
-        false
-    })
-    .inner
-}
-
-fn palette(ui: &mut Ui, t: &Tokens, style: &mut ThemeCfg, prefix: &str, lang: Lang) -> bool {
+fn palette_grid(ui: &mut Ui, t: &Tokens, style: &mut ThemeCfg, prefix: &str, lang: Lang) -> bool {
     let p = |n: &str| {
         if prefix.is_empty() {
             n.to_string()
@@ -4415,25 +4693,41 @@ fn palette(ui: &mut Ui, t: &Tokens, style: &mut ThemeCfg, prefix: &str, lang: La
         }
     };
     let mut dirty = false;
-    for (key, label) in [
-        ("bg", t!(lang, "фон", "background")),
-        ("bg2", t!(lang, "фон 2", "background 2")),
-        ("card", t!(lang, "карточки", "cards")),
-        ("well", t!(lang, "колодцы", "wells")),
-        ("ink", t!(lang, "текст", "text")),
-        ("strong", t!(lang, "яркий текст", "strong text")),
-        ("muted", t!(lang, "вторичный", "secondary")),
-        ("faint", t!(lang, "тихий", "faint")),
-        ("line", t!(lang, "линии", "lines")),
-        ("line-strong", t!(lang, "контуры", "outlines")),
-        ("accent", t!(lang, "акцент", "accent")),
-        ("accent-soft", t!(lang, "акцент мягкий", "accent soft")),
-        ("good", t!(lang, "успех", "success")),
-        ("warn", t!(lang, "внимание", "warning")),
-        ("bad", t!(lang, "ошибка", "error")),
-    ] {
-        dirty |= color_row(ui, t, style, &p(key), label);
-    }
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 4.0);
+        for (key, ru, en) in [
+            ("bg", "фон", "background"),
+            ("bg2", "фон 2", "background 2"),
+            ("card", "карточки", "cards"),
+            ("well", "колодцы", "wells"),
+            ("ink", "текст", "text"),
+            ("strong", "яркий текст", "strong text"),
+            ("muted", "вторичный", "secondary"),
+            ("faint", "тихий", "faint"),
+            ("line", "линии", "lines"),
+            ("line-strong", "контуры", "outlines"),
+            ("accent", "акцент", "accent"),
+            ("accent-soft", "акцент мягкий", "accent soft"),
+            ("good", "успех", "success"),
+            ("warn", "внимание", "warning"),
+            ("bad", "ошибка", "error"),
+        ] {
+            let name = p(key);
+            let raw = theme::css_var(&style.css, &name)
+                .or_else(|| theme::css_var(&style.css, &format!("light-{name}")));
+            let mut c = raw.as_deref().and_then(theme::parse_color).unwrap_or(t.ink);
+            let inner = ui.allocate_ui_with_layout(
+                Vec2::new(104.0, 64.0),
+                Layout::top_down(Align::Min),
+                |ui| theme::color_chip(ui, t, &mut c, t!(lang, ru, en)),
+            );
+            if inner.inner {
+                theme::css_set(&mut style.css, &name, &hex_of(c));
+                dirty = true;
+            }
+            inner.response.on_hover_text(hex_of(c));
+        }
+    });
     dirty
 }
 
@@ -4507,37 +4801,28 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .color(t.muted),
             );
             ui.add_space(18.0);
-            ui.label(
-                RichText::new(t!(app.lang, "масштаб ui", "ui scale"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            if ui
-                .add(
-                    egui::Slider::new(&mut app.cfg.ui_scale, 0.75..=crate::app::max_ui_scale())
-                        .fixed_decimals(2),
-                )
-                .drag_stopped()
-            {
-                app.save();
-            }
         });
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "масштаб ui", "ui scale"),
+            &mut app.cfg.ui_scale,
+            0.75..=crate::app::max_ui_scale(),
+            |v| format!("{:.0}%", v * 100.0),
+        ) {
+            app.save_soon();
+        }
     });
 
     ui.add_space(8.0);
     theme::card(ui, t, |ui| {
         ui.label(theme::hud(t!(app.lang, "палитра", "palette"), t.faint));
-        ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                theme::small(ui, t!(app.lang, "тёмная", "dark"), t.faint);
-                style_dirty |= palette(ui, t, &mut style, "", app.lang);
-            });
-            ui.add_space(28.0);
-            ui.vertical(|ui| {
-                theme::small(ui, t!(app.lang, "светлая", "light"), t.faint);
-                style_dirty |= palette(ui, t, &mut style, "light", app.lang);
-            });
-        });
+        ui.add_space(2.0);
+        theme::small(ui, t!(app.lang, "тёмная", "dark"), t.faint);
+        style_dirty |= palette_grid(ui, t, &mut style, "", app.lang);
+        ui.add_space(8.0);
+        theme::small(ui, t!(app.lang, "светлая", "light"), t.faint);
+        style_dirty |= palette_grid(ui, t, &mut style, "light", app.lang);
     });
 
     ui.add_space(8.0);
@@ -4546,127 +4831,102 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
             t!(app.lang, "сетка и плотность", "grid and density"),
             t.faint,
         ));
-        ui.horizontal(|ui| {
-            let mut grid = style.grid;
-            theme::switch(ui, &mut grid, t);
-            if grid != style.grid {
-                style.grid = grid;
-                style_dirty = true;
-            }
-            ui.label(
-                RichText::new(t!(app.lang, "сетка", "grid"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            ui.add_space(14.0);
-            let mut compact = style.compact;
-            theme::switch(ui, &mut compact, t);
-            if compact != style.compact {
-                style.compact = compact;
-                style_dirty = true;
-            }
-            ui.label(
-                RichText::new(t!(app.lang, "компактно", "compact"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            ui.add_space(14.0);
-            let mut anim = style.animations;
-            theme::switch(ui, &mut anim, t);
-            if anim != style.animations {
-                style.animations = anim;
-                style_dirty = true;
-            }
-            ui.label(
-                RichText::new(t!(app.lang, "анимации", "animations"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "шаг сетки", "grid step"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            if ui
-                .add(egui::Slider::new(&mut style.grid_step, 16.0..=64.0).step_by(8.0))
-                .changed()
-            {
-                theme::css_set(
-                    &mut style.css,
-                    "grid-step",
-                    &format!("{}", style.grid_step as u32),
+        ui.horizontal_wrapped(|ui| {
+            for (value, ru, en) in [
+                (&mut style.grid, "сетка", "grid"),
+                (&mut style.compact, "компактно", "compact"),
+                (&mut style.animations, "анимации", "animations"),
+            ] {
+                let before = *value;
+                theme::switch(ui, value, t);
+                if *value != before {
+                    style_dirty = true;
+                }
+                ui.label(
+                    RichText::new(t!(app.lang, ru, en))
+                        .size(12.5)
+                        .color(t.muted),
                 );
-                style_dirty = true;
-            }
-            ui.add_space(14.0);
-            ui.label(
-                RichText::new(t!(app.lang, "яркость", "alpha"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            if ui
-                .add(egui::Slider::new(&mut style.grid_alpha, 0.0..=40.0))
-                .changed()
-            {
-                theme::css_set(
-                    &mut style.css,
-                    "grid-alpha",
-                    &format!("{}", style.grid_alpha.round() as u32),
-                );
-                style_dirty = true;
+                ui.add_space(12.0);
             }
         });
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "плотность", "density"))
-                    .size(13.0)
-                    .color(t.muted),
+        ui.add_space(2.0);
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "шаг сетки", "grid step"),
+            &mut style.grid_step,
+            16.0..=64.0,
+            |v| format!("{v:.0} px"),
+        ) {
+            theme::css_set(
+                &mut style.css,
+                "grid-step",
+                &format!("{}", style.grid_step as u32),
             );
-            if ui
-                .add(egui::Slider::new(&mut style.density, 0.65..=1.9).fixed_decimals(2))
-                .changed()
-            {
-                style_dirty = true;
-            }
-            ui.add_space(14.0);
-            ui.label(
-                RichText::new(t!(app.lang, "шрифт", "font"))
-                    .size(13.0)
-                    .color(t.muted),
+            style_dirty = true;
+        }
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "яркость сетки", "grid alpha"),
+            &mut style.grid_alpha,
+            0.0..=40.0,
+            |v| format!("{v:.0}"),
+        ) {
+            theme::css_set(
+                &mut style.css,
+                "grid-alpha",
+                &format!("{}", style.grid_alpha.round() as u32),
             );
-            if ui
-                .add(egui::Slider::new(&mut style.font_scale, 0.75..=1.8).fixed_decimals(2))
-                .changed()
-            {
-                style_dirty = true;
-            }
-            ui.add_space(14.0);
+            style_dirty = true;
+        }
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "плотность", "density"),
+            &mut style.density,
+            0.65..=1.9,
+            |v| format!("{v:.2}×"),
+        ) {
+            style_dirty = true;
+        }
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "шрифт", "font scale"),
+            &mut style.font_scale,
+            0.75..=1.8,
+            |v| format!("{:.0}%", v * 100.0),
+        ) {
+            style_dirty = true;
+        }
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "высота плиток", "tile height"),
+            &mut style.tile_height,
+            120.0..=300.0,
+            |v| format!("{v:.0}"),
+        ) {
+            style_dirty = true;
+        }
+        let mut cols = style.tile_columns;
+        if theme::slider_u32(ui, t, t!(app.lang, "колонки", "columns"), &mut cols, 1..=4) {
+            style.tile_columns = cols;
+            style_dirty = true;
+        }
+        if crate::app::deck_mode() {
             ui.label(
-                RichText::new(t!(app.lang, "высота плиток", "tile height"))
-                    .size(13.0)
-                    .color(t.muted),
+                RichText::new(t!(
+                    app.lang,
+                    "на деке всегда три колонки",
+                    "the deck always uses three columns"
+                ))
+                .size(11.5)
+                .color(t.faint),
             );
-            if ui
-                .add(egui::Slider::new(&mut style.tile_height, 120.0..=300.0).step_by(8.0))
-                .changed()
-            {
-                style_dirty = true;
-            }
-            ui.add_space(14.0);
-            ui.label(
-                RichText::new(t!(app.lang, "колонки", "columns"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            if ui
-                .add(egui::DragValue::new(&mut style.tile_columns).range(1..=4))
-                .changed()
-            {
-                style_dirty = true;
-            }
-        });
+        }
     });
 
     ui.add_space(8.0);
@@ -4691,53 +4951,113 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 );
                 ui.add_space(14.0);
             }
-            ui.label(
-                RichText::new(t!(app.lang, "размер стрелок", "arrow size"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            if ui
-                .add(
-                    egui::Slider::new(&mut style.arrow_size, 28.0..=96.0)
-                        .step_by(4.0)
-                        .fixed_decimals(0),
-                )
-                .changed()
-            {
-                style_dirty = true;
+            ui.add_space(8.0);
+        });
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "размер стрелок", "arrow size"),
+            &mut style.arrow_size,
+            28.0..=96.0,
+            |v| format!("{v:.0} px"),
+        ) {
+            style_dirty = true;
+        }
+        ui.add_space(6.0);
+        ui.label(theme::hud(t!(app.lang, "навбар", "navbar"), t.faint));
+        let mut pages: Vec<Page> = if style.pages.is_empty() {
+            Page::ORDER.to_vec()
+        } else {
+            style.pages.iter().map(|k| Page::from_key(k)).collect()
+        };
+        let mut seen: Vec<Page> = Vec::new();
+        pages.retain(|page| {
+            if seen.contains(page) {
+                false
+            } else {
+                seen.push(*page);
+                true
             }
         });
-        ui.add_space(4.0);
-        ui.label(theme::hud(
-            t!(app.lang, "страницы в доке", "pages in the dock"),
-            t.faint,
-        ));
-        let keys: Vec<&str> = Page::ORDER.iter().map(|p| p.key()).collect();
-        ui.horizontal_wrapped(|ui| {
-            for page in Page::ORDER {
-                let mut shown =
-                    style.pages.is_empty() || style.pages.iter().any(|p| p == page.key());
-                let before = shown;
+        let original = pages.clone();
+        for page in Page::ORDER {
+            ui.horizontal(|ui| {
+                let mut shown = pages.contains(&page);
+                let was = shown;
                 theme::switch(ui, &mut shown, t);
-                if shown != before {
-                    if style.pages.is_empty() {
-                        style.pages = keys.iter().map(|k| k.to_string()).collect();
+                if shown != was {
+                    if shown {
+                        pages.push(page);
+                    } else {
+                        pages.retain(|p| *p != page);
                     }
-                    let key = page.key().to_string();
-                    if shown && !style.pages.contains(&key) {
-                        style.pages.push(key);
-                    } else if !shown {
-                        style.pages.retain(|k| *k != key);
-                    }
-                    style_dirty = true;
                 }
+                ui.label(theme::icon(page.icon(), 14.0, t.faint));
                 ui.label(
                     RichText::new(page.label(app.lang))
                         .size(12.5)
                         .color(t.muted),
                 );
-                ui.add_space(10.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let idx = pages.iter().position(|p| *p == page);
+                    let can = idx.is_some();
+                    if theme::icon_button(ui, theme::icon::ARROW_DOWN, t, 26.0, false)
+                        .on_hover_text(t!(app.lang, "ниже", "move down"))
+                        .clicked()
+                    {
+                        if let Some(i) = idx {
+                            if i + 1 < pages.len() {
+                                pages.swap(i, i + 1);
+                            }
+                        }
+                    }
+                    if theme::icon_button(ui, theme::icon::ARROW_UP, t, 26.0, false)
+                        .on_hover_text(t!(app.lang, "выше", "move up"))
+                        .clicked()
+                    {
+                        if let Some(i) = idx {
+                            if i > 0 {
+                                pages.swap(i, i - 1);
+                            }
+                        }
+                    }
+                    if !can {
+                        // Keep the row the same height whether or not the page
+                        // is in the dock.
+                        ui.add_space(2.0);
+                    }
+                });
+            });
+        }
+        if pages.is_empty() {
+            pages.push(Page::Home);
+        }
+        if pages != original {
+            style.pages = pages.iter().map(|p| p.key().to_string()).collect();
+            style_dirty = true;
+        }
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "иконки навбара", "navbar icons"),
+            &mut style.dock_icon,
+            10.0..=30.0,
+            |v| format!("{v:.0} px"),
+        ) {
+            style_dirty = true;
+        }
+        ui.horizontal(|ui| {
+            let mut top = style.dock_top;
+            theme::switch(ui, &mut top, t);
+            if top != style.dock_top {
+                style.dock_top = top;
+                style_dirty = true;
             }
+            ui.label(
+                RichText::new(t!(app.lang, "навбар сверху", "navbar on top"))
+                    .size(12.5)
+                    .color(t.muted),
+            );
         });
         ui.add_space(4.0);
         ui.label(theme::hud(
@@ -5000,10 +5320,16 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(13.0)
                     .color(t.muted),
             );
-            if ui
-                .add(egui::Slider::new(&mut snd.volume, 0..=100))
-                .changed()
-            {
+            let mut vol = snd.volume as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "громкость", "volume"),
+                &mut vol,
+                0.0..=100.0,
+                |v| format!("{v:.0}%"),
+            ) {
+                snd.volume = vol.round().clamp(0.0, 100.0) as u8;
                 snd_dirty = true;
             }
             ui.add_space(18.0);
@@ -5012,7 +5338,12 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(13.0)
                     .color(t.muted),
             );
-            for (key, label) in [("grid", "Grid"), ("soft", "Soft"), ("chip", "Chip")] {
+            for (key, label) in [
+                ("grid", "Grid"),
+                ("pop", "Pop"),
+                ("soft", "Soft"),
+                ("chip", "Chip"),
+            ] {
                 if ui.selectable_label(snd.pack == key, label).clicked() && snd.pack != key {
                     snd.pack = key.to_string();
                     snd_dirty = true;

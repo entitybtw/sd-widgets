@@ -56,6 +56,15 @@ const ABS_MT_POSITION_Y: u16 = 0x36;
 const ABS_MT_TRACKING_ID: u16 = 0x39;
 pub const BTN_TOUCH: u16 = 0x14a;
 
+/// Touchscreen housekeeping codes. They arrive on every finger and must never
+/// be recorded as a bindable button.
+pub fn is_touch_event(code: u16) -> bool {
+    matches!(
+        code,
+        0x145..=0x14a // BTN_TOOL_FINGER … BTN_TOUCH
+    ) || matches!(code, 0x14b..=0x14f)
+}
+
 #[derive(Debug, Clone)]
 pub struct UdpTarget {
     pub addr: SocketAddr,
