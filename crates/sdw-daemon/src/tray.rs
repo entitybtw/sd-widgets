@@ -11,17 +11,11 @@ use sdw_core::t;
 use sdw_core::Lang;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Duration;
 
-pub enum TrayAction {
-    Open,
-    Quit,
-}
-
 pub struct TrayHandle {
-    pub rx: Receiver<TrayAction>,
     stop: Arc<AtomicBool>,
 }
 
@@ -54,7 +48,6 @@ pub fn start(state: Arc<AppState>) -> Option<TrayHandle> {
 fn start_linux(state: Arc<AppState>) -> Option<TrayHandle> {
     use zbus::blocking::Connection;
 
-    let (tx, rx) = channel();
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = stop.clone();
     let bus_name = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
@@ -73,7 +66,7 @@ fn start_linux(state: Arc<AppState>) -> Option<TrayHandle> {
                 pixmaps: icon_pixmaps(),
                 menu: menu_path(),
             };
-            let menu = Menu { tx, lang, port };
+            let menu = Menu { lang, port };
             let name_for_conn = bus_name.clone();
             let built = (move || -> zbus::Result<Connection> {
                 let conn = Connection::session()?;
@@ -121,7 +114,7 @@ fn start_linux(state: Arc<AppState>) -> Option<TrayHandle> {
         let _ = &stop; // the thread already stopped on its own
         return None;
     }
-    Some(TrayHandle { rx, stop })
+    Some(TrayHandle { stop })
 }
 
 #[cfg(target_os = "linux")]
@@ -199,7 +192,6 @@ impl Sni {
 
 #[cfg(target_os = "linux")]
 struct Menu {
-    tx: Sender<TrayAction>,
     lang: Lang,
     port: u16,
 }
@@ -320,9 +312,7 @@ impl Menu {
             return;
         }
         match id {
-            1 => {
-                let _ = self.tx.send(TrayAction::Open);
-            }
+            1 => crate::config::request("show"),
             2 => {
                 let url = format!("http://127.0.0.1:{}", self.port);
                 let _ = std::process::Command::new("xdg-open")
@@ -331,9 +321,7 @@ impl Menu {
                     .stderr(std::process::Stdio::null())
                     .spawn();
             }
-            4 => {
-                let _ = self.tx.send(TrayAction::Quit);
-            }
+            4 => crate::config::request("quit"),
             _ => {}
         }
     }

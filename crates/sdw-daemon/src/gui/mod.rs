@@ -14,7 +14,7 @@ use sdw_core::model::*;
 use sdw_core::update::{self, UpdateInfo};
 use sdw_core::{t, Lang};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -221,9 +221,19 @@ pub struct App {
 
     // logs
     logs_follow: bool,
+    /// The "it keeps running in the background" notice is written once.
+    hidden_notice: bool,
+    /// When the close button was last pressed; a second press quits.
+    close_at: Option<Instant>,
 }
 
+/// Set once the user really wants the process to end (the tray, `--quit` or the
+/// quit button). Until then closing the window only hides it.
+static ALLOW_CLOSE: AtomicBool = AtomicBool::new(false);
+
 pub fn run(state: Arc<AppState>) -> eframe::Result<()> {
+    let marker = config::window_marker();
+    let _ = std::fs::write(&marker, b"1");
     let options = eframe::NativeOptions {
         viewport: {
             let mut vp = egui::ViewportBuilder::default()
@@ -237,16 +247,43 @@ pub fn run(state: Arc<AppState>) -> eframe::Result<()> {
         },
         ..Default::default()
     };
-    eframe::run_native(
+    let result = eframe::run_native(
         "sd-widgets",
         options,
         Box::new(move |cc| {
             theme::install_fonts(&cc.egui_ctx);
-            let app = App::new(state);
+            let app = App::new(state.clone());
             theme::apply(&cc.egui_ctx, app.dark);
+            watch_requests(state.clone(), cc.egui_ctx.clone());
             Ok(Box::new(app))
         }),
-    )
+    );
+    let _ = std::fs::remove_file(&marker);
+    result
+}
+
+/// The window is hidden, not gone: the tray, `--show` and a second launch all
+/// drop a small request file that this thread turns back into a visible window.
+/// The HTTP server and the Deck connections never stop meanwhile.
+fn watch_requests(state: Arc<AppState>, ctx: egui::Context) {
+    std::thread::Builder::new()
+        .name("sdw-daemon-watch".into())
+        .spawn(move || loop {
+            if config::take_request("quit") {
+                ALLOW_CLOSE.store(true, Ordering::Relaxed);
+                state.shutdown();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+            if config::take_request("show") {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ctx.request_repaint();
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        })
+        .ok();
 }
 
 impl App {
@@ -329,6 +366,8 @@ impl App {
             install_components: components,
             last_job: 0,
             logs_follow: true,
+            hidden_notice: false,
+            close_at: None,
             state,
         }
     }
@@ -621,6 +660,35 @@ impl eframe::App for App {
     fn ui(&mut self, root: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         let ctx = &ctx;
+        // Closing the window puts the daemon in the background instead of
+        // ending it: the Deck keeps its connection. A second press within a
+        // second and a half, the tray or `--quit` end it for real.
+        if ctx.input(|i| i.viewport().close_requested()) && !ALLOW_CLOSE.load(Ordering::Relaxed) {
+            let again = self
+                .close_at
+                .is_some_and(|at| at.elapsed() < Duration::from_millis(1500));
+            if again {
+                ALLOW_CLOSE.store(true, Ordering::Relaxed);
+                self.state.shutdown();
+            } else {
+                self.close_at = Some(Instant::now());
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                // Wayland has no "hide this toplevel" request, so the window is
+                // minimized there; X11 and the rest really hide it.
+                if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                } else {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+                }
+                if !self.hidden_notice {
+                    self.hidden_notice = true;
+                    self.state.logger.info(
+                        "окно свёрнуто: демон работает в фоне; трей, --show или повторный \
+                         запуск вернут окно, --quit остановит",
+                    );
+                }
+            }
+        }
         self.poll();
         if self.dark != self.applied_dark {
             theme::apply(ctx, self.dark);
@@ -4441,6 +4509,27 @@ impl App {
                     let mut on = cfg.tray;
                     if switch(ui, &mut on, t).changed() {
                         self.save(|c| c.tray = on);
+                    }
+                },
+            );
+            row(
+                ui,
+                t,
+                t!(self.lang, "работать в фоне", "keep running in the background"),
+                t!(
+                    self.lang,
+                    "окно скрывается: демон, API и дека продолжают работать; второе нажатие на крестик остановит",
+                    "the window hides: daemon, API and Deck keep working; a second close press stops it"
+                ),
+                |ui| {
+                    if ghost(ui, t!(self.lang, "остановить демон", "stop the daemon"), t)
+                        .clicked()
+                    {
+                        config::request("quit");
+                        self.toast(
+                            t!(self.lang, "демон останавливается", "the daemon is stopping"),
+                            true,
+                        );
                     }
                 },
             );

@@ -44,11 +44,30 @@ struct Cli {
     /// download the newest daemon build from git.entitybtw.ru, then exit
     #[arg(long)]
     download_update: bool,
+    /// bring back the window of a running daemon, then exit
+    #[arg(long)]
+    show: bool,
+    /// stop a running daemon, then exit
+    #[arg(long)]
+    quit: bool,
 }
 
 fn main() {
     let cli = Cli::parse();
     sdw_core::util::ensure_dir(&sdw_core::util::config_dir()).ok();
+
+    // Two small signals instead of a control socket: a second launch, the tray
+    // and the CLI all talk to the running daemon through one-shot files.
+    if cli.show {
+        config::request("show");
+        println!("окно демона открывается снова");
+        return;
+    }
+    if cli.quit {
+        config::request("quit");
+        println!("демон останавливается");
+        return;
+    }
 
     let mut cfg = config::load();
     if let Some(port) = cli.port {
@@ -126,13 +145,26 @@ fn main() {
     let _instance_lock = match single_instance() {
         Ok(lock) => lock,
         Err(pid) => {
-            eprintln!(
-                "sdw-daemon уже запущен (pid {pid}). остановите его или перезагрузитесь: \
-                 два демона делят D-Bus и API и уведомления теряются."
-            );
-            std::process::exit(1);
+            // Starting the daemon again is the natural way to ask for its
+            // window. A headless copy has no window to show, and says so.
+            if config::window_marker().exists() {
+                config::request("show");
+                eprintln!(
+                    "sdw-daemon уже запущен (pid {pid}); окно открыто снова. \
+                     остановить: sdw-daemon --quit"
+                );
+            } else {
+                eprintln!(
+                    "sdw-daemon уже работает в фоне (pid {pid}); остановить: \
+                     sdw-daemon --quit"
+                );
+            }
+            std::process::exit(0);
         }
     };
+
+    // A marker from a previous run would claim a window that is not there.
+    let _ = std::fs::remove_file(config::window_marker());
 
     let state = AppState::new();
     if !state.cfg().viiper.password.is_empty() {
@@ -173,11 +205,14 @@ fn main() {
             }
         });
         let result = gui::run(state.clone());
-        state.shutdown();
         if let Err(e) = result {
             eprintln!("gui: {e}");
             headless(state);
+            return;
         }
+        // The window only closes for real on an explicit quit; stopping here is
+        // the clean path for that case.
+        state.shutdown();
         return;
     }
 
@@ -185,6 +220,20 @@ fn main() {
 }
 
 fn headless(state: Arc<AppState>) {
+    // Without a window the daemon still stops on the same request file, so
+    // `sdw-daemon --quit` and the tray keep working.
+    let watch_state = state.clone();
+    std::thread::Builder::new()
+        .name("sdw-daemon-watch".into())
+        .spawn(move || loop {
+            if config::take_request("quit") {
+                watch_state.shutdown();
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        })
+        .ok();
+    println!("sdw-widgets работает в фоне; остановить: sdw-daemon --quit");
     if let Err(e) = server::run(state.clone()) {
         eprintln!("http сервер не запустился: {e}");
         state.shutdown();

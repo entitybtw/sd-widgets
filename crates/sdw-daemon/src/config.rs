@@ -251,6 +251,30 @@ pub fn path() -> PathBuf {
     sdw_core::util::config_dir().join("daemon.toml")
 }
 
+/// A one-shot signal between the tray, a second launch and the running daemon:
+/// `show` brings a hidden window back, `quit` stops the process.
+pub fn request(kind: &str) {
+    let dir = sdw_core::util::config_dir();
+    let _ = sdw_core::util::ensure_dir(&dir);
+    let _ = std::fs::write(dir.join(format!("daemon.{kind}")), b"1");
+}
+
+/// Present while a window is open, so a second launch knows whether it can ask
+/// the running daemon to show one or whether it is headless.
+pub fn window_marker() -> PathBuf {
+    sdw_core::util::config_dir().join("daemon.window")
+}
+
+pub fn take_request(kind: &str) -> bool {
+    let path = sdw_core::util::config_dir().join(format!("daemon.{kind}"));
+    if path.exists() {
+        let _ = std::fs::remove_file(&path);
+        true
+    } else {
+        false
+    }
+}
+
 pub fn load() -> DaemonConfig {
     let p = path();
     if let Ok(s) = std::fs::read_to_string(&p) {
