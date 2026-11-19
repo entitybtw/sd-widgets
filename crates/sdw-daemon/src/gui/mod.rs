@@ -777,20 +777,21 @@ impl App {
             {
                 let active = i == self.setup_step;
                 let done = i < self.setup_step;
-                ui.label(
-                    RichText::new(format!("{}{}", if done { "✓ " } else { "" }, name))
-                        .size(11.5)
-                        .family(FontFamily::Monospace)
-                        .color(if active {
-                            t.accent_ink
-                        } else if done {
-                            t.good
-                        } else {
-                            t.faint
-                        }),
-                );
+                let color = if active {
+                    t.accent_ink
+                } else if done {
+                    t.good
+                } else {
+                    t.faint
+                };
+                ui.label(theme::nav_text(
+                    if done { theme::icon::CHECK } else { "" },
+                    name,
+                    11.5,
+                    color,
+                ));
                 if i < 4 {
-                    ui.label(RichText::new("—").size(11.0).color(t.line_strong));
+                    ui.label(RichText::new("/").size(11.0).color(t.line_strong));
                 }
             }
         });
@@ -1502,7 +1503,7 @@ impl App {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(t!(self.lang, "пад создан", "pad created")).size(15.0).strong().color(t.good));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(egui::Button::new(hud("×", t.muted))).clicked() {
+                        if ui.add(egui::Button::new(theme::icon(theme::icon::CLOSE, 13.0, t.muted))).clicked() {
                             self.created_pad = None;
                         }
                     });
@@ -2058,7 +2059,7 @@ impl App {
                         ui.label(RichText::new(&n.app).size(12.5).strong().color(t.strong));
                         small(ui, &ago(n.ts), t.faint);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.add(egui::Button::new(hud("×", t.muted))).clicked() {
+                            if ui.add(egui::Button::new(theme::icon(theme::icon::CLOSE, 13.0, t.muted))).clicked() {
                                 self.state.notifications.dismiss(n.id);
                             }
                         });
@@ -2254,7 +2255,11 @@ impl App {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
-                    .add(egui::Button::new(hud(if fav { "★" } else { "☆" }, if fav { t.warn } else { t.faint })))
+                    .add(egui::Button::new(theme::icon(
+                        theme::icon::STAR,
+                        15.0,
+                        if fav { t.warn } else { t.faint },
+                    )))
                     .clicked()
                 {
                     let id = e.entity_id.clone();

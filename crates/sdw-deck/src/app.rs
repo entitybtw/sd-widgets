@@ -1417,7 +1417,7 @@ impl App {
                 .anchor(egui::Align2::LEFT_CENTER, egui::vec2(4.0, 0.0))
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    if theme::nav_arrow(ui, &t, "\u{2039}", true)
+                    if theme::nav_arrow(ui, &t, theme::icon::BACK, true)
                         .on_hover_text(t!(self.lang, "назад", "previous"))
                         .clicked()
                     {
@@ -1428,7 +1428,7 @@ impl App {
                 .anchor(egui::Align2::RIGHT_CENTER, egui::vec2(-4.0, 0.0))
                 .order(egui::Order::Foreground)
                 .show(ctx, |ui| {
-                    if theme::nav_arrow(ui, &t, "\u{203a}", true)
+                    if theme::nav_arrow(ui, &t, theme::icon::FORWARD, true)
                         .on_hover_text(t!(self.lang, "далее", "next"))
                         .clicked()
                     {
@@ -1480,23 +1480,37 @@ impl App {
                 self.set_page(Page::Computers);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                for (glyph, hint, active) in [
-                    ("\u{2699}", t!(self.lang, "настройки", "settings"), self.page == Page::Settings),
-                    ("\u{2328}", t!(self.lang, "клавиатура", "keyboard"), self.osk_open),
+                for (at, glyph, hint, active) in [
                     (
-                        if self.dark { "\u{25d0}" } else { "\u{25d1}" },
+                        0,
+                        theme::icon::SETTINGS,
+                        t!(self.lang, "настройки", "settings"),
+                        self.page == Page::Settings,
+                    ),
+                    (
+                        1,
+                        theme::icon::BINDS,
+                        t!(self.lang, "клавиатура", "keyboard"),
+                        self.osk_open,
+                    ),
+                    (
+                        2,
+                        if self.dark {
+                            theme::icon::LIGHT
+                        } else {
+                            theme::icon::DARK
+                        },
                         t!(self.lang, "тема", "theme"),
                         false,
                     ),
-                    ("\u{0410}\u{0411}", t!(self.lang, "язык", "language"), false),
                 ] {
                     if ui
                         .add(
-                            egui::Button::new(
-                                RichText::new(glyph)
-                                    .size(14.0)
-                                    .color(if active { t.accent } else { t.faint }),
-                            )
+                            egui::Button::new(theme::icon(
+                                glyph,
+                                16.0,
+                                if active { t.accent } else { t.faint },
+                            ))
                             .fill(Color32::TRANSPARENT)
                             .stroke(Stroke::NONE)
                             .corner_radius(CornerRadius::ZERO),
@@ -1504,16 +1518,29 @@ impl App {
                         .on_hover_text(hint)
                         .clicked()
                     {
-                        if glyph == "\u{2699}" {
-                            self.set_page(Page::Settings);
-                        } else if glyph == "\u{2328}" {
-                            self.osk_open = !self.osk_open;
-                        } else if glyph == "\u{25d0}" || glyph == "\u{25d1}" {
-                            self.set_dark(!self.dark);
-                        } else {
-                            self.set_lang(self.lang.toggle());
+                        match at {
+                            0 => self.set_page(Page::Settings),
+                            1 => self.osk_open = !self.osk_open,
+                            _ => self.set_dark(!self.dark),
                         }
                     }
+                }
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(self.lang.code().to_uppercase())
+                                .family(FontFamily::Monospace)
+                                .size(11.0)
+                                .color(t.faint),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE)
+                        .corner_radius(CornerRadius::ZERO),
+                    )
+                    .on_hover_text(t!(self.lang, "язык", "language"))
+                    .clicked()
+                {
+                    self.set_lang(self.lang.toggle());
                 }
                 if let Some(battery) = self.battery {
                     ui.label(
@@ -1646,9 +1673,7 @@ impl App {
                     .show(ctx, |ui| {
                         if ui
                             .add(
-                                egui::Button::new(
-                                    RichText::new("×").size(24.0).color(Color32::WHITE),
-                                )
+                                egui::Button::new(theme::icon(theme::icon::CLOSE, 22.0, Color32::WHITE))
                                 .fill(Color32::from_black_alpha(140))
                                 .stroke(Stroke::new(1.0, Color32::from_white_alpha(60)))
                                 .corner_radius(CornerRadius::ZERO),

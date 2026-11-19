@@ -462,6 +462,25 @@ pub mod icon {
     pub const RETURN: &str = "\u{e31b}";
     pub const MENU: &str = "\u{e5d2}";
     pub const VIEW: &str = "\u{e8e9}";
+    pub const LIGHT: &str = "\u{e518}";
+    pub const DARK: &str = "\u{e51c}";
+    pub const CHECK: &str = "\u{e668}";
+    pub const STAR: &str = "\u{f09a}";
+    pub const ARROW_UP: &str = "\u{e5d8}";
+    pub const ARROW_DOWN: &str = "\u{e5db}";
+    pub const ARROW_LEFT: &str = "\u{e5c4}";
+    pub const ARROW_RIGHT: &str = "\u{e5c8}";
+    pub const BULB: &str = "\u{e90f}";
+    pub const POWER: &str = "\u{f8c7}";
+    pub const SENSORS: &str = "\u{e51e}";
+    pub const THERMOSTAT: &str = "\u{f076}";
+    pub const PLAY: &str = "\u{e037}";
+    pub const BLINDS: &str = "\u{e286}";
+    pub const SCENE: &str = "\u{e65f}";
+    pub const CODE: &str = "\u{e86f}";
+    pub const CAMERA: &str = "\u{e412}";
+    pub const PERSON: &str = "\u{f0d3}";
+    pub const WIDGETS: &str = "\u{e1bd}";
 }
 
 /// The window / taskbar icon, decoded once from the packaged PNG.
@@ -611,7 +630,7 @@ pub fn nav_arrow(ui: &mut Ui, t: &Tokens, glyph: &str, enabled: bool) -> Respons
         rect.center(),
         egui::Align2::CENTER_CENTER,
         glyph,
-        FontId::new(34.0, FontFamily::Proportional),
+        FontId::new(30.0, glyph_family(glyph)),
         if !enabled {
             t.faint
         } else if hover > 0.5 {

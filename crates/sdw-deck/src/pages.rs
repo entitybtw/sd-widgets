@@ -1529,19 +1529,19 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
 fn ha_glyph(domain: &str) -> &'static str {
     match domain {
-        "light" => "☀",
-        "switch" => "⏻",
-        "sensor" => "≈",
-        "binary_sensor" => "◉",
-        "climate" => "🌡",
-        "media_player" => "▶",
-        "cover" => "▤",
-        "lock" => "🔒",
-        "scene" => "✦",
-        "script" => "⚙",
-        "camera" => "▣",
-        "person" => "☺",
-        _ => "•",
+        "light" => theme::icon::BULB,
+        "switch" => theme::icon::POWER,
+        "sensor" => theme::icon::SENSORS,
+        "binary_sensor" => theme::icon::CHECK,
+        "climate" => theme::icon::THERMOSTAT,
+        "media_player" => theme::icon::PLAY,
+        "cover" => theme::icon::BLINDS,
+        "lock" => theme::icon::LOCK,
+        "scene" => theme::icon::SCENE,
+        "script" => theme::icon::CODE,
+        "camera" => theme::icon::CAMERA,
+        "person" => theme::icon::PERSON,
+        _ => theme::icon::WIDGETS,
     }
 }
 
@@ -1766,7 +1766,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .show(ui, |ui| {
                     ui.set_width(w - 28.0);
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(ha_glyph(e.domain())).size(20.0).color(accent));
+                        ui.label(theme::icon(ha_glyph(e.domain()), 19.0, accent));
                         ui.vertical(|ui| {
                             ui.add(
                                 egui::Label::new(
@@ -1789,9 +1789,11 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             if favorites.contains(&e.entity_id) {
                                 if ui
                                     .add(
-                                        egui::Button::new(
-                                            RichText::new("★").size(15.0).color(t.warn),
-                                        )
+                                        egui::Button::new(theme::icon(
+                                            theme::icon::STAR,
+                                            16.0,
+                                            t.warn,
+                                        ))
                                         .fill(Color32::TRANSPARENT)
                                         .stroke(Stroke::NONE),
                                     )
@@ -1801,9 +1803,11 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                 }
                             } else if ui
                                 .add(
-                                    egui::Button::new(
-                                        RichText::new("☆").size(15.0).color(t.faint),
-                                    )
+                                    egui::Button::new(theme::icon(
+                                        theme::icon::STAR,
+                                        16.0,
+                                        t.faint,
+                                    ))
                                     .fill(Color32::TRANSPARENT)
                                     .stroke(Stroke::NONE),
                                 )

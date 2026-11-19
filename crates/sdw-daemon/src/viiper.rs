@@ -11,7 +11,6 @@ use sdw_core::auth::token_matches_tag;
 use sdw_core::model::*;
 use sdw_core::udp::{self, GamepadState};
 use std::collections::HashMap;
-use std::io::Read;
 use std::net::SocketAddr;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

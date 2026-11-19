@@ -306,10 +306,10 @@ pub fn show(
     let arm = h * 0.052;
     let pad = h * 0.052;
     for (control, offset, glyph) in [
-        (DeckControl::DpadUp, Vec2::new(0.0, -arm), "▲"),
-        (DeckControl::DpadDown, Vec2::new(0.0, arm), "▼"),
-        (DeckControl::DpadLeft, Vec2::new(-arm, 0.0), "◀"),
-        (DeckControl::DpadRight, Vec2::new(arm, 0.0), "▶"),
+        (DeckControl::DpadUp, Vec2::new(0.0, -arm), crate::theme::icon::ARROW_UP),
+        (DeckControl::DpadDown, Vec2::new(0.0, arm), crate::theme::icon::ARROW_DOWN),
+        (DeckControl::DpadLeft, Vec2::new(-arm, 0.0), crate::theme::icon::ARROW_LEFT),
+        (DeckControl::DpadRight, Vec2::new(arm, 0.0), crate::theme::icon::ARROW_RIGHT),
     ] {
         let active = match control {
             DeckControl::DpadUp => input.state.buttons & udp::BTN_DPAD_UP != 0,
@@ -342,7 +342,6 @@ pub fn show(
         };
         let active = input.state.buttons & bit != 0;
         let c = abxy + delta;
-        let rect = Rect::from_center_size(c, Vec2::splat(h * 0.082));
         let r = circle_key(
             ui,
             t,
@@ -820,7 +819,7 @@ fn dpad_key(
         rect.center(),
         Align2::CENTER_CENTER,
         glyph,
-        FontId::new(rect.height() * 0.44, FontFamily::Proportional),
+        FontId::new(rect.height() * 0.52, crate::theme::glyph_family(glyph)),
         if active { Color32::WHITE } else { t.muted },
     );
     ui.interact(rect, ui.id().with(("dpad-hit", id)), Sense::hover())

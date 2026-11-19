@@ -717,7 +717,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                     }
                                 }
                             });
-                        ui.add(egui::Slider::new(&mut fingers, 1..=4).suffix(" 🖐"));
+                        ui.add(egui::Slider::new(&mut fingers, 1..=4));
                     });
                     if kind == GestureKind::Swipe {
                         ui.horizontal(|ui| {

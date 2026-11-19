@@ -2,7 +2,6 @@
 //! requires the bearer token issued during pairing. Requests from public addresses are
 //! refused unless the user explicitly allowed them.
 
-use crate::config;
 use crate::install;
 use crate::state::AppState;
 use sdw_core::model::*;

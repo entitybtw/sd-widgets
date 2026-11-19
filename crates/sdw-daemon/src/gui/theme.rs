@@ -165,6 +165,14 @@ pub mod icon {
     pub const INSTALL: &str = "\u{f090}";
     pub const SETTINGS: &str = "\u{e8b8}";
     pub const LOGS: &str = "\u{eb8e}";
+    pub const CHECK: &str = "\u{e668}";
+    pub const CLOSE: &str = "\u{e5cd}";
+    pub const STAR: &str = "\u{f09a}";
+}
+
+/// One Material symbol, sized and coloured like body text.
+pub fn icon(text: &str, size: f32, color: Color32) -> RichText {
+    RichText::new(text).family(icon_family()).size(size).color(color)
 }
 
 pub fn icon_family() -> FontFamily {
