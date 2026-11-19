@@ -393,7 +393,7 @@ pub fn show(
         t,
         view_c,
         r,
-        "▣",
+        crate::theme::icon::VIEW,
         input.state.buttons & udp::BTN_BACK != 0,
         t.accent,
         control_fill,
@@ -405,7 +405,7 @@ pub fn show(
         t,
         menu_c,
         r,
-        "☰",
+        crate::theme::icon::MENU,
         input.state.buttons & udp::BTN_START != 0,
         t.accent,
         control_fill,
@@ -776,7 +776,7 @@ fn circle_key(
         center,
         Align2::CENTER_CENTER,
         label,
-        FontId::new(r * 0.95, FontFamily::Proportional),
+        FontId::new(r * 0.95, crate::theme::glyph_family(label)),
         if active { Color32::WHITE } else { t.ink },
     );
     Rect::from_center_size(center, Vec2::splat(r * 2.0))

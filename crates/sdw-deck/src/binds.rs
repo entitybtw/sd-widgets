@@ -888,13 +888,16 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 Action::Media { command } => {
                     ui.horizontal(|ui| {
                         for (value, label) in [
-                            ("play_pause", "⏯"),
-                            ("next", "⏭"),
-                            ("previous", "⏮"),
-                            ("stop", "⏹"),
+                            ("play_pause", theme::icon::PLAY_PAUSE),
+                            ("next", theme::icon::NEXT),
+                            ("previous", theme::icon::PREV),
+                            ("stop", theme::icon::STOP),
                         ] {
                             if ui
-                                .selectable_label(command.as_str() == value, label)
+                                .selectable_label(
+                                    command.as_str() == value,
+                                    theme::icon(label, 16.0, t.ink),
+                                )
                                 .on_hover_text(value)
                                 .clicked()
                             {

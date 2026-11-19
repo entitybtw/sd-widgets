@@ -436,6 +436,67 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     });
 }
 
+/// Material You symbol codepoints. Outlined, monochrome, one shape per idea.
+pub mod icon {
+    pub const HOME: &str = "\u{e9b2}";
+    pub const COMPUTERS: &str = "\u{e326}";
+    pub const GAMEPAD: &str = "\u{ea28}";
+    pub const SCREEN: &str = "\u{ef5b}";
+    pub const NOTIFICATIONS: &str = "\u{e7f5}";
+    pub const HOME_ASSISTANT: &str = "\u{e283}";
+    pub const BINDS: &str = "\u{e312}";
+    pub const LOOK: &str = "\u{e40a}";
+    pub const SETTINGS: &str = "\u{e8b8}";
+    pub const ADD: &str = "\u{e145}";
+    pub const CLOSE: &str = "\u{e5cd}";
+    pub const LOCK: &str = "\u{e899}";
+    pub const OPEN: &str = "\u{e89e}";
+    pub const BACK: &str = "\u{e5cb}";
+    pub const FORWARD: &str = "\u{e5cc}";
+    pub const PLAY_PAUSE: &str = "\u{f137}";
+    pub const NEXT: &str = "\u{e044}";
+    pub const PREV: &str = "\u{e045}";
+    pub const STOP: &str = "\u{e047}";
+    pub const BACKSPACE: &str = "\u{e14a}";
+    pub const SHIFT: &str = "\u{e5f2}";
+    pub const RETURN: &str = "\u{e31b}";
+    pub const MENU: &str = "\u{e5d2}";
+    pub const VIEW: &str = "\u{e8e9}";
+}
+
+/// The window / taskbar icon, decoded once from the packaged PNG.
+pub fn window_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/icons/sd-widgets-256.png"
+    ));
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
+}
+
+pub fn icon_family() -> FontFamily {
+    FontFamily::Name("material".into())
+}
+
+/// One Material symbol, sized and coloured like body text.
+pub fn icon(text: &str, size: f32, color: Color32) -> RichText {
+    RichText::new(text).family(icon_family()).size(size).color(color)
+}
+
+/// Material symbols live in the private use area; everything else is text.
+pub fn glyph_family(text: &str) -> FontFamily {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if (0xe000..=0xf8ff).contains(&(c as u32)) => icon_family(),
+        _ => FontFamily::Proportional,
+    }
+}
+
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
@@ -443,6 +504,13 @@ pub fn install_fonts(ctx: &egui::Context) {
         Arc::new(FontData::from_static(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/fonts/Archivo.ttf"
+        )))),
+    );
+    fonts.font_data.insert(
+        "material".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/fonts/MaterialSymbolsOutlined.ttf"
         )))),
     );
     fonts.font_data.insert(
@@ -458,6 +526,10 @@ pub fn install_fonts(ctx: &egui::Context) {
     if let Some(f) = fonts.families.get_mut(&FontFamily::Monospace) {
         f.insert(0, "jetbrains".to_owned());
     }
+    fonts.families.insert(
+        FontFamily::Name("material".into()),
+        vec!["material".to_owned(), "archivo".to_owned()],
+    );
     ctx.set_fonts(fonts);
 }
 
@@ -733,10 +805,10 @@ pub fn tile(ui: &mut Ui, t: &Tokens, tile: &Tile, size: Vec2) -> Response {
     let st = style();
     if st.glyphs {
         p.text(
-            egui::pos2(rect.left() + 18.0, rect.top() + 16.0),
+            egui::pos2(rect.left() + 18.0, rect.top() + 15.0),
             egui::Align2::LEFT_TOP,
             &tile.glyph,
-            FontId::new(26.0, FontFamily::Proportional),
+            FontId::new(20.0, glyph_family(&tile.glyph)),
             accent,
         );
     }
@@ -766,24 +838,22 @@ pub fn tile(ui: &mut Ui, t: &Tokens, tile: &Tile, size: Vec2) -> Response {
             color,
         );
         let br = egui::Rect::from_min_size(
-            egui::pos2(rect.right() - galley.size().x - 30.0, rect.top() + 14.0),
-            galley.size() + Vec2::new(16.0, 6.0),
+            egui::pos2(rect.right() - galley.size().x - 18.0, rect.top() + 18.0),
+            galley.size(),
         );
-        p.rect_filled(br, t.r(0.0), t.bg2);
-        p.rect_stroke(
-            br,
-            0.0,
-            Stroke::new(1.0, t.line_strong),
-            egui::StrokeKind::Inside,
-        );
-        p.galley(br.min + Vec2::new(8.0, 3.0), galley, color);
+        p.galley(br.min, galley, color);
     }
     resp
 }
 
 pub fn key_button(ui: &mut Ui, label: &str, t: &Tokens, width: f32) -> Response {
     ui.add(
-        egui::Button::new(RichText::new(label).size(17.0).color(t.strong))
+        egui::Button::new(
+            RichText::new(label)
+                .family(glyph_family(label))
+                .size(17.0)
+                .color(t.strong),
+        )
             .fill(t.card)
             .stroke(Stroke::new(1.0, t.line))
             .corner_radius(t.corner(0))

@@ -104,7 +104,6 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.label(theme::hud(t!(app.lang, "steam deck", "steam deck"), t.faint));
             ui.label(RichText::new(&host).size(30.0).strong().color(t.strong));
         });
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -157,7 +156,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     "run sdw-daemon on the PC and pair with its password"
                 )
                 .into(),
-                glyph: "+".into(),
+                glyph: theme::icon::ADD.into(),
                 accent: t.accent,
                 badge: None,
                 badge_color: t.accent,
@@ -199,7 +198,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 } else {
                     t!(app.lang, "виртуальный пад", "virtual pad").into()
                 },
-                glyph: "◉".into(),
+                glyph: theme::icon::GAMEPAD.into(),
                 accent: t.accent,
                 badge: Some(if app.gamepad_on {
                     "live".into()
@@ -225,7 +224,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 } else {
                     t!(app.lang, "дополнительный монитор", "extra monitor").into()
                 },
-                glyph: "▭".into(),
+                glyph: theme::icon::SCREEN.into(),
                 accent: Color32::from_rgb(0x3d, 0xd6, 0xcf),
                 badge: Some(if monitor.running { "live".into() } else { "off".into() }),
                 badge_color: if monitor.running { t.good } else { t.faint },
@@ -250,7 +249,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         .map(|n| util::truncate(&n.summary, 34))
                         .unwrap_or_default()
                 },
-                glyph: "!".into(),
+                glyph: theme::icon::NOTIFICATIONS.into(),
                 accent: Color32::from_rgb(0xff, 0x6f, 0xb5),
                 badge: (app.notif_unread > 0).then(|| app.notif_unread.to_string()),
                 badge_color: t.warn,
@@ -279,7 +278,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         }
                     })
                     .unwrap_or_else(|| t!(app.lang, "умный дом", "smart home").to_string()),
-                glyph: "◆".into(),
+                glyph: theme::icon::HOME_ASSISTANT.into(),
                 accent: t.warn,
                 badge: None,
                 badge_color: t.accent,
@@ -306,7 +305,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     t!(app.lang, "штук", "total"),
                     t!(app.lang, "кнопки и жесты", "buttons and gestures")
                 ),
-                glyph: "⌘".into(),
+                glyph: theme::icon::BINDS.into(),
                 accent: Color32::from_rgb(0xb9, 0xe0, 0x5a),
                 badge: None,
                 badge_color: t.warn,
@@ -324,7 +323,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
             Tile {
                 title: t!(app.lang, "компьютеры", "computers").into(),
                 subtitle: format!("{} · {}", app.cfg.hosts.len(), host),
-                glyph: "▣".into(),
+                glyph: theme::icon::COMPUTERS.into(),
                 accent: Color32::from_rgb(0x5b, 0x9b, 0xff),
                 badge: None,
                 badge_color: t.good,
@@ -2017,8 +2016,12 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             }
             ui.label(RichText::new(t!(app.lang, "свайпы страниц", "page swipes")).size(13.0).color(t.muted));
             ui.add_space(14.0);
-            theme::switch(ui, &mut app.cfg.grid, t);
-            ui.label(RichText::new(t!(app.lang, "плитки", "tiles")).size(13.0).color(t.muted));
+            let mut grid = app.cfg.style.grid;
+            if theme::switch(ui, &mut grid, t).changed() {
+                app.cfg.style.grid = grid;
+                app.apply_style(ui.ctx());
+            }
+            ui.label(RichText::new(t!(app.lang, "сетка", "grid")).size(13.0).color(t.muted));
         });
         ui.label(
             RichText::new(t!(

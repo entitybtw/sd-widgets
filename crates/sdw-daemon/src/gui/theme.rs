@@ -154,6 +154,62 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
     });
 }
 
+/// Material You symbols, outlined and monochrome.
+pub mod icon {
+    pub const OVERVIEW: &str = "\u{e871}";
+    pub const GAMEPADS: &str = "\u{ea28}";
+    pub const SCREEN: &str = "\u{ef5b}";
+    pub const NOTIFICATIONS: &str = "\u{e7f5}";
+    pub const HOME_ASSISTANT: &str = "\u{e283}";
+    pub const SECURITY: &str = "\u{e32a}";
+    pub const INSTALL: &str = "\u{f090}";
+    pub const SETTINGS: &str = "\u{e8b8}";
+    pub const LOGS: &str = "\u{eb8e}";
+}
+
+pub fn icon_family() -> FontFamily {
+    FontFamily::Name("material".into())
+}
+
+/// Icon + label as one laid-out run, so the two fonts can coexist.
+pub fn nav_text(icon: &str, label: &str, size: f32, color: Color32) -> egui::WidgetText {
+    use egui::text::{LayoutJob, TextFormat};
+    let mut job = LayoutJob::default();
+    job.append(
+        icon,
+        0.0,
+        TextFormat {
+            font_id: FontId::new(size + 3.0, icon_family()),
+            color,
+            ..Default::default()
+        },
+    );
+    job.append(
+        label,
+        10.0,
+        TextFormat {
+            font_id: FontId::new(size, FontFamily::Proportional),
+            color,
+            ..Default::default()
+        },
+    );
+    job.into()
+}
+
+pub fn window_icon() -> Option<egui::IconData> {
+    let bytes = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../assets/icons/sd-widgets-256.png"
+    ));
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (width, height) = img.dimensions();
+    Some(egui::IconData {
+        rgba: img.into_raw(),
+        width,
+        height,
+    })
+}
+
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
@@ -161,6 +217,13 @@ pub fn install_fonts(ctx: &egui::Context) {
         Arc::new(FontData::from_static(include_bytes!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../assets/fonts/Archivo.ttf"
+        )))),
+    );
+    fonts.font_data.insert(
+        "material".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/fonts/MaterialSymbolsOutlined.ttf"
         )))),
     );
     fonts.font_data.insert(
@@ -176,6 +239,10 @@ pub fn install_fonts(ctx: &egui::Context) {
     if let Some(f) = fonts.families.get_mut(&FontFamily::Monospace) {
         f.insert(0, "jetbrains".to_owned());
     }
+    fonts.families.insert(
+        FontFamily::Name("material".into()),
+        vec!["material".to_owned(), "archivo".to_owned()],
+    );
     ctx.set_fonts(fonts);
 }
 

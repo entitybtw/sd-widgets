@@ -113,13 +113,17 @@ fn main() -> eframe::Result<()> {
         cli.fullscreen || default_fullscreen()
     };
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("sd-widgets")
+        .with_app_id("sd-widgets")
+        .with_inner_size([1280.0, 800.0])
+        .with_min_inner_size([880.0, 620.0])
+        .with_fullscreen(fullscreen);
+    if let Some(icon) = theme::window_icon() {
+        viewport = viewport.with_icon(std::sync::Arc::new(icon));
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("sd-widgets")
-            .with_app_id("sd-widgets")
-            .with_inner_size([1280.0, 800.0])
-            .with_min_inner_size([880.0, 620.0])
-            .with_fullscreen(fullscreen),
+        viewport,
         ..Default::default()
     };
 

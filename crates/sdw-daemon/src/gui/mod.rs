@@ -58,15 +58,15 @@ impl Page {
     }
     fn icon(self) -> &'static str {
         match self {
-            Page::Overview => "▦",
-            Page::Gamepads => "◉",
-            Page::Screen => "▭",
-            Page::Notifications => "!",
-            Page::HomeAssistant => "⌂",
-            Page::Security => "⌘",
-            Page::Install => "↓",
-            Page::Settings => "≡",
-            Page::Logs => "›",
+            Page::Overview => theme::icon::OVERVIEW,
+            Page::Gamepads => theme::icon::GAMEPADS,
+            Page::Screen => theme::icon::SCREEN,
+            Page::Notifications => theme::icon::NOTIFICATIONS,
+            Page::HomeAssistant => theme::icon::HOME_ASSISTANT,
+            Page::Security => theme::icon::SECURITY,
+            Page::Install => theme::icon::INSTALL,
+            Page::Settings => theme::icon::SETTINGS,
+            Page::Logs => theme::icon::LOGS,
         }
     }
 }
@@ -189,10 +189,16 @@ pub struct App {
 
 pub fn run(state: Arc<AppState>) -> eframe::Result<()> {
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 790.0])
-            .with_min_inner_size([920.0, 620.0])
-            .with_title("sd-widgets"),
+        viewport: {
+            let mut vp = egui::ViewportBuilder::default()
+                .with_inner_size([1180.0, 790.0])
+                .with_min_inner_size([920.0, 620.0])
+                .with_title("sd-widgets");
+            if let Some(icon) = theme::window_icon() {
+                vp = vp.with_icon(std::sync::Arc::new(icon));
+            }
+            vp
+        },
         ..Default::default()
     };
     eframe::run_native(
@@ -626,9 +632,12 @@ impl App {
         ui.add_space(6.0);
         for page in Page::ALL {
             let selected = self.page == page;
-            let text = RichText::new(format!("{}  {}", page.icon(), page.label(self.lang)))
-                .size(13.0)
-                .color(if selected { t.strong } else { t.muted });
+            let text = theme::nav_text(
+                page.icon(),
+                page.label(self.lang),
+                13.0,
+                if selected { t.strong } else { t.muted },
+            );
             let resp = ui.add_sized(
                 [ui.available_width(), 30.0],
                 egui::Button::new(text)

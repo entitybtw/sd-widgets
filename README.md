@@ -5,7 +5,8 @@ into a second screen, a virtual gamepad, a notification panel and a Home Assista
 remote — and it looks like a hard-edged, 32 px grid system instead of a phone app.
 
 - **One repo, two binaries**: `sdw-deck` (runs on the Deck) and `sdw-daemon` (runs on the computer).
-- **Grid** visual language: no rounding anywhere, hairline borders, 32 px cells.
+- **Grid** visual language: no rounding anywhere, hairline borders, 32 px cells,
+  and a minimal set of **Material Symbols** icons.
 - **Full customisation**: CSS themes, palette pickers, density, tile grid, page and
   tile visibility, interface sounds, per-event sound files.
 - **Bilingual**: English and Russian, dark and light.
@@ -171,6 +172,8 @@ docs                 architecture, API, themes, monitor notes
 
 ## License
 
-MIT for this repository. The vendored VIIPER **client** is MIT. The VIIPER
+MIT for this repository. The vendored VIIPER **client** is MIT. Material Symbols
+icons and the Archivo / JetBrains Mono fonts keep their own licenses (Apache-2.0
+and OFL), shipped in `assets/`. The VIIPER
 **server** is a separate GPL-3.0 project and is **not** bundled; the daemon can
 install it from its own release artifacts if you ask it to.

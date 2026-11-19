@@ -95,15 +95,15 @@ impl Page {
     }
     pub fn icon(self) -> &'static str {
         match self {
-            Page::Home => "⌂",
-            Page::Computers => "▣",
-            Page::Gamepad => "◉",
-            Page::Screen => "▭",
-            Page::Notifications => "!",
-            Page::HomeAssistant => "◆",
-            Page::Binds => "⌘",
-            Page::Settings => "⚙",
-            Page::Theme => "◐",
+            Page::Home => theme::icon::HOME,
+            Page::Computers => theme::icon::COMPUTERS,
+            Page::Gamepad => theme::icon::GAMEPAD,
+            Page::Screen => theme::icon::SCREEN,
+            Page::Notifications => theme::icon::NOTIFICATIONS,
+            Page::HomeAssistant => theme::icon::HOME_ASSISTANT,
+            Page::Binds => theme::icon::BINDS,
+            Page::Settings => theme::icon::SETTINGS,
+            Page::Theme => theme::icon::LOOK,
         }
     }
 }
@@ -1571,7 +1571,9 @@ impl App {
                                     let resp = ui
                                         .add(
                                             egui::Button::new(
-                                                RichText::new(page.icon()).size(17.0).color(
+                                                theme::icon(
+                                                    page.icon(),
+                                                    if active { 18.0 } else { 17.0 },
                                                     if active { t.strong } else { t.muted },
                                                 ),
                                             )
@@ -1787,7 +1789,7 @@ impl App {
                             [
                                 ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
                                 ["a", "s", "d", "f", "g", "h", "j", "k", "l", "—"],
-                                ["z", "x", "c", "v", "b", "n", "m", ".", "@", "⌫"],
+                                ["z", "x", "c", "v", "b", "n", "m", ".", "@", theme::icon::BACKSPACE],
                             ]
                         };
                         for (ri, row) in rows.iter().enumerate() {
@@ -1795,7 +1797,7 @@ impl App {
                                 if ri == 2 {
                                     if theme::key_button(
                                         ui,
-                                        if self.osk_shift { "⇧" } else { "⇧" },
+                                        theme::icon::SHIFT,
                                         &t,
                                         58.0,
                                     )
@@ -1815,7 +1817,7 @@ impl App {
                                         (*key).to_string()
                                     };
                                     if theme::key_button(ui, &label, &t, 54.0).clicked() {
-                                        if *key == "⌫" {
+                                        if *key == theme::icon::BACKSPACE {
                                             push_key(ctx, egui::Key::Backspace);
                                         } else if *key == "—" {
                                             push_text(ctx, " ");
@@ -1827,7 +1829,7 @@ impl App {
                                     }
                                 }
                                 if ri == 2 {
-                                    if theme::key_button(ui, "⏎", &t, 58.0).clicked() {
+                                    if theme::key_button(ui, theme::icon::RETURN, &t, 58.0).clicked() {
                                         push_key(ctx, egui::Key::Enter);
                                     }
                                 }

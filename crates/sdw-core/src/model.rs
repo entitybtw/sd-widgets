@@ -793,7 +793,7 @@ pub struct DeckPad {
 pub struct DeckViewCfg {
     #[serde(default = "dv_scale")]
     pub scale: f32,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub labels: bool,
     #[serde(default = "default_true")]
     pub glow: bool,
@@ -809,7 +809,7 @@ impl Default for DeckViewCfg {
     fn default() -> Self {
         Self {
             scale: 1.0,
-            labels: true,
+            labels: false,
             glow: true,
             sticks: true,
         }
@@ -843,7 +843,7 @@ pub struct ThemeCfg {
     pub arrows: bool,
     #[serde(default = "default_true")]
     pub dock: bool,
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub labels: bool,
     #[serde(default = "default_true")]
     pub glyphs: bool,
@@ -892,7 +892,7 @@ impl Default for ThemeCfg {
             tile_columns: default_tile_columns(),
             arrows: true,
             dock: true,
-            labels: true,
+            labels: false,
             glyphs: true,
             animations: true,
             compact: false,
