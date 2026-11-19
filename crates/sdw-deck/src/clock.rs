@@ -1,350 +1,297 @@
-//! the full-screen clock page.
+//! the clock page.
 //!
-//! four styles share one canvas: `tide` follows the FLOW · Tide lock screen
-//! (deep water, drifting light strips, a big moon and a tilted time), while
-//! `digital`, `analog` and `minimal` are quieter takes. every style reads the
-//! same [`ClockCfg`], so colours, fonts, elements and animations can all be
-//! changed from the page itself.
+//! four faces share one canvas, all drawn in the hard-edged Grid language:
+//! `grid` is the big time on the house grid (the default), `digital` adds a
+//! soft accent glow, `analog` draws hands and `minimal` strips everything but
+//! the time. every face reads the same [`ClockCfg`], so colours, font, size,
+//! position and the little status chips are all editable on the page itself.
 
 use crate::app::App;
 use crate::theme::{self, Tokens};
 use eframe::egui::{
-    self, epaint::TextShape, pos2, vec2, Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense,
-    Stroke, TextEdit, Ui,
+    self, pos2, vec2, Align2, Color32, FontFamily, FontId, Rect, Sense, Stroke, TextEdit, Ui,
 };
 use sdw_core::model::ClockCfg;
 use sdw_core::{t, Lang};
 
-const REF_W: f32 = 480.0;
-const REF_H: f32 = 272.0;
 const TAU: f32 = std::f32::consts::TAU;
 
 pub fn ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let cfg = app.cfg.clock.clone();
     let lang = app.lang;
-    let battery = app.battery;
-    // One canvas that keeps the Tide proportions and fits the deck viewport.
+    // A wide canvas that fits the deck viewport and keeps the big time big.
     let width = ui.available_width().max(280.0);
     let viewport = ui.ctx().content_rect().height();
-    let max_h = (viewport - 132.0).max(280.0);
-    let height = (width * 0.566).min(max_h).max(260.0);
+    let max_h = (viewport - 150.0).max(240.0);
+    let height = (width * 0.5).min(max_h).max(220.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let time = ui.input(|i| i.time) as f32;
+    {
+        let face = face_of(app, lang, time);
+        canvas(ui, rect, t, &cfg, &face);
+    }
 
-    match cfg.style.as_str() {
-        "digital" => digital(ui, rect, t, &cfg, time, lang, battery),
-        "analog" => analog(ui, rect, t, &cfg, lang, battery),
-        "minimal" => minimal(ui, rect, t, &cfg, lang),
-        _ => tide(ui, rect, t, &cfg, time, lang, battery),
+    // The same clock, one tap away from the whole screen.
+    let button = Rect::from_min_size(
+        pos2(rect.right() - 42.0, rect.top() + 8.0),
+        vec2(34.0, 34.0),
+    );
+    let resp = ui.put(
+        button,
+        egui::Button::new(theme::icon(theme::icon::FULLSCREEN, 20.0, t.strong))
+            .fill(t.bg2)
+            .stroke(Stroke::new(1.0, t.line))
+            .corner_radius(0.0),
+    );
+    if resp
+        .on_hover_text(t!(lang, "на весь экран", "full screen"))
+        .clicked()
+    {
+        app.clock_full = true;
     }
 
     ui.add_space(10.0);
     controls(app, ui, t);
+    repaint(ui.ctx(), &cfg);
+}
 
+/// Everything the face needs to know about the outside world. Built by the page
+/// and by the full-screen overlay so both draw exactly the same picture.
+pub struct Face<'a> {
+    pub lang: Lang,
+    pub time: f32,
+    pub battery: Option<u8>,
+    /// Headset battery: `(percent, name)`.
+    pub headset: Option<(u8, &'a str)>,
+    pub notices: usize,
+    pub notice: Option<&'a str>,
+}
+
+/// Paint the selected face into `rect`. The page and the full-bleed overlay
+/// share this so both look the same at any size.
+pub fn canvas(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
+    match cfg.style.as_str() {
+        "digital" => digital(ui, rect, t, cfg, f),
+        "analog" => analog(ui, rect, t, cfg, f),
+        "minimal" => minimal(ui, rect, t, cfg, f),
+        _ => grid(ui, rect, t, cfg, f),
+    }
+    let pal = palette(cfg, t);
+    info_strip(ui, rect, t, cfg, f, &pal);
+}
+
+/// The clock over the whole window, with the chrome hidden. Any tap, a click
+/// or Escape brings the normal page back.
+pub fn fullscreen(app: &mut App, root: &mut Ui, ctx: &egui::Context) {
+    let t = Tokens::get(ctx);
+    let cfg = app.cfg.clock.clone();
+    let lang = app.lang;
+    let time = ctx.input(|i| i.time) as f32;
+    let face = face_of(app, lang, time);
+    egui::CentralPanel::default()
+        .frame(egui::Frame::new().fill(t.bg))
+        .show(root, |ui| {
+            let rect = ui.available_rect_before_wrap();
+            canvas(ui, rect, &t, &cfg, &face);
+            ui.painter().text(
+                pos2(rect.center().x, rect.bottom() - 16.0),
+                Align2::CENTER_CENTER,
+                match lang {
+                    Lang::Ru => "нажмите или esc, чтобы выйти",
+                    _ => "tap or press esc to exit",
+                },
+                FontId::new(11.5, FontFamily::Monospace),
+                Color32::from_white_alpha(90),
+            );
+        });
+    if ctx.input(|i| i.pointer.any_click()) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.clock_full = false;
+    }
+    repaint(ctx, &cfg);
+}
+
+fn face_of(app: &App, lang: Lang, time: f32) -> Face<'_> {
+    let latest = app.notifications.last();
+    Face {
+        lang,
+        time,
+        battery: app.battery,
+        headset: app.headset.as_ref().map(|h| (h.percent, h.name.as_str())),
+        notices: app.notif_unread as usize,
+        notice: latest
+            .map(|n| {
+                if n.summary.trim().is_empty() {
+                    n.app.as_str()
+                } else {
+                    n.summary.as_str()
+                }
+            })
+            .filter(|s| !s.trim().is_empty()),
+    }
+}
+
+fn repaint(ctx: &egui::Context, cfg: &ClockCfg) {
     let animated = cfg.animate && cfg.anim != "off" && cfg.style != "minimal";
     let ms = if animated {
-        33
+        40
     } else if cfg.seconds {
         250
     } else {
         1000
     };
-    ui.ctx()
-        .request_repaint_after(std::time::Duration::from_millis(ms));
+    ctx.request_repaint_after(std::time::Duration::from_millis(ms));
 }
 
-// ---------------------------------------------------------------- tide
+// ---------------------------------------------------------------- grid
 
-fn tide(
-    ui: &mut Ui,
-    rect: Rect,
-    _t: &Tokens,
-    cfg: &ClockCfg,
-    time: f32,
-    lang: Lang,
-    battery: Option<u8>,
-) {
+/// The default face: a big time over the house grid, an accent bar underneath,
+/// the date in mono, and nothing else that is not asked for.
+fn grid(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     let painter = ui.painter_at(rect);
     let now = theme::local_now();
-    let s = (rect.width() / REF_W).min(rect.height() / REF_H);
-    let ox = rect.left() + (rect.width() - REF_W * s) * 0.5;
-    let oy = rect.top() + (rect.height() - REF_H * s) * 0.5;
-    let p = |x: f32, y: f32| pos2(ox + x * s, oy + y * s);
-    let drift = cfg.animate && cfg.anim == "drift";
+    let pal = palette(cfg, t);
+    painter.rect_filled(rect, 0.0, pal.bg_bottom);
+
+    // The same hairline grid as the rest of the app, scaled to the canvas.
+    let st = theme::style();
+    if st.grid {
+        let step = (st.grid_step * (rect.height() / 272.0)).max(16.0);
+        let alpha = (st.grid_alpha * 2.6).clamp(8.0, 60.0) as u8;
+        let line =
+            Color32::from_rgba_unmultiplied(pal.accent.r(), pal.accent.g(), pal.accent.b(), alpha);
+        let mut x = rect.left() + step;
+        while x < rect.right() {
+            painter.line_segment(
+                [pos2(x, rect.top()), pos2(x, rect.bottom())],
+                Stroke::new(1.0, line),
+            );
+            x += step;
+        }
+        let mut y = rect.top() + step;
+        while y < rect.bottom() {
+            painter.line_segment(
+                [pos2(rect.left(), y), pos2(rect.right(), y)],
+                Stroke::new(1.0, line),
+            );
+            y += step;
+        }
+    }
+
+    // A slow accent sweep keeps the face alive without moving the numbers.
+    let sweep = cfg.animate && cfg.anim == "drift";
     let pulse = cfg.animate && cfg.anim == "pulse";
-    let anim = if drift {
-        time * cfg.speed.max(0.05)
-    } else {
-        0.0
-    };
-
-    let accent = if cfg.mono {
-        _t.ink
-    } else {
-        color(&cfg.accent, Color32::from_rgb(63, 210, 255))
-    };
-    let bg_top = if cfg.mono {
-        _t.bg
-    } else {
-        color(&cfg.bg_top, Color32::from_rgb(14, 95, 202))
-    };
-    let bg_bottom = if cfg.mono {
-        _t.bg
-    } else {
-        color(&cfg.bg_bottom, Color32::from_rgb(2, 12, 40))
-    };
-    let water_mid = theme::mix(bg_top, bg_bottom, 0.62);
-
-    painter.rect_filled(rect, 0.0, bg_bottom);
-    vgrad(
-        &painter,
-        Rect::from_min_max(p(0.0, 0.0), p(REF_W, 150.0)),
-        bg_top,
-        water_mid,
-    );
-    vgrad(
-        &painter,
-        Rect::from_min_max(p(0.0, 150.0), p(REF_W, REF_H)),
-        water_mid,
-        bg_bottom,
-    );
-
-    // The house grid over the water: hard 32-unit lines, no glow.
-    let step = 32.0;
-    let grid = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 14);
-    let mut gx = 0.0;
-    while gx <= REF_W {
-        painter.line_segment([p(gx, 0.0), p(gx, REF_H)], Stroke::new(1.0, grid));
-        gx += step;
-    }
-    let mut gy = 0.0;
-    while gy <= REF_H {
-        painter.line_segment([p(0.0, gy), p(REF_W, gy)], Stroke::new(1.0, grid));
-        gy += step;
-    }
-
-    // six hard, grid-aligned bars drifting through the water
-    if cfg.show_stripes {
-        let bars: [[f32; 4]; 6] = [
-            [29.0, 96.0, 32.0, 22.0],
-            [128.0, 32.0, 64.0, 13.0],
-            [192.0, 128.0, 64.0, 17.0],
-            [256.0, 64.0, 32.0, 6.0],
-            [320.0, 160.0, 64.0, 12.0],
-            [416.0, 96.0, 32.0, 12.0],
-        ];
-        for (k, b) in bars.iter().enumerate() {
-            let kf = k as f32;
-            let dx = (anim * 0.25 + kf * 1.7).sin() * 12.0;
-            let rect = Rect::from_min_size(
-                p(b[0] + dx, b[2]),
-                vec2(b[1], if k % 2 == 0 { 3.0 } else { 2.0 }) * s,
-            );
-            painter.rect_filled(
-                rect,
-                0.0,
-                Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), b[3] as u8),
-            );
-        }
-    }
-
-    // square ticks rise instead of bubbles
-    if cfg.show_bubbles {
-        for k in 0..12 {
-            let kf = k as f32;
-            let bx = (kf * 61.7).rem_euclid(300.0) + (anim * 0.7 + kf).sin() * 5.0;
-            let by =
-                REF_H - (anim * (8.0 + (k % 5) as f32 * 3.0) + kf * 37.0).rem_euclid(REF_H + 20.0);
-            let side = (2.0 + (k % 3) as f32) * 2.0;
-            painter.rect_stroke(
-                Rect::from_min_size(p(bx, by), vec2(side, side) * s),
-                0.0,
-                Stroke::new(
-                    1.0,
-                    Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 0x46),
-                ),
-                egui::StrokeKind::Inside,
-            );
-        }
-    }
-
-    // deepen the bottom and dim everything a little, like the PSP screen
-    vgrad(
-        &painter,
-        Rect::from_min_max(p(0.0, 170.0), p(REF_W, 272.0)),
-        Color32::from_rgba_unmultiplied(bg_bottom.r(), bg_bottom.g(), bg_bottom.b(), 0),
-        Color32::from_rgba_unmultiplied(bg_bottom.r(), bg_bottom.g(), bg_bottom.b(), 0x96),
-    );
-    painter.rect_filled(
-        Rect::from_min_max(p(0.0, 0.0), p(REF_W, REF_H)),
-        0.0,
-        Color32::from_black_alpha(0x28),
-    );
-
-    // the moon
-    if cfg.show_moon {
-        let breathe = if pulse {
-            0.75 + 0.25 * (time * cfg.speed * 1.2).sin()
-        } else {
-            1.0
-        };
-        let mx = 410.0;
-        let my = 128.0;
-        let r = 118.0;
-        painter.circle_filled(
-            p(mx, my),
-            (r + 60.0) * s,
-            Color32::from_white_alpha((0x0c as f32 * breathe) as u8),
-        );
-        painter.circle_filled(
-            p(mx, my),
-            (r + 24.0) * s,
-            Color32::from_white_alpha((0x0c as f32 * breathe) as u8),
-        );
-        moon(&painter, p(mx, my), r * s, now.day, s, bg_bottom);
-    }
-
-    // tilted time: white with an accent shadow to the lower right
-    let txt = time_text(cfg, &now);
-    let scale = cfg.font_scale.clamp(0.5, 2.0);
-    let size = (if cfg.seconds { 66.0 } else { 88.0 }) * s * scale;
-    let font = FontId::new(size, FontFamily::Proportional);
-    let text_color = if cfg.mono { _t.strong } else { Color32::WHITE };
-    let galley = painter.layout_no_wrap(txt.clone(), font.clone(), text_color);
-    let tw = galley.size().x / s;
-    let tx = match cfg.position.as_str() {
-        "center" => (REF_W - tw) * 0.5,
-        "right" => REF_W - tw - 24.0,
-        _ => 26.0,
-    };
-    let pivot = p(120.0, 110.0);
-    let top_left = p(tx, 80.0);
-    let angle = -2.0_f32.to_radians();
-    rotated_text(
-        &painter,
-        pivot,
-        top_left + vec2(6.5, 4.3) * s,
-        &txt,
-        font.clone(),
-        accent,
-        angle,
-    );
-    rotated_text(&painter, pivot, top_left, &txt, font, text_color, angle);
-
-    if cfg.date {
-        // day-part plate
-        let part = match now.hour / 6 {
-            0 => t2(lang, "ночь", "night"),
-            1 => t2(lang, "утро", "morning"),
-            2 => t2(lang, "день", "afternoon"),
-            _ => t2(lang, "вечер", "evening"),
-        };
-        let plate = Rect::from_min_size(p(44.0, 164.0), vec2(72.0, 20.8) * s);
+    if sweep {
+        let k = (f.time * cfg.speed.max(0.05) * 0.18).fract();
+        let x = rect.left() + rect.width() * k;
         painter.rect_filled(
-            plate.translate(vec2(4.0, 3.0) * s),
+            Rect::from_min_size(pos2(x - 1.0, rect.top()), vec2(2.0, rect.height())),
             0.0,
-            Color32::from_rgba_unmultiplied(bg_bottom.r(), bg_bottom.g(), bg_bottom.b(), 0xC8),
+            Color32::from_rgba_unmultiplied(pal.accent.r(), pal.accent.g(), pal.accent.b(), 26),
         );
-        painter.rect_filled(plate, 0.0, accent);
-        painter.text(
-            plate.center(),
-            Align2::CENTER_CENTER,
-            part.to_uppercase(),
-            FontId::new(12.0 * s, FontFamily::Monospace),
-            Color32::from_rgb(2, 12, 40),
-        );
+    }
 
-        // weekday · date · battery
-        let mut line = String::new();
+    let scale = cfg.font_scale.clamp(0.5, 2.0);
+    let size = rect.height() * 0.44 * scale;
+    let font = FontId::new(size, face(cfg, "wide"));
+    let text = time_text(cfg, &now);
+    let probe = painter.layout_no_wrap(text.clone(), font.clone(), t.strong);
+    let tw = probe.size().x;
+    let (x, align) = match cfg.position.as_str() {
+        "center" => (rect.center().x, Align2::CENTER_CENTER),
+        "right" => (rect.right() - 26.0, Align2::RIGHT_CENTER),
+        _ => (rect.left() + 26.0, Align2::LEFT_CENTER),
+    };
+    let ytime = rect.center().y - rect.height() * 0.04;
+    painter.text(pos2(x, ytime), align, text, font, t.strong);
+
+    // The accent bar marks the time block, hard edges only.
+    let bw = (tw * 0.28).clamp(32.0, rect.width() * 0.32);
+    let bx = match align {
+        Align2::CENTER_CENTER => x - bw * 0.5,
+        Align2::RIGHT_CENTER => x - bw,
+        _ => x,
+    };
+    let breathing = if pulse {
+        (0.65 + 0.35 * (f.time * cfg.speed.max(0.05)).sin()).clamp(0.0, 1.0)
+    } else {
+        1.0
+    };
+    painter.rect_filled(
+        Rect::from_min_size(pos2(bx, ytime + size * 0.46), vec2(bw, 4.0)),
+        0.0,
+        pal.accent.gamma_multiply(breathing),
+    );
+
+    // date · weekday · battery, in mono under the bar
+    let mut line = String::new();
+    if cfg.date {
         if cfg.weekday {
-            line.push_str(weekday_name(lang, now.weekday));
+            line.push_str(&weekday_name(f.lang, now.weekday));
             line.push(' ');
         }
         line.push_str(&format!("{:02}.{:02}.{}", now.day, now.month, now.year));
-        if cfg.battery {
-            if let Some(bat) = battery {
-                line.push_str(&format!(" · {}%", bat));
+    }
+    if cfg.battery {
+        if let Some(bat) = f.battery {
+            if !line.is_empty() {
+                line.push_str(" · ");
             }
+            line.push_str(&format!("{bat}%"));
         }
+    }
+    if !line.is_empty() {
+        let (dx, dalign) = match align {
+            Align2::CENTER_CENTER => (x, Align2::CENTER_CENTER),
+            Align2::RIGHT_CENTER => (x, Align2::RIGHT_CENTER),
+            _ => (x, Align2::LEFT_CENTER),
+        };
         painter.text(
-            p(48.7, 212.0),
-            Align2::LEFT_CENTER,
+            pos2(dx, ytime + size * 0.58),
+            dalign,
             line.to_uppercase(),
-            FontId::new(11.0 * s * scale.min(1.3), FontFamily::Proportional),
-            Color32::from_rgba_unmultiplied(196, 241, 255, 255),
+            FontId::new(
+                (rect.height() * 0.036).clamp(11.0, 18.0),
+                FontFamily::Monospace,
+            ),
+            t.muted,
         );
     }
-
     if !cfg.caption.trim().is_empty() {
         painter.text(
-            p(REF_W * 0.5, 244.0),
-            Align2::CENTER_CENTER,
+            pos2(x, ytime + size * 0.72),
+            align,
             cfg.caption.trim(),
-            FontId::new(13.0 * s, FontFamily::Proportional),
-            Color32::from_rgba_unmultiplied(196, 241, 255, 220),
+            FontId::new(
+                (rect.height() * 0.032).clamp(10.0, 16.0),
+                FontFamily::Proportional,
+            ),
+            t.faint,
         );
     }
-}
 
-fn moon(painter: &egui::Painter, center: Pos2, r: f32, day: u32, s: f32, shadow_color: Color32) {
-    // A simple synodic phase: new around day 1, full around day 15.
-    let phase = (day as f32 / 29.53).fract();
-    let lit = (1.0 - (phase * TAU).cos()) * 0.5;
-    painter.circle_filled(center, r, Color32::WHITE);
-    // Slide the shadow across to carve the lit shape.
-    let dx = lit * 2.0 * r * if phase < 0.5 { 1.0 } else { -1.0 };
-    painter.circle_filled(
-        center + vec2(dx, 0.0),
-        r,
-        Color32::from_rgba_unmultiplied(shadow_color.r(), shadow_color.g(), shadow_color.b(), 0xC8),
-    );
-    for (cx, cy, cr) in [
-        (-33.0, -26.0, 28.35),
-        (26.0, 21.3, 21.25),
-        (11.8, -56.6, 11.8),
-        (-42.4, 40.2, 15.35),
-        (49.6, -26.0, 9.45),
-    ] {
-        painter.circle_filled(
-            center + vec2(cx * s, cy * s),
-            cr * s,
-            Color32::from_rgba_unmultiplied(178, 178, 178, 0x22),
-        );
-    }
-    painter.circle_stroke(
-        center,
-        r + 0.6 * s,
-        Stroke::new(1.2 * s, Color32::from_white_alpha(0x78)),
+    // A hairline progress bar along the bottom edge: seconds, but quiet.
+    let frac = now.second as f32 / 60.0;
+    painter.rect_filled(
+        Rect::from_min_size(
+            pos2(rect.left(), rect.bottom() - 2.0),
+            vec2(rect.width() * frac, 2.0),
+        ),
+        0.0,
+        pal.accent.gamma_multiply(0.7),
     );
 }
 
 // ---------------------------------------------------------------- digital
 
-fn digital(
-    ui: &mut Ui,
-    rect: Rect,
-    t: &Tokens,
-    cfg: &ClockCfg,
-    time: f32,
-    lang: Lang,
-    battery: Option<u8>,
-) {
+fn digital(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     let painter = ui.painter_at(rect);
     let now = theme::local_now();
-    let accent = if cfg.mono {
-        t.ink
-    } else {
-        color(&cfg.accent, t.accent)
-    };
-    let bg = if cfg.mono {
-        t.bg
-    } else {
-        color(&cfg.bg_bottom, t.bg)
-    };
-    painter.rect_filled(rect, 0.0, bg);
+    let pal = palette(cfg, t);
+    let accent = pal.accent;
+    painter.rect_filled(rect, 0.0, pal.bg_bottom);
     // a soft accent glow that breathes
     let breathe = if cfg.animate && cfg.anim != "off" {
-        0.5 + 0.5 * (time * cfg.speed * 0.5).sin()
+        0.5 + 0.5 * (f.time * cfg.speed * 0.5).sin()
     } else {
         0.6
     };
@@ -373,25 +320,10 @@ fn digital(
         pos2(x, center.y - rect.height() * 0.04),
         align,
         time_text(cfg, &now),
-        FontId::new(size, FontFamily::Monospace),
+        FontId::new(size, face(cfg, "mono")),
         t.strong,
     );
-    let mut line = String::new();
-    if cfg.date {
-        if cfg.weekday {
-            line.push_str(weekday_name(lang, now.weekday));
-            line.push(' ');
-        }
-        line.push_str(&format!("{:02}.{:02}.{}", now.day, now.month, now.year));
-    }
-    if cfg.battery {
-        if let Some(bat) = battery {
-            if !line.is_empty() {
-                line.push_str(" · ");
-            }
-            line.push_str(&format!("{bat}%"));
-        }
-    }
+    let line = date_line(cfg, &now, f);
     if !line.is_empty() {
         painter.text(
             pos2(x, center.y + rect.height() * 0.16),
@@ -414,11 +346,10 @@ fn digital(
         );
     }
     let frac = now.second as f32 / 60.0;
-    let bar_h = 3.0;
     painter.rect_filled(
         Rect::from_min_size(
-            pos2(rect.left(), rect.bottom() - bar_h),
-            vec2(rect.width() * frac, bar_h),
+            pos2(rect.left(), rect.bottom() - 3.0),
+            vec2(rect.width() * frac, 3.0),
         ),
         0.0,
         accent,
@@ -427,23 +358,12 @@ fn digital(
 
 // ---------------------------------------------------------------- analog
 
-fn analog(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, lang: Lang, battery: Option<u8>) {
+fn analog(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     let painter = ui.painter_at(rect);
     let now = theme::local_now();
-    let accent = if cfg.mono {
-        t.ink
-    } else {
-        color(&cfg.accent, t.accent)
-    };
-    painter.rect_filled(
-        rect,
-        0.0,
-        if cfg.mono {
-            t.bg
-        } else {
-            color(&cfg.bg_top, t.bg)
-        },
-    );
+    let pal = palette(cfg, t);
+    let accent = pal.accent;
+    painter.rect_filled(rect, 0.0, pal.bg_top);
     let center = rect.center();
     let r = ((rect.height() * 0.40).min(rect.width() * 0.30) * cfg.font_scale.clamp(0.6, 1.6))
         .min(rect.height() * 0.46);
@@ -481,13 +401,13 @@ fn analog(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, lang: Lang, batte
     let mut line = String::new();
     if cfg.date {
         if cfg.weekday {
-            line.push_str(weekday_name(lang, now.weekday));
+            line.push_str(&weekday_name(f.lang, now.weekday));
             line.push(' ');
         }
         line.push_str(&format!("{:02}.{:02}", now.day, now.month));
     }
     if cfg.battery {
-        if let Some(bat) = battery {
+        if let Some(bat) = f.battery {
             if !line.is_empty() {
                 line.push(' ');
             }
@@ -516,23 +436,12 @@ fn analog(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, lang: Lang, batte
 
 // ---------------------------------------------------------------- minimal
 
-fn minimal(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, lang: Lang) {
+fn minimal(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     let painter = ui.painter_at(rect);
     let now = theme::local_now();
-    let accent = if cfg.mono {
-        t.ink
-    } else {
-        color(&cfg.accent, t.accent)
-    };
-    painter.rect_filled(
-        rect,
-        0.0,
-        if cfg.mono {
-            t.bg
-        } else {
-            color(&cfg.bg_bottom, t.bg)
-        },
-    );
+    let pal = palette(cfg, t);
+    let accent = pal.accent;
+    painter.rect_filled(rect, 0.0, pal.bg_bottom);
     let scale = cfg.font_scale.clamp(0.5, 2.0);
     let size = rect.height() * 0.34 * scale;
     let (align, x) = match cfg.position.as_str() {
@@ -544,13 +453,13 @@ fn minimal(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, lang: Lang) {
         pos2(x, rect.center().y),
         align,
         time_text(cfg, &now),
-        FontId::new(size, FontFamily::Proportional),
+        FontId::new(size, face(cfg, "wide")),
         t.strong,
     );
     if cfg.date {
         let mut line = String::new();
         if cfg.weekday {
-            line.push_str(weekday_name(lang, now.weekday));
+            line.push_str(&weekday_name(f.lang, now.weekday));
             line.push(' ');
         }
         line.push_str(&format!("{:02}.{:02}.{}", now.day, now.month, now.year));
@@ -579,10 +488,20 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut cfg = app.cfg.clock.clone();
     let before = cfg.clone();
     theme::card(ui, t, |ui| {
-        ui.label(theme::hud(t!(app.lang, "часы", "clock"), t.faint));
+        ui.horizontal(|ui| {
+            ui.label(theme::hud(t!(app.lang, "часы", "clock"), t.faint));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if theme::icon_button(ui, theme::icon::FULLSCREEN, t, 30.0, false)
+                    .on_hover_text(t!(app.lang, "на весь экран", "full screen"))
+                    .clicked()
+                {
+                    app.clock_full = true;
+                }
+            });
+        });
         ui.horizontal_wrapped(|ui| {
             for (key, ru, en) in [
-                ("tide", "tide", "tide"),
+                ("grid", "сетка", "grid"),
                 ("digital", "цифры", "digital"),
                 ("analog", "стрелки", "analog"),
                 ("minimal", "минимум", "minimal"),
@@ -638,6 +557,7 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 (&mut cfg.animate, "анимация", "animation"),
                 (&mut cfg.mono, "моно", "mono"),
                 (&mut cfg.h24, "24 часа", "24 hour"),
+                (&mut cfg.follow_theme, "из темы", "follow theme"),
             ] {
                 theme::switch(ui, value, t);
                 ui.label(rt(t!(app.lang, ru, en), 12.5, t.muted));
@@ -646,42 +566,31 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
         });
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
-            ui.label(rt(t!(app.lang, "анимация", "animation"), 12.0, t.faint));
-            for (key, ru, en) in [
-                ("drift", "дрейф", "drift"),
-                ("pulse", "пульс", "pulse"),
-                ("off", "нет", "off"),
+            for (value, ru, en) in [
+                (&mut cfg.show_headset, "наушники", "headset"),
+                (&mut cfg.show_notifications, "уведомления", "notifications"),
             ] {
-                let active = cfg.anim == key;
-                if ui
-                    .selectable_label(active, rt(t!(app.lang, ru, en), 12.0, t.muted))
-                    .clicked()
-                {
-                    cfg.anim = key.to_string();
-                }
+                theme::switch(ui, value, t);
+                ui.label(rt(t!(app.lang, ru, en), 12.5, t.muted));
+                ui.add_space(8.0);
             }
-            ui.add_space(10.0);
-            ui.label(rt(t!(app.lang, "скорость", "speed"), 12.0, t.faint));
-            ui.add(
-                egui::Slider::new(&mut cfg.speed, 0.2..=3.0)
-                    .show_value(false)
-                    .trailing_fill(true),
-            );
-            ui.label(rt(format!("{:.1}×", cfg.speed), 11.5, t.faint).family(FontFamily::Monospace));
-            ui.add_space(10.0);
-            ui.label(rt(t!(app.lang, "размер", "size"), 12.0, t.faint));
-            ui.add(
-                egui::Slider::new(&mut cfg.font_scale, 0.6..=1.8)
-                    .show_value(false)
-                    .trailing_fill(true),
-            );
-            ui.label(
-                rt(format!("{:.0}%", cfg.font_scale * 100.0), 11.5, t.faint)
-                    .family(FontFamily::Monospace),
-            );
         });
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
+            ui.label(rt(t!(app.lang, "шрифт", "font"), 12.0, t.faint));
+            for (key, ru, en) in [
+                ("auto", "авто", "auto"),
+                ("wide", "широкий", "wide"),
+                ("mono", "моно", "mono"),
+            ] {
+                if ui
+                    .selectable_label(cfg.font == key, rt(t!(app.lang, ru, en), 12.0, t.muted))
+                    .clicked()
+                {
+                    cfg.font = key.to_string();
+                }
+            }
+            ui.add_space(10.0);
             ui.label(rt(t!(app.lang, "время", "position"), 12.0, t.faint));
             for (key, ru, en) in [
                 ("left", "слева", "left"),
@@ -695,16 +604,39 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     cfg.position = key.to_string();
                 }
             }
-            ui.add_space(10.0);
-            ui.label(rt(t!(app.lang, "луна", "moon"), 12.0, t.faint));
-            theme::switch(ui, &mut cfg.show_moon, t);
-            ui.add_space(8.0);
-            ui.label(rt(t!(app.lang, "волны", "waves"), 12.0, t.faint));
-            theme::switch(ui, &mut cfg.show_stripes, t);
-            ui.add_space(8.0);
-            ui.label(rt(t!(app.lang, "пузыри", "bubbles"), 12.0, t.faint));
-            theme::switch(ui, &mut cfg.show_bubbles, t);
         });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(rt(t!(app.lang, "анимация", "animation"), 12.0, t.faint));
+            for (key, ru, en) in [
+                ("drift", "дрейф", "drift"),
+                ("pulse", "пульс", "pulse"),
+                ("off", "нет", "off"),
+            ] {
+                if ui
+                    .selectable_label(cfg.anim == key, rt(t!(app.lang, ru, en), 12.0, t.muted))
+                    .clicked()
+                {
+                    cfg.anim = key.to_string();
+                }
+            }
+        });
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "скорость", "speed"),
+            &mut cfg.speed,
+            0.2..=3.0,
+            |v| format!("{v:.1}×"),
+        ) {}
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "размер", "size"),
+            &mut cfg.font_scale,
+            0.6..=1.8,
+            |v| format!("{:.0}%", v * 100.0),
+        ) {}
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(rt(t!(app.lang, "акцент", "accent"), 12.0, t.faint));
@@ -752,9 +684,10 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
         || cfg.mono != before.mono
         || cfg.h24 != before.h24
         || cfg.caption != before.caption
-        || cfg.show_moon != before.show_moon
-        || cfg.show_bubbles != before.show_bubbles
-        || cfg.show_stripes != before.show_stripes
+        || cfg.show_headset != before.show_headset
+        || cfg.show_notifications != before.show_notifications
+        || cfg.follow_theme != before.follow_theme
+        || cfg.font != before.font
         || cfg.position != before.position
         || cfg.accent != before.accent
         || cfg.bg_top != before.bg_top
@@ -763,11 +696,221 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
         || (cfg.font_scale - before.font_scale).abs() > f32::EPSILON
     {
         app.cfg.clock = cfg;
-        app.save();
+        app.save_soon();
     }
 }
 
+// ---------------------------------------------------------------- palette and chips
+
+struct Palette {
+    accent: Color32,
+    bg_top: Color32,
+    bg_bottom: Color32,
+}
+
+/// Three colours per face: the accent and the two background ends. `mono`
+/// keeps the clock in the theme ink, `follow_theme` takes the live palette, and
+/// otherwise the three fields of the config win.
+fn palette(cfg: &ClockCfg, t: &Tokens) -> Palette {
+    if cfg.mono {
+        Palette {
+            accent: t.ink,
+            bg_top: t.bg,
+            bg_bottom: t.bg,
+        }
+    } else if cfg.follow_theme {
+        Palette {
+            accent: t.accent,
+            bg_top: t.bg2,
+            bg_bottom: t.bg,
+        }
+    } else {
+        Palette {
+            accent: color(&cfg.accent, t.accent),
+            bg_top: color(&cfg.bg_top, t.bg2),
+            bg_bottom: color(&cfg.bg_bottom, t.bg),
+        }
+    }
+}
+
+/// The face of the big time. `auto` keeps each style's own look, `wide` is the
+/// humanist UI face and `mono` the technical one.
+fn face(cfg: &ClockCfg, natural: &str) -> FontFamily {
+    match cfg.font.as_str() {
+        "mono" => FontFamily::Monospace,
+        "wide" => FontFamily::Proportional,
+        _ => {
+            if natural == "mono" {
+                FontFamily::Monospace
+            } else {
+                FontFamily::Proportional
+            }
+        }
+    }
+}
+
+fn brightness(c: Color32) -> f32 {
+    0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32
+}
+
+/// Headset battery and a one-line notification summary, as hairline chips in
+/// the top-left corner of the canvas. Every part can be switched off.
+fn info_strip(ui: &Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face, pal: &Palette) {
+    if !cfg.show_headset && !cfg.show_notifications {
+        return;
+    }
+    let painter = ui.painter_at(rect);
+    let ink = if brightness(pal.bg_bottom) < 128.0 {
+        Color32::WHITE
+    } else {
+        t.strong
+    };
+    let text_font = FontId::new(10.5, FontFamily::Monospace);
+    let mut x = rect.left() + 12.0;
+    let y = rect.top() + 10.0;
+    // Leave the corner free for the full-screen button on the page.
+    let avail = (rect.width() - 60.0).max(80.0);
+
+    if cfg.show_headset {
+        if let Some((pct, name)) = f.headset {
+            let label = format!("{pct}% · {name}");
+            let cap = (avail * 0.5).max(64.0);
+            x += chip(
+                &painter,
+                x,
+                y,
+                theme::icon::HEADPHONES,
+                &label,
+                pal,
+                ink,
+                &text_font,
+                cap,
+            ) + 6.0;
+        }
+    }
+    if cfg.show_notifications && f.notices > 0 {
+        let text = match f.notice {
+            Some(title) => format!("{} · {title}", f.notices),
+            None => f.notices.to_string(),
+        };
+        let cap = (rect.right() - 12.0 - x).max(40.0);
+        chip(
+            &painter,
+            x,
+            y,
+            theme::icon::NOTIFICATIONS,
+            &text,
+            pal,
+            ink,
+            &text_font,
+            cap,
+        );
+    }
+}
+
+/// One chip: an accent glyph, then text, on a translucent panel of the clock
+/// background. Returns its width.
+#[allow(clippy::too_many_arguments)]
+fn chip(
+    painter: &egui::Painter,
+    x: f32,
+    y: f32,
+    icon: &str,
+    text: &str,
+    pal: &Palette,
+    ink: Color32,
+    text_font: &FontId,
+    max_w: f32,
+) -> f32 {
+    let label = fit(painter, text, text_font, (max_w - 36.0).max(0.0));
+    let measured = painter
+        .layout_no_wrap(label.clone(), text_font.clone(), ink)
+        .size()
+        .x;
+    let w = (10.0 + 14.0 + 6.0 + measured + 10.0).min(max_w.max(40.0));
+    let bg = Rect::from_min_size(pos2(x, y), vec2(w, 22.0));
+    painter.rect_filled(
+        bg,
+        0.0,
+        Color32::from_rgba_unmultiplied(
+            pal.bg_bottom.r(),
+            pal.bg_bottom.g(),
+            pal.bg_bottom.b(),
+            0xD2,
+        ),
+    );
+    painter.rect_stroke(
+        bg,
+        0.0,
+        Stroke::new(
+            1.0,
+            Color32::from_rgba_unmultiplied(pal.accent.r(), pal.accent.g(), pal.accent.b(), 0x60),
+        ),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        pos2(x + 10.0, y + 11.0),
+        Align2::LEFT_CENTER,
+        icon,
+        FontId::new(14.0, theme::icon_family()),
+        pal.accent,
+    );
+    painter.text(
+        pos2(x + 30.0, y + 11.0),
+        Align2::LEFT_CENTER,
+        label,
+        text_font.clone(),
+        ink,
+    );
+    w
+}
+
+/// Trim `text` (measuring with `font`) until it fits `max_w`, with an ellipsis.
+fn fit(painter: &egui::Painter, text: &str, font: &FontId, max_w: f32) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    let width = |probe: &str| {
+        painter
+            .layout_no_wrap(probe.to_owned(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+    };
+    if width(text) <= max_w {
+        return text.to_owned();
+    }
+    let mut cut: String = text.to_owned();
+    while !cut.is_empty() {
+        cut.pop();
+        let probe = format!("{cut}…");
+        if width(&probe) <= max_w {
+            return probe;
+        }
+    }
+    String::new()
+}
+
 // ---------------------------------------------------------------- helpers
+
+fn date_line(cfg: &ClockCfg, now: &theme::NowParts, f: &Face) -> String {
+    let mut line = String::new();
+    if cfg.date {
+        if cfg.weekday {
+            line.push_str(&weekday_name(f.lang, now.weekday));
+            line.push(' ');
+        }
+        line.push_str(&format!("{:02}.{:02}.{}", now.day, now.month, now.year));
+    }
+    if cfg.battery {
+        if let Some(bat) = f.battery {
+            if !line.is_empty() {
+                line.push_str(" · ");
+            }
+            line.push_str(&format!("{bat}%"));
+        }
+    }
+    line
+}
 
 fn time_text(cfg: &ClockCfg, now: &theme::NowParts) -> String {
     let mut out = if cfg.h24 {
@@ -809,51 +952,7 @@ fn weekday_name(lang: Lang, weekday: u32) -> &'static str {
     }
 }
 
-fn t2(lang: Lang, ru: &'static str, en: &'static str) -> &'static str {
-    match lang {
-        Lang::Ru => ru,
-        _ => en,
-    }
-}
-
 /// `RichText` under a local name so the control rows stay short.
 fn rt(text: impl Into<String>, size: f32, color: Color32) -> egui::RichText {
     egui::RichText::new(text.into()).size(size).color(color)
-}
-
-fn vgrad(painter: &egui::Painter, rect: Rect, top: Color32, bottom: Color32) {
-    if rect.height() <= 0.0 || rect.width() <= 0.0 {
-        return;
-    }
-    let steps = 48;
-    let h = rect.height() / steps as f32;
-    for i in 0..steps {
-        let k = i as f32 / (steps - 1) as f32;
-        let c = theme::mix(top, bottom, k);
-        painter.rect_filled(
-            Rect::from_min_size(
-                pos2(rect.left(), rect.top() + i as f32 * h),
-                vec2(rect.width(), h + 1.0),
-            ),
-            0.0,
-            c,
-        );
-    }
-}
-
-/// Draw text rotated clockwise around `pivot`, with its top-left at `top_left`.
-fn rotated_text(
-    painter: &egui::Painter,
-    pivot: Pos2,
-    top_left: Pos2,
-    text: &str,
-    font: FontId,
-    color: Color32,
-    angle: f32,
-) {
-    let v = top_left - pivot;
-    let (sin, cos) = angle.sin_cos();
-    let rotated = pivot + vec2(v.x * cos - v.y * sin, v.x * sin + v.y * cos);
-    let galley = painter.layout_no_wrap(text.to_owned(), font, color);
-    painter.add(TextShape::new(rotated, galley, color).with_angle(angle));
 }

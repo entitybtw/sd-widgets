@@ -436,6 +436,9 @@ pub struct Notification {
     pub summary: String,
     pub body: String,
     pub icon: String,
+    /// Optional picture carried with the notification, PNG in base64.
+    #[serde(default)]
+    pub image: String,
     pub urgency: u8,
     pub ts: u64,
     pub has_actions: bool,
@@ -1108,6 +1111,12 @@ pub struct ThemeCfg {
     pub arrow_size: f32,
     #[serde(default = "default_true")]
     pub dock: bool,
+    /// Dock glyph size in points.
+    #[serde(default = "default_dock_icon")]
+    pub dock_icon: f32,
+    /// Put the dock at the top edge instead of the bottom one.
+    #[serde(default)]
+    pub dock_top: bool,
     #[serde(default)]
     pub labels: bool,
     #[serde(default = "default_true")]
@@ -1139,6 +1148,9 @@ fn default_one() -> f32 {
 fn default_arrow_size() -> f32 {
     48.0
 }
+fn default_dock_icon() -> f32 {
+    17.0
+}
 fn default_tile_height() -> f32 {
     176.0
 }
@@ -1161,6 +1173,8 @@ impl Default for ThemeCfg {
             arrows: true,
             arrow_size: default_arrow_size(),
             dock: true,
+            dock_icon: default_dock_icon(),
+            dock_top: false,
             labels: false,
             glyphs: true,
             animations: true,
@@ -1495,42 +1509,10 @@ pub const PRESET_CATPPUCCIN_LATTE: &str = "\
 }
 ";
 
-/// Clock screen: a full-screen clock with several styles. The `tide` style
-/// follows the FLOW Tide lock screen (deep water, moon, tilted time, bubbles).
-pub const PRESET_TIDE: &str = "\
-/* sd-widgets · Tide (inspired by FLOW · Tide) */
-:root {
-  --bg: #0b2f6e;
-  --bg2: #04163f;
-  --card: #17438a;
-  --well: #10376f;
-  --ink: #f2f2f6;
-  --strong: #ffffff;
-  --muted: #a8acb8;
-  --faint: #7c8798;
-  --line: #1c4a94;
-  --line-strong: #2b63b8;
-  --accent: #3fd2ff;
-  --accent-soft: #79e0ff;
-  --radius: 0;
-  --light-bg: #eaf4ff;
-  --light-bg2: #dcecff;
-  --light-card: #ffffff;
-  --light-well: #e2efff;
-  --light-ink: #0b2f6e;
-  --light-strong: #04163f;
-  --light-muted: #3f5f8c;
-  --light-faint: #6b86a8;
-  --light-line: #c6dcf6;
-  --light-line-strong: #a8c8ee;
-  --light-accent: #0b6fc4;
-}
-";
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClockCfg {
-    /// tide, digital, analog or minimal
+    /// grid, digital, analog or minimal
     pub style: String,
     pub seconds: bool,
     pub date: bool,
@@ -1554,18 +1536,21 @@ pub struct ClockCfg {
     pub bg_bottom: String,
     /// A short line under the time, for example a name or a city.
     pub caption: String,
-    /// Tide decorations.
-    pub show_moon: bool,
-    pub show_bubbles: bool,
-    pub show_stripes: bool,
+    /// Headset battery and the latest notification, as chips on the face.
+    pub show_headset: bool,
+    pub show_notifications: bool,
     /// left, center or right: where the big time sits.
     pub position: String,
+    /// auto, wide or mono. `auto` follows the style's own face.
+    pub font: String,
+    /// Take the colours from the active theme instead of the three below.
+    pub follow_theme: bool,
 }
 
 impl Default for ClockCfg {
     fn default() -> Self {
         Self {
-            style: "tide".into(),
+            style: "grid".into(),
             seconds: true,
             date: true,
             weekday: true,
@@ -1576,14 +1561,15 @@ impl Default for ClockCfg {
             mono: false,
             h24: true,
             font_scale: 1.0,
-            accent: "#3fd2ff".into(),
-            bg_top: "#0e5fca".into(),
-            bg_bottom: "#020c28".into(),
+            accent: "#a6c8ff".into(),
+            bg_top: "#121820".into(),
+            bg_bottom: "#10141b".into(),
             caption: String::new(),
-            show_moon: true,
-            show_bubbles: true,
-            show_stripes: true,
+            show_headset: true,
+            show_notifications: true,
             position: "left".into(),
+            font: "auto".into(),
+            follow_theme: false,
         }
     }
 }
@@ -1594,7 +1580,7 @@ impl Default for ClockCfg {
 #[serde(default)]
 pub struct AudioDeckCfg {
     pub volume: u8,
-    /// 0..=3 extra confirmations before audio leaves the computer.
+    /// Extra confirmations before audio leaves the computer (0..=10).
     pub confirmations: u8,
     pub source: String,
     pub apps: Vec<String>,
@@ -1645,6 +1631,9 @@ pub struct DeckConfig {
     pub lang: String,
     #[serde(default = "default_true")]
     pub dark: bool,
+    /// Show a smooth in-app popup when a notification arrives from the PC.
+    #[serde(default = "default_true")]
+    pub notify_popup: bool,
     #[serde(default = "default_true")]
     pub grid: bool,
     #[serde(default)]
@@ -1697,6 +1686,7 @@ impl Default for DeckConfig {
             onboarding_done: false,
             lang: default_lang(),
             dark: true,
+            notify_popup: true,
             grid: true,
             style: ThemeCfg::default(),
             sound: SoundCfg::default(),
