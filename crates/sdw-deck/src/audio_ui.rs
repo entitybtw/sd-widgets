@@ -291,53 +291,50 @@ fn volume_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ),
             t.faint,
         ));
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "громкость", "volume"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let mut vol = app.cfg.audio.volume;
-            let resp = ui.add(egui::Slider::new(&mut vol, 0..=100).suffix("%"));
-            if resp.changed() {
-                app.cfg.audio.volume = vol;
-            }
-            if resp.drag_stopped() {
-                app.save();
-                if app.audio_player.is_some() {
-                    // Reconnect the local player with the new gain.
-                    if let Some(mut child) = app.audio_player.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                    spawn_player(app);
+        let mut vol = app.cfg.audio.volume as f32;
+        let (changed, released) = theme::slider_ex(
+            ui,
+            t,
+            t!(app.lang, "громкость", "volume"),
+            &mut vol,
+            0.0..=100.0,
+            |v| format!("{v:.0}%"),
+        );
+        if changed {
+            app.cfg.audio.volume = vol.round().clamp(0.0, 100.0) as u8;
+            app.save_soon();
+        }
+        if released {
+            app.save();
+            if app.audio_player.is_some() {
+                // Reconnect the local player with the new gain.
+                if let Some(mut child) = app.audio_player.take() {
+                    let _ = child.kill();
+                    let _ = child.wait();
                 }
+                spawn_player(app);
             }
-        });
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "подтверждений", "confirmations"))
-                    .size(13.0)
-                    .color(t.muted),
-            );
-            let mut n = app.cfg.audio.confirmations as u32;
-            let resp = ui.add(egui::DragValue::new(&mut n).range(0..=3));
-            if resp.changed() {
-                app.cfg.audio.confirmations = n.min(3) as u8;
-            }
-            if resp.drag_stopped() {
-                app.save();
-            }
-            ui.label(
-                RichText::new(t!(
-                    app.lang,
-                    "«вы точно хотите перевести звук?» — столько раз",
-                    "“are you sure about moving the sound?” — this many times"
-                ))
-                .size(11.0)
-                .color(t.faint),
-            );
-        });
+        }
+        let mut n = app.cfg.audio.confirmations as u32;
+        if theme::slider_u32(
+            ui,
+            t,
+            t!(app.lang, "подтверждений", "confirmations"),
+            &mut n,
+            0..=10,
+        ) {
+            app.cfg.audio.confirmations = n.min(10) as u8;
+            app.save_soon();
+        }
+        ui.label(
+            RichText::new(t!(
+                app.lang,
+                "«вы точно хотите перевести звук?» — столько раз",
+                "“are you sure about moving the sound?” — this many times"
+            ))
+            .size(11.0)
+            .color(t.faint),
+        );
         theme::small(
             ui,
             t!(
@@ -361,7 +358,7 @@ pub fn begin(app: &mut App) {
     if app.audio_starting {
         return;
     }
-    let n = app.cfg.audio.confirmations.min(3);
+    let n = app.cfg.audio.confirmations;
     if n > 0 {
         app.audio_confirm_left = n;
         app.audio_error.clear();
@@ -523,7 +520,7 @@ pub fn confirm_modal(app: &mut App, ctx: &egui::Context) {
         return;
     }
     let t = Tokens::get(ctx);
-    let total = app.cfg.audio.confirmations.min(3).max(1);
+    let total = app.cfg.audio.confirmations.max(1);
     let left = app.audio_confirm_left;
     let mut yes = false;
     let mut no = false;
