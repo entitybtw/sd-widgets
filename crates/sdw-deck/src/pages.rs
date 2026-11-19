@@ -40,6 +40,12 @@ fn stat(ui: &mut Ui, t: &Tokens, label: &str, value: &str, color: Color32) {
     });
 }
 
+fn hairline(ui: &mut Ui, t: &Tokens) {
+    let w = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 1.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 0.0, t.line);
+}
+
 fn age(ts_ms: u64, lang: Lang) -> String {
     if ts_ms == 0 {
         return String::new();
@@ -102,42 +108,165 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let status = app.status.clone();
     let monitor = monitor_state(app);
 
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(RichText::new(&host).size(30.0).strong().color(t.strong));
-        });
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let mut facts: Vec<(String, Color32)> = Vec::new();
-            facts.push((
-                if online {
-                    t!(app.lang, "онлайн", "online").to_string()
-                } else {
-                    t!(app.lang, "нет связи", "offline").to_string()
-                },
-                if online { t.good } else { t.bad },
-            ));
-            if let Some(s) = &status {
-                facts.push((
-                    format!(
-                        "viiper {}",
-                        if s.viiper.running { "on" } else { "off" }
+    let s = status.clone();
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    theme::dot(ui, if online { t.good } else { t.bad }, true);
+                    ui.label(RichText::new(&host).size(28.0).strong().color(t.strong));
+                });
+                let detail = match &s {
+                    Some(s) => format!(
+                        "{} · {} · viiper {} · {} {}",
+                        s.version,
+                        if online {
+                            t!(app.lang, "связь есть", "connected")
+                        } else {
+                            t!(app.lang, "нет связи", "offline")
+                        },
+                        if s.viiper.running { "on" } else { "off" },
+                        s.pads.len(),
+                        t!(app.lang, "падов", "pads")
                     ),
-                    if s.viiper.running { t.good } else { t.faint },
-                ));
-                facts.push((format!("{} pads", s.pads.len()), t.faint));
-            }
-            facts.push((
-                format!("{} {}", app.cfg.binds.len(), t!(app.lang, "биндов", "binds")),
-                t.faint,
-            ));
-            for (text, color) in facts.into_iter().rev() {
+                    None => t!(
+                        app.lang,
+                        "компьютер не выбран или выключен",
+                        "no computer selected or it is offline"
+                    )
+                    .to_string(),
+                };
                 ui.label(
-                    RichText::new(text)
+                    RichText::new(detail)
                         .family(FontFamily::Monospace)
                         .size(11.0)
-                        .color(color),
+                        .color(t.muted),
                 );
-                ui.add_space(12.0);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let gp = if app.gamepad_on {
+                        t!(app.lang, "выключить геймпад", "gamepad off")
+                    } else {
+                        t!(app.lang, "включить геймпад", "gamepad on")
+                    };
+                    if theme::primary(ui, gp, t).clicked() {
+                        app.set_gamepad_on(!app.gamepad_on);
+                    }
+                    let sc = if monitor.running {
+                        t!(app.lang, "остановить экран", "screen off")
+                    } else {
+                        t!(app.lang, "запустить экран", "screen on")
+                    };
+                    if theme::ghost(ui, sc, t).clicked() {
+                        app.toggle_monitor_default();
+                    }
+                    if theme::ghost(ui, t!(app.lang, "компьютеры", "computers"), t).clicked() {
+                        app.set_page(Page::Computers);
+                    }
+                });
+            });
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                let mut facts: Vec<(String, Color32)> = Vec::new();
+                facts.push((
+                    if online {
+                        t!(app.lang, "онлайн", "online").to_string()
+                    } else {
+                        t!(app.lang, "офлайн", "offline").to_string()
+                    },
+                    if online { t.good } else { t.bad },
+                ));
+                if let Some(s) = &s {
+                    facts.push((
+                        format!("{} {}", s.pads.len(), t!(app.lang, "падов", "pads")),
+                        t.faint,
+                    ));
+                }
+                facts.push((
+                    format!("{} {}", app.cfg.binds.len(), t!(app.lang, "биндов", "binds")),
+                    t.faint,
+                ));
+                for (text, color) in facts.into_iter().rev() {
+                    ui.label(
+                        RichText::new(text)
+                            .family(FontFamily::Monospace)
+                            .size(11.0)
+                            .color(color),
+                    );
+                    ui.add_space(8.0);
+                }
+            });
+        });
+        ui.add_space(10.0);
+        hairline(ui, t);
+        ui.add_space(10.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut items: Vec<(String, String, Color32)> = Vec::new();
+            items.push((
+                "gamepad".into(),
+                if app.gamepad_on {
+                    t!(app.lang, "в эфире", "live").to_string()
+                } else {
+                    t!(app.lang, "выкл", "off").to_string()
+                },
+                if app.gamepad_on { t.good } else { t.faint },
+            ));
+            items.push((
+                "screen".into(),
+                if monitor.running {
+                    format!("{}×{}", monitor.width, monitor.height)
+                } else {
+                    t!(app.lang, "выкл", "off").to_string()
+                },
+                if monitor.running { t.good } else { t.faint },
+            ));
+            items.push((
+                "viiper".into(),
+                s.as_ref()
+                    .map(|s| {
+                        if s.viiper.running {
+                            s.viiper.version.clone()
+                        } else {
+                            t!(app.lang, "выкл", "off").to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| "—".into()),
+                if s.as_ref().map(|s| s.viiper.running).unwrap_or(false) {
+                    t.good
+                } else {
+                    t.faint
+                },
+            ));
+            items.push((
+                t!(app.lang, "home assistant", "home assistant").to_string(),
+                s.as_ref()
+                    .map(|s| {
+                        if s.ha.connected {
+                            format!("{}", s.ha.entities)
+                        } else if s.ha.configured {
+                            t!(app.lang, "нет связи", "offline").to_string()
+                        } else {
+                            t!(app.lang, "не настроен", "not set").to_string()
+                        }
+                    })
+                    .unwrap_or_else(|| "—".into()),
+                if s.as_ref().map(|s| s.ha.connected).unwrap_or(false) {
+                    t.good
+                } else {
+                    t.faint
+                },
+            ));
+            items.push((
+                t!(app.lang, "уведомления", "notifications").to_string(),
+                if app.notif_unread > 0 {
+                    app.notif_unread.to_string()
+                } else {
+                    "0".into()
+                },
+                if app.notif_unread > 0 { t.warn } else { t.faint },
+            ));
+            for (label, value, color) in items {
+                stat(ui, t, &label, &value, color);
+                ui.add_space(26.0);
             }
         });
     });
@@ -1525,12 +1654,13 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
 }
 
+
 // ---------------------------------------------------------------- home assistant
 
 fn ha_glyph(domain: &str) -> &'static str {
     match domain {
         "light" => theme::icon::BULB,
-        "switch" => theme::icon::POWER,
+        "switch" | "input_boolean" => theme::icon::POWER,
         "sensor" => theme::icon::SENSORS,
         "binary_sensor" => theme::icon::CHECK,
         "climate" => theme::icon::THERMOSTAT,
@@ -1545,66 +1675,436 @@ fn ha_glyph(domain: &str) -> &'static str {
     }
 }
 
+fn ha_state_text(e: &HaEntity, lang: Lang) -> String {
+    match e.state.as_str() {
+        "on" => t!(lang, "вкл", "on").to_string(),
+        "off" => t!(lang, "выкл", "off").to_string(),
+        "open" => t!(lang, "открыто", "open").to_string(),
+        "closed" => t!(lang, "закрыто", "closed").to_string(),
+        "opening" => t!(lang, "открывается", "opening").to_string(),
+        "closing" => t!(lang, "закрывается", "closing").to_string(),
+        "playing" => t!(lang, "играет", "playing").to_string(),
+        "paused" => t!(lang, "пауза", "paused").to_string(),
+        "idle" => t!(lang, "ожидание", "idle").to_string(),
+        "unavailable" => t!(lang, "недоступно", "unavailable").to_string(),
+        "unknown" => t!(lang, "неизвестно", "unknown").to_string(),
+        "home" => t!(lang, "дома", "home").to_string(),
+        "not_home" => t!(lang, "не дома", "away").to_string(),
+        "" => "—".into(),
+        other => other.to_string(),
+    }
+}
+
+/// A square, hairline icon button used inside Home Assistant tiles.
+fn ha_icon_button(ui: &mut Ui, t: &Tokens, glyph: &str, active: bool, tip: &str) -> bool {
+    let color = if active { t.accent } else { t.muted };
+    let resp = ui.add(
+        egui::Button::new(theme::icon(glyph, 19.0, color))
+            .fill(if active { t.accent.gamma_multiply(0.14) } else { t.well })
+            .stroke(Stroke::new(
+                1.0,
+                if active { t.accent.gamma_multiply(0.5) } else { t.line },
+            ))
+            .corner_radius(CornerRadius::ZERO)
+            .min_size(Vec2::splat(34.0)),
+    );
+    resp.on_hover_text(tip).clicked()
+}
+
+fn ha_text_button(ui: &mut Ui, t: &Tokens, text: &str) -> bool {
+    ui.add(
+        egui::Button::new(RichText::new(text).size(15.0).color(t.ink))
+            .fill(t.well)
+            .stroke(Stroke::new(1.0, t.line))
+            .corner_radius(CornerRadius::ZERO)
+            .min_size(Vec2::splat(34.0)),
+    )
+    .clicked()
+}
+
+fn ha_toggle(e: &HaEntity, on: bool) -> HaCall {
+    let (domain, service) = match e.domain() {
+        "scene" | "script" => (e.domain().to_string(), "turn_on".to_string()),
+        "button" => ("button".to_string(), "press".to_string()),
+        _ => ("homeassistant".to_string(), if on { "turn_on" } else { "turn_off" }.to_string()),
+    };
+    HaCall {
+        domain,
+        service,
+        target: json!({ "entity_id": e.entity_id }),
+        data: serde_json::Value::Null,
+    }
+}
+
+fn ha_service(e: &HaEntity, service: &str, data: serde_json::Value) -> HaCall {
+    HaCall {
+        domain: e.domain().to_string(),
+        service: service.to_string(),
+        target: json!({ "entity_id": e.entity_id }),
+        data,
+    }
+}
+
+fn ha_card(
+    ui: &mut Ui,
+    t: &Tokens,
+    lang: Lang,
+    e: &HaEntity,
+    width: f32,
+    favorites: &[String],
+    calls: &mut Vec<HaCall>,
+    star: &mut Option<String>,
+) {
+    let on = e.is_on();
+    let accent = if on { t.accent } else { t.faint };
+    egui::Frame::new()
+        .fill(t.card)
+        .stroke(Stroke::new(
+            1.0,
+            if on { accent.gamma_multiply(0.45) } else { t.line },
+        ))
+        .corner_radius(CornerRadius::ZERO)
+        .inner_margin(Margin::same(13))
+        .show(ui, |ui| {
+            ui.set_width(width);
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(ha_glyph(e.domain()), 20.0, accent));
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(e.name()).size(14.0).strong().color(t.strong),
+                        )
+                        .truncate(),
+                    );
+                    ui.label(
+                        RichText::new(format!(
+                            "{} · {}",
+                            sdw_core::ha::domain_label(e.domain(), lang),
+                            ha_state_text(e, lang)
+                        ))
+                        .family(FontFamily::Monospace)
+                        .size(10.0)
+                        .color(t.faint),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let fav = favorites.contains(&e.entity_id);
+                    if ui
+                        .add(
+                            egui::Button::new(theme::icon(
+                                theme::icon::STAR,
+                                15.0,
+                                if fav { t.warn } else { t.faint },
+                            ))
+                            .fill(Color32::TRANSPARENT)
+                            .stroke(Stroke::NONE),
+                        )
+                        .clicked()
+                    {
+                        *star = Some(e.entity_id.clone());
+                    }
+                });
+            });
+            ui.add_space(4.0);
+
+            match e.domain() {
+                "light" => {
+                    let mut pct = e
+                        .brightness()
+                        .map(|b| (b as u32 * 100 / 255) as i32)
+                        .unwrap_or(if on { 100 } else { 0 });
+                    ui.horizontal(|ui| {
+                        if ha_icon_button(
+                            ui,
+                            t,
+                            theme::icon::POWER,
+                            on,
+                            t!(lang, "включить или выключить", "turn on or off"),
+                        ) {
+                            calls.push(ha_toggle(e, !on));
+                        }
+                        let r = ui.add(
+                            egui::Slider::new(&mut pct, 1..=100)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        );
+                        if r.drag_stopped() {
+                            calls.push(ha_service(
+                                e,
+                                "turn_on",
+                                json!({ "brightness": (pct as u32 * 255 / 100).min(255) }),
+                            ));
+                        }
+                        ui.label(
+                            RichText::new(format!("{pct}%"))
+                                .family(FontFamily::Monospace)
+                                .size(11.0)
+                                .color(t.faint),
+                        );
+                    });
+                }
+                "cover" => {
+                    let mut pos = e
+                        .cover_position()
+                        .unwrap_or(if e.is_open() { 100 } else { 0 })
+                        as i32;
+                    ui.horizontal(|ui| {
+                        if ha_icon_button(ui, t, theme::icon::ARROW_UP, false, t!(lang, "открыть", "open")) {
+                            calls.push(ha_service(e, "open_cover", serde_json::Value::Null));
+                        }
+                        if ha_icon_button(ui, t, theme::icon::STOP, false, t!(lang, "стоп", "stop")) {
+                            calls.push(ha_service(e, "stop_cover", serde_json::Value::Null));
+                        }
+                        if ha_icon_button(ui, t, theme::icon::ARROW_DOWN, false, t!(lang, "закрыть", "close")) {
+                            calls.push(ha_service(e, "close_cover", serde_json::Value::Null));
+                        }
+                        let r = ui.add(
+                            egui::Slider::new(&mut pos, 0..=100)
+                                .show_value(false)
+                                .trailing_fill(true),
+                        );
+                        if r.drag_stopped() {
+                            calls.push(ha_service(e, "set_cover_position", json!({ "position": pos })));
+                        }
+                        ui.label(
+                            RichText::new(format!("{pos}%"))
+                                .family(FontFamily::Monospace)
+                                .size(11.0)
+                                .color(t.faint),
+                        );
+                    });
+                }
+                "climate" => {
+                    let current = e.current_temperature();
+                    let mut target = e.target_temperature().or(current).unwrap_or(21.0);
+                    ui.horizontal(|ui| {
+                        if ha_text_button(ui, t, "−") {
+                            target = (target - 0.5).max(5.0);
+                            calls.push(ha_service(e, "set_temperature", json!({ "temperature": target })));
+                        }
+                        ui.label(
+                            RichText::new(format!("{target:.1}°"))
+                                .size(21.0)
+                                .strong()
+                                .color(t.strong),
+                        );
+                        if ha_text_button(ui, t, "+") {
+                            target = (target + 0.5).min(35.0);
+                            calls.push(ha_service(e, "set_temperature", json!({ "temperature": target })));
+                        }
+                        if let Some(c) = current {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} {c:.1}°",
+                                    t!(lang, "сейчас", "now")
+                                ))
+                                .family(FontFamily::Monospace)
+                                .size(11.0)
+                                .color(t.faint),
+                            );
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ha_icon_button(ui, t, theme::icon::POWER, on, t!(lang, "вкл/выкл", "on/off")) {
+                                calls.push(ha_service(
+                                    e,
+                                    if on { "turn_off" } else { "turn_on" },
+                                    serde_json::Value::Null,
+                                ));
+                            }
+                        });
+                    });
+                }
+                "media_player" => {
+                    if let Some(title) = e.media_title() {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(util::truncate(&title, 44))
+                                    .size(12.5)
+                                    .color(t.muted),
+                            )
+                            .truncate(),
+                        );
+                    }
+                    if let Some(artist) = e.media_artist() {
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(util::truncate(&artist, 44))
+                                    .size(11.0)
+                                    .color(t.faint),
+                            )
+                            .truncate(),
+                        );
+                    }
+                    ui.horizontal(|ui| {
+                        if ha_icon_button(ui, t, theme::icon::PREV, false, t!(lang, "назад", "previous")) {
+                            calls.push(ha_service(e, "media_previous_track", serde_json::Value::Null));
+                        }
+                        if ha_icon_button(ui, t, theme::icon::PLAY_PAUSE, e.state == "playing", t!(lang, "пауза", "play/pause")) {
+                            calls.push(ha_service(e, "media_play_pause", serde_json::Value::Null));
+                        }
+                        if ha_icon_button(ui, t, theme::icon::NEXT, false, t!(lang, "дальше", "next")) {
+                            calls.push(ha_service(e, "media_next_track", serde_json::Value::Null));
+                        }
+                        if let Some(vol) = e.attributes.get("volume_level").and_then(|v| v.as_f64()) {
+                            let mut pct = (vol * 100.0).round() as i32;
+                            let r = ui.add(
+                                egui::Slider::new(&mut pct, 0..=100)
+                                    .show_value(false)
+                                    .trailing_fill(true),
+                            );
+                            if r.drag_stopped() {
+                                calls.push(ha_service(
+                                    e,
+                                    "volume_set",
+                                    json!({ "volume_level": pct as f64 / 100.0 }),
+                                ));
+                            }
+                        }
+                    });
+                }
+                "lock" => {
+                    let locked = e.state == "locked";
+                    ui.horizontal(|ui| {
+                        if ha_icon_button(ui, t, if locked { theme::icon::LOCK } else { theme::icon::OPEN }, locked, t!(lang, "замок", "lock")) {
+                            calls.push(ha_service(
+                                e,
+                                if locked { "unlock" } else { "lock" },
+                                serde_json::Value::Null,
+                            ));
+                        }
+                        ui.label(
+                            RichText::new(ha_state_text(e, lang))
+                                .size(13.0)
+                                .color(t.muted),
+                        );
+                    });
+                }
+                "scene" | "script" | "button" => {
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new(t!(lang, "запустить", "run"))
+                                    .size(12.5)
+                                    .color(accent),
+                            )
+                            .fill(accent.gamma_multiply(0.12))
+                            .stroke(Stroke::new(1.0, accent.gamma_multiply(0.4)))
+                            .corner_radius(CornerRadius::ZERO),
+                        )
+                        .clicked()
+                    {
+                        calls.push(ha_toggle(e, true));
+                    }
+                }
+                "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker" => {
+                    let unit = e.unit();
+                    ui.label(
+                        RichText::new(format!(
+                            "{}{}",
+                            ha_state_text(e, lang),
+                            if unit.is_empty() {
+                                String::new()
+                            } else {
+                                format!(" {unit}")
+                            }
+                        ))
+                        .size(20.0)
+                        .strong()
+                        .color(if on { t.accent } else { t.strong }),
+                    );
+                }
+                _ => {
+                    if sdw_core::ha::is_controllable(e) {
+                        ui.horizontal(|ui| {
+                            if ha_icon_button(ui, t, theme::icon::POWER, on, t!(lang, "вкл/выкл", "on/off")) {
+                                calls.push(ha_toggle(e, !on));
+                            }
+                            ui.label(
+                                RichText::new(ha_state_text(e, lang))
+                                    .size(13.0)
+                                    .color(t.muted),
+                            );
+                        });
+                    } else {
+                        ui.label(
+                            RichText::new(ha_state_text(e, lang))
+                                .size(13.5)
+                                .color(t.muted),
+                        );
+                    }
+                }
+            }
+        });
+}
+
+#[derive(Clone)]
+enum HaRoom {
+    Favorites,
+    Area(String),
+    Unassigned,
+    All,
+}
+
 pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let ha = app
         .status
         .as_ref()
         .map(|s| s.ha.clone())
         .unwrap_or_default();
+    let favorites = ha.favorites.clone();
     page_title(
         ui,
         t,
         t!(app.lang, "home assistant", "home assistant"),
         t!(
             app.lang,
-            "свет, климат, медиа — удобными плитками, без браузера.",
-            "lights, climate, media — as friendly tiles, no browser."
+            "комнаты, свет, шторы и климат — плитками, без браузера.",
+            "rooms, lights, covers and climate — as tiles, no browser."
         ),
     );
 
     theme::card(ui, t, |ui| {
         ui.horizontal(|ui| {
-            ui.vertical(|ui| {
+            theme::dot(ui, if ha.connected { t.good } else { t.bad }, true);
+            ui.label(
+                RichText::new(if ha.connected {
+                    t!(app.lang, "подключено", "connected")
+                } else if ha.configured {
+                    t!(app.lang, "настроено, нет связи", "configured, offline")
+                } else {
+                    t!(app.lang, "не настроено", "not configured")
+                })
+                .size(16.0)
+                .strong()
+                .color(if ha.connected { t.good } else { t.strong }),
+            );
+            if ha.configured {
                 ui.label(
-                    RichText::new(if ha.connected {
-                        t!(app.lang, "подключено", "connected")
-                    } else if ha.configured {
-                        t!(app.lang, "настроено, нет связи", "configured, offline")
-                    } else {
-                        t!(app.lang, "не настроено", "not configured")
-                    })
-                    .size(17.0)
-                    .strong()
-                    .color(if ha.connected { t.good } else { t.strong }),
+                    RichText::new(format!(
+                        "{} · {} {} · {} {}",
+                        util::truncate(&ha.url, 40),
+                        ha.entities,
+                        t!(app.lang, "сущностей", "entities"),
+                        app.ha_rooms_count(),
+                        t!(app.lang, "комнат", "rooms")
+                    ))
+                    .family(FontFamily::Monospace)
+                    .size(10.5)
+                    .color(t.muted),
                 );
-                if ha.configured {
-                    ui.label(
-                        RichText::new(format!(
-                            "{} · {} {} · {}",
-                            util::truncate(&ha.url, 48),
-                            ha.entities,
-                            t!(app.lang, "сущностей", "entities"),
-                            if ha.error.is_empty() {
-                                t!(app.lang, "ok", "ok").to_string()
-                            } else {
-                                util::truncate(&ha.error, 60)
-                            }
-                        ))
-                        .family(FontFamily::Monospace)
-                        .size(11.5)
-                        .color(t.muted),
-                    );
-                }
-            });
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ha.configured {
-                    if theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked() {
-                        app.ha.last_fetch =
-                            std::time::Instant::now() - std::time::Duration::from_secs(60);
-                    }
+                if ha.configured
+                    && theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked()
+                {
+                    app.ha.last_fetch =
+                        std::time::Instant::now() - std::time::Duration::from_secs(60);
                 }
             });
         });
+        if ha.configured && !ha.error.is_empty() && !ha.connected {
+            ui.label(RichText::new(util::truncate(&ha.error, 90)).size(11.5).color(t.bad));
+        }
     });
 
     if !ha.configured {
@@ -1669,45 +2169,8 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         return;
     }
 
-    // favorites and search
-    let mut favorites = ha.favorites.clone();
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.add(
-            TextEdit::singleline(&mut app.ha.search)
-                .hint_text(t!(app.lang, "поиск по имени", "search by name"))
-                .desired_width(300.0),
-        );
-        if !favorites.is_empty()
-            && ui
-                .selectable_label(
-                    !app.ha.search.is_empty() && app.ha.search.starts_with("★"),
-                    t!(app.lang, "только избранное", "favorites only"),
-                )
-                .clicked()
-        {
-            if app.ha.search.starts_with("★") {
-                app.ha.search.clear();
-            } else {
-                app.ha.search = "★".into();
-            }
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                RichText::new(format!(
-                    "{} {}",
-                    app.ha.entities.len(),
-                    t!(app.lang, "всего", "total")
-                ))
-                .family(FontFamily::Monospace)
-                .size(11.5)
-                .color(t.faint),
-            );
-        });
-    });
-    ui.add_space(4.0);
-
     if app.ha.entities.is_empty() {
+        ui.add_space(8.0);
         theme::card(ui, t, |ui| {
             if app.ha.pending {
                 ui.spinner();
@@ -1726,190 +2189,184 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         return;
     }
 
-    let needle = app.ha.search.trim().trim_start_matches('★').to_lowercase();
-    let favorites_only = app.ha.search.starts_with('★');
-    let mut entities: Vec<&HaEntity> = app
+    // Room list: favourite pseudo-room, then Home Assistant areas, then the
+    // leftovers that are not assigned to any area.
+    let mut area_names: Vec<String> = app.ha.areas.clone();
+    for e in &app.ha.entities {
+        if !e.area.is_empty() && !area_names.contains(&e.area) {
+            area_names.push(e.area.clone());
+        }
+    }
+    area_names.sort_by_key(|a| a.to_lowercase());
+    area_names.dedup();
+    let unassigned = app.ha.entities.iter().any(|e| e.area.is_empty());
+    let mut rooms: Vec<(HaRoom, String)> = Vec::new();
+    if area_names.is_empty() && favorites.is_empty() {
+        rooms.push((HaRoom::All, t!(app.lang, "все устройства", "all devices").to_string()));
+    } else {
+        if !favorites.is_empty() {
+            rooms.push((
+                HaRoom::Favorites,
+                format!("★ {}", t!(app.lang, "избранное", "favorites")),
+            ));
+        }
+        for area in &area_names {
+            rooms.push((HaRoom::Area(area.clone()), area.clone()));
+        }
+        if unassigned {
+            rooms.push((
+                HaRoom::Unassigned,
+                t!(app.lang, "без комнаты", "no room").to_string(),
+            ));
+        }
+        if rooms.is_empty() {
+            rooms.push((HaRoom::All, t!(app.lang, "все устройства", "all devices").to_string()));
+        }
+    }
+    if app.ha.room >= rooms.len() {
+        app.ha.room = 0;
+    }
+    let room = rooms[app.ha.room].0.clone();
+    let needle = app.ha.search.trim().to_lowercase();
+    let searching = !needle.is_empty();
+
+    // Room pager: two square blue arrows, the room name and a dropdown.
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        if !searching {
+            let n = rooms.len();
+            let prev = if app.ha.room == 0 { n - 1 } else { app.ha.room - 1 };
+            if theme::nav_arrow(ui, t, theme::icon::ARROW_LEFT, n > 1).clicked() && n > 1 {
+                app.ha.room = prev;
+            }
+            egui::ComboBox::from_id_salt("ha-room")
+                .selected_text(RichText::new(rooms[app.ha.room].1.clone()).size(16.0).strong())
+                .width(280.0)
+                .show_ui(ui, |ui| {
+                    for (i, (_, label)) in rooms.iter().enumerate() {
+                        let count = app
+                            .ha
+                            .entities
+                            .iter()
+                            .filter(|e| match &rooms[i].0 {
+                                HaRoom::Favorites => favorites.contains(&e.entity_id),
+                                HaRoom::Area(a) => &e.area == a,
+                                HaRoom::Unassigned => e.area.is_empty(),
+                                HaRoom::All => true,
+                            })
+                            .count();
+                        ui.selectable_value(
+                            &mut app.ha.room,
+                            i,
+                            format!("{label} · {count}"),
+                        );
+                    }
+                });
+            if theme::nav_arrow(ui, t, theme::icon::ARROW_RIGHT, n > 1).clicked() && n > 1 {
+                app.ha.room = (app.ha.room + 1) % n;
+            }
+            ui.label(
+                RichText::new(format!("{} / {}", app.ha.room + 1, rooms.len()))
+                    .family(FontFamily::Monospace)
+                    .size(10.5)
+                    .color(t.faint),
+            );
+        } else {
+            ui.label(
+                RichText::new(format!(
+                    "{}: {}",
+                    t!(app.lang, "поиск", "search"),
+                    util::truncate(&app.ha.search, 40)
+                ))
+                .size(14.0)
+                .color(t.muted),
+            );
+            if theme::ghost(ui, t!(app.lang, "сбросить", "clear"), t).clicked() {
+                app.ha.search.clear();
+            }
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add(
+                TextEdit::singleline(&mut app.ha.search)
+                    .hint_text(t!(app.lang, "поиск по имени", "search by name"))
+                    .desired_width(240.0),
+            );
+        });
+    });
+    ui.add_space(6.0);
+
+    let mut entities: Vec<HaEntity> = app
         .ha
         .entities
         .iter()
         .filter(|e| {
-            let name = e.name().to_lowercase();
-            let id = e.entity_id.to_lowercase();
-            (needle.is_empty() || name.contains(&needle) || id.contains(&needle))
-                && (!favorites_only || favorites.contains(&e.entity_id))
+            if searching {
+                let name = e.name().to_lowercase();
+                name.contains(&needle) || e.entity_id.to_lowercase().contains(&needle)
+            } else {
+                match &room {
+                    HaRoom::Favorites => favorites.contains(&e.entity_id),
+                    HaRoom::Area(a) => &e.area == a,
+                    HaRoom::Unassigned => e.area.is_empty(),
+                    HaRoom::All => true,
+                }
+            }
         })
+        .cloned()
         .collect();
-    entities.sort_by_key(|e| {
-        (
-            !favorites.contains(&e.entity_id),
-            e.domain().to_string(),
-            e.name().to_lowercase(),
-        )
-    });
+    let priority = |d: &str| match d {
+        "light" => 0,
+        "cover" => 1,
+        "climate" => 2,
+        "media_player" => 3,
+        "lock" => 4,
+        "switch" | "input_boolean" => 5,
+        "fan" => 6,
+        "scene" | "script" | "button" => 7,
+        "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker" => 20,
+        _ => 10,
+    };
+    entities.sort_by_key(|e| (priority(e.domain()), e.name().to_lowercase()));
 
-    let mut toggle: Option<String> = None;
-    let mut brightness: Option<(String, u8)> = None;
+    if entities.is_empty() {
+        theme::card(ui, t, |ui| {
+            ui.label(
+                RichText::new(if searching {
+                    t!(app.lang, "ничего не найдено", "nothing found")
+                } else {
+                    t!(app.lang, "в этой комнате пока нет устройств", "no devices in this room yet")
+                })
+                .size(13.5)
+                .color(t.muted),
+            );
+        });
+        return;
+    }
+
+    let mut calls: Vec<HaCall> = Vec::new();
     let mut star: Option<String> = None;
 
     ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(10.0, 10.0);
         let width = ui.available_width();
-        let cols = if width > 920.0 { 3 } else if width > 620.0 { 2 } else { 1 };
+        let cols = if width > 940.0 { 3 } else if width > 620.0 { 2 } else { 1 };
         let w = ((width - 10.0 * (cols as f32 - 1.0)) / cols as f32).max(170.0);
-        for e in entities {
-            let on = e.is_on();
-            let accent = if on { t.accent } else { t.faint };
-            egui::Frame::new()
-                .fill(t.card)
-                .stroke(Stroke::new(1.0, if on { accent.gamma_multiply(0.45) } else { t.line }))
-                .corner_radius(CornerRadius::ZERO)
-                .inner_margin(Margin::same(14))
-                .show(ui, |ui| {
-                    ui.set_width(w - 28.0);
-                    ui.horizontal(|ui| {
-                        ui.label(theme::icon(ha_glyph(e.domain()), 19.0, accent));
-                        ui.vertical(|ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(e.name()).size(14.0).strong().color(t.strong),
-                                )
-                                .truncate(),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "{} · {}",
-                                    sdw_core::ha::domain_label(e.domain(), app.lang),
-                                    util::truncate(&e.state, 18)
-                                ))
-                                .family(FontFamily::Monospace)
-                                .size(10.5)
-                                .color(t.faint),
-                            );
-                        });
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if favorites.contains(&e.entity_id) {
-                                if ui
-                                    .add(
-                                        egui::Button::new(theme::icon(
-                                            theme::icon::STAR,
-                                            16.0,
-                                            t.warn,
-                                        ))
-                                        .fill(Color32::TRANSPARENT)
-                                        .stroke(Stroke::NONE),
-                                    )
-                                    .clicked()
-                                {
-                                    star = Some(e.entity_id.clone());
-                                }
-                            } else if ui
-                                .add(
-                                    egui::Button::new(theme::icon(
-                                        theme::icon::STAR,
-                                        16.0,
-                                        t.faint,
-                                    ))
-                                    .fill(Color32::TRANSPARENT)
-                                    .stroke(Stroke::NONE),
-                                )
-                                .clicked()
-                            {
-                                star = Some(e.entity_id.clone());
-                            }
-                        });
-                    });
-                    if sdw_core::ha::is_controllable(e) {
-                        ui.add_space(3.0);
-                        ui.horizontal(|ui| {
-                            let label = if on {
-                                t!(app.lang, "выключить", "turn off")
-                            } else {
-                                t!(app.lang, "включить", "turn on")
-                            };
-                            if ui
-                                .add(
-                                    egui::Button::new(RichText::new(label).size(12.0).color(accent))
-                                        .fill(accent.gamma_multiply(0.12))
-                                        .stroke(Stroke::new(1.0, accent.gamma_multiply(0.4)))
-                                        .corner_radius(CornerRadius::ZERO),
-                                )
-                                .clicked()
-                            {
-                                toggle = Some(e.entity_id.clone());
-                            }
-                            if let Some(b) = e.brightness() {
-                                let mut v = b;
-                                let r = ui.add(
-                                    egui::Slider::new(&mut v, 0..=255)
-                                        .show_value(false),
-                                );
-                                if r.drag_stopped() {
-                                    brightness = Some((e.entity_id.clone(), v));
-                                }
-                                ui.label(
-                                    RichText::new(format!("{}%", (v as u32 * 100 / 255)))
-                                        .family(FontFamily::Monospace)
-                                        .size(10.5)
-                                        .color(t.faint),
-                                );
-                            }
-                        });
-                    } else if let Some(temp) = e.temperature() {
-                        ui.label(
-                            RichText::new(format!("{temp:.1}°"))
-                                .size(20.0)
-                                .strong()
-                                .color(t.warn),
-                        );
-                    } else if let Some(media) = e.media_title() {
-                        ui.label(
-                            RichText::new(util::truncate(&media, 40))
-                                .size(12.5)
-                                .color(t.muted),
-                        );
-                        if let Some(artist) = e.media_artist() {
-                            ui.label(
-                                RichText::new(util::truncate(&artist, 40))
-                                    .size(11.0)
-                                    .color(t.faint),
-                            );
-                        }
-                    }
-                });
-            ui.add_space(2.0);
+        for e in &entities {
+            ui.push_id(e.entity_id.as_str(), |ui| {
+                ha_card(ui, t, app.lang, e, w - 26.0, &favorites, &mut calls, &mut star);
+            });
         }
     });
 
-    if let Some(id) = toggle {
-        if let Some(e) = app.ha.entities.iter().find(|e| e.entity_id == id).cloned() {
-            let domain = e.domain().to_string();
-            let service = if matches!(domain.as_str(), "scene" | "script" | "button") {
-                "turn_on".to_string()
-            } else if e.is_on() {
-                "turn_off".to_string()
-            } else {
-                "turn_on".to_string()
-            };
-            app.ha_call(HaCall {
-                domain,
-                service,
-                target: json!({ "entity_id": e.entity_id }),
-                data: serde_json::Value::Null,
-            });
-            app.ha.last_fetch =
-                std::time::Instant::now() - std::time::Duration::from_secs(60);
-        }
+    for call in calls {
+        app.ha_call(call);
     }
-    if let Some((id, value)) = brightness {
-        if let Some(e) = app.ha.entities.iter().find(|e| e.entity_id == id).cloned() {
-            app.ha_call(HaCall {
-                domain: "light".into(),
-                service: "turn_on".into(),
-                target: json!({ "entity_id": e.entity_id }),
-                data: json!({ "brightness": value }),
-            });
-        }
+    if !entities.is_empty() {
+        app.ha.last_fetch = std::time::Instant::now() - std::time::Duration::from_secs(3);
     }
+
     if let Some(id) = star {
+        let mut favorites = favorites.clone();
         if favorites.contains(&id) {
             favorites.retain(|f| f != &id);
         } else {
@@ -1929,6 +2386,127 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
 }
 
 // ---------------------------------------------------------------- settings
+
+fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    let info = app.update.info.clone();
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(t!(app.lang, "обновления", "updates"))
+                    .size(16.0)
+                    .strong()
+                    .color(t.strong),
+            );
+            theme::chip(ui, &format!("v{}", VERSION), t.faint);
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::ghost(ui, t!(app.lang, "проверить", "check"), t).clicked() {
+                    app.check_updates();
+                }
+            });
+        });
+        ui.label(
+            RichText::new("git.entitybtw.ru · entitybtw/sd-widgets")
+                .family(FontFamily::Monospace)
+                .size(10.5)
+                .color(t.faint),
+        );
+        if app.update.checking {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(
+                    RichText::new(t!(app.lang, "проверяю релизы…", "checking releases…"))
+                        .size(12.5)
+                        .color(t.muted),
+                );
+            });
+        }
+        if !app.update.error.is_empty() {
+            ui.label(RichText::new(&app.update.error).size(12.0).color(t.bad));
+        }
+        if let Some(info) = info {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if info.newer {
+                    theme::chip(
+                        ui,
+                        &format!("{} → {}", info.current, info.latest),
+                        t.good,
+                    );
+                } else {
+                    theme::chip(ui, t!(app.lang, "последняя версия", "up to date"), t.good);
+                }
+                ui.label(
+                    RichText::new(info.published.chars().take(10).collect::<String>())
+                        .family(FontFamily::Monospace)
+                        .size(10.5)
+                        .color(t.faint),
+                );
+            });
+            if info.newer {
+                if !info.notes.is_empty() {
+                    ui.label(
+                        RichText::new(util::truncate(&info.notes, 420))
+                            .size(11.5)
+                            .color(t.muted),
+                    );
+                }
+                ui.horizontal(|ui| {
+                    if app.update.downloading {
+                        let done = app.update.progress.load(std::sync::atomic::Ordering::Relaxed);
+                        let total = app.update.total.max(1);
+                        ui.add(
+                            egui::ProgressBar::new(
+                                (done as f32 / total as f32).clamp(0.0, 1.0),
+                            )
+                            .desired_width(240.0)
+                            .text(format!("{}%", done * 100 / total)),
+                        );
+                    } else if theme::primary(
+                        ui,
+                        t!(app.lang, "скачать обновление", "download update"),
+                        t,
+                    )
+                    .clicked()
+                    {
+                        app.download_update();
+                    }
+                    if theme::ghost(ui, t!(app.lang, "страница релиза", "release page"), t).clicked()
+                    {
+                        let _ = util::open_url(&info.page);
+                    }
+                });
+            }
+            if !app.update.path.is_empty() {
+                ui.label(
+                    RichText::new(&app.update.path)
+                        .family(FontFamily::Monospace)
+                        .size(10.5)
+                        .color(t.muted),
+                );
+                ui.horizontal(|ui| {
+                    if theme::ghost(
+                        ui,
+                        t!(app.lang, "установить", "install"),
+                        t,
+                    )
+                    .clicked()
+                    {
+                        let path = app.update.path.clone();
+                        app.spawn(move || {
+                            Task::Installed(sdw_core::update::install(std::path::Path::new(&path)))
+                        });
+                    }
+                    if theme::ghost(ui, t!(app.lang, "открыть папку", "open folder"), t).clicked()
+                    {
+                        let _ = util::open_url(
+                            &sdw_core::update::updates_dir().display().to_string(),
+                        );
+                    }
+                });
+            }
+        }
+    });
+}
 
 pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
     page_title(
@@ -2105,6 +2683,9 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             .color(t.faint),
         );
     });
+
+    ui.add_space(8.0);
+    updates_card(app, ui, t);
 
     ui.add_space(8.0);
     theme::card(ui, t, |ui| {

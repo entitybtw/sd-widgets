@@ -13,6 +13,8 @@ use eframe::egui::{
 use sdw_core::model::*;
 use sdw_core::{t, Lang};
 use std::collections::HashSet;
+use sdw_core::update::{self, UpdateInfo};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -75,6 +77,9 @@ enum TaskResult {
     Msg(Result<String, String>),
     Pad(Result<PadCreated, String>),
     Monitor(Result<MonitorStatus, String>),
+    Update(Result<UpdateInfo, String>),
+    Updated(Result<(String, u64), String>),
+    Installed(Result<String, String>),
 }
 
 #[derive(Clone)]
@@ -177,6 +182,17 @@ pub struct App {
     // settings
     name_edit: String,
 
+    // updates
+    update_info: Option<UpdateInfo>,
+    update_error: String,
+    update_checking: bool,
+    update_downloading: bool,
+    update_progress: Arc<AtomicU64>,
+    update_total: u64,
+    update_path: String,
+    last_update_check: Instant,
+    update_auto_notified: bool,
+
     // install
     install_sel: HashSet<String>,
     install_sudo: String,
@@ -269,6 +285,15 @@ impl App {
             show_pass: false,
             new_token: None,
             name_edit: cfg.name.clone(),
+            update_info: None,
+            update_error: String::new(),
+            update_checking: false,
+            update_downloading: false,
+            update_progress: Arc::new(AtomicU64::new(0)),
+            update_total: 0,
+            update_path: String::new(),
+            last_update_check: Instant::now() - Duration::from_secs(86_400),
+            update_auto_notified: false,
             install_sel,
             install_sudo: String::new(),
             install_components: components,
@@ -310,6 +335,12 @@ impl App {
                 self.toast = None;
             }
         }
+        if !self.update_checking
+            && self.last_update_check.elapsed() > Duration::from_secs(6 * 3600)
+        {
+            self.last_update_check = Instant::now();
+            self.check_updates();
+        }
         while let Ok(task) = self.task_rx.try_recv() {
             match task {
                 TaskResult::Msg(Ok(m)) => self.toast(m, true),
@@ -333,8 +364,72 @@ impl App {
                     self.screen.step = 3;
                 }
                 TaskResult::Monitor(Err(e)) => self.toast(e, false),
+                TaskResult::Update(Ok(info)) => {
+                    self.update_checking = false;
+                    self.update_error.clear();
+                    if info.newer && !self.update_auto_notified {
+                        self.update_auto_notified = true;
+                        self.toast(
+                            format!(
+                                "доступно обновление {} (сейчас {})",
+                                info.latest, info.current
+                            ),
+                            true,
+                        );
+                    }
+                    self.update_info = Some(info);
+                }
+                TaskResult::Update(Err(e)) => {
+                    self.update_checking = false;
+                    self.update_error = e;
+                }
+                TaskResult::Updated(Ok((path, size))) => {
+                    self.update_downloading = false;
+                    self.update_path = path.clone();
+                    self.update_total = size;
+                    self.toast("обновление скачано", true);
+                }
+                TaskResult::Updated(Err(e)) => {
+                    self.update_downloading = false;
+                    self.toast(format!("скачивание: {e}"), false);
+                }
+                TaskResult::Installed(Ok(msg)) => self.toast(msg, true),
+                TaskResult::Installed(Err(e)) => self.toast(format!("установка: {e}"), false),
             }
         }
+    }
+
+    fn check_updates(&mut self) {
+        if self.update_checking {
+            return;
+        }
+        self.update_checking = true;
+        self.update_error.clear();
+        self.spawn(|| TaskResult::Update(update::check()));
+    }
+
+    fn download_update(&mut self) {
+        let Some(info) = self.update_info.clone() else {
+            return;
+        };
+        let Some(asset) = info.asset_for("sdw-daemon").cloned() else {
+            self.toast("в релизе нет файла для этого компьютера", false);
+            return;
+        };
+        if self.update_downloading {
+            return;
+        }
+        self.update_downloading = true;
+        self.update_total = asset.size;
+        self.update_progress = Arc::new(AtomicU64::new(0));
+        let progress = self.update_progress.clone();
+        self.spawn(move || {
+            let dest = update::updates_dir().join(&asset.name);
+            match update::download(&asset, &dest, progress) {
+                Ok(n) => TaskResult::Updated(Ok((dest.display().to_string(), n))),
+                Err(e) => TaskResult::Updated(Err(e)),
+            }
+        });
     }
 
     fn set_lang(&mut self, lang: Lang) {
@@ -1416,6 +1511,15 @@ impl App {
                     if s.viiper.running { "running" } else { "off" },
                     if s.viiper.running { t.good } else { t.bad },
                 );
+                tag(
+                    ui,
+                    if s.viiper.password_set {
+                        t!(self.lang, "ключ есть", "key found")
+                    } else {
+                        t!(self.lang, "без пароля", "no key")
+                    },
+                    if s.viiper.password_set { t.good } else { t.muted },
+                );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if s.viiper.running {
                         if ghost(ui, "restart", t).clicked() {
@@ -1461,7 +1565,23 @@ impl App {
                     self.save(|c| c.viiper.password = pass);
                     self.toast(t!(self.lang, "пароль viiper сохранён", "viiper password saved"), true);
                 }
-                small(ui, &s.viiper.key_path, t.faint);
+                small(
+                    ui,
+                    &format!(
+                        "{} · {}",
+                        s.viiper.key_path,
+                        if s.viiper.password_set {
+                            t!(self.lang, "ключ найден", "key found")
+                        } else {
+                            t!(
+                                self.lang,
+                                "локальный доступ без пароля — это нормально",
+                                "localhost works without a key — that is fine"
+                            )
+                        }
+                    ),
+                    t.faint,
+                );
             });
         });
         ui.add_space(10.0);
@@ -1662,6 +1782,9 @@ impl App {
                 );
                 if !s.monitor.last_error.is_empty() {
                     small(ui, &s.monitor.last_error, t.bad);
+                }
+                if !s.monitor.note.is_empty() {
+                    small(ui, &s.monitor.note, t.warn);
                 }
                 ui.add_space(8.0);
                 if let Some(tex) = &self.frame_tex {
@@ -1895,6 +2018,9 @@ impl App {
                     ui.add_space(6.0);
                     if !s.monitor.last_error.is_empty() && !s.monitor.running {
                         small(ui, &s.monitor.last_error, t.bad);
+                    }
+                    if !s.monitor.note.is_empty() {
+                        small(ui, &s.monitor.note, t.warn);
                     }
                     ui.horizontal(|ui| {
                         if primary(ui, t!(self.lang, "запустить экран", "start the screen"), t).clicked() {
@@ -2564,6 +2690,95 @@ impl App {
         });
     }
 
+    fn updates_card(&mut self, ui: &mut Ui, t: &Tokens) {
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(t!(self.lang, "обновления", "updates")).size(15.0).strong());
+                tag(ui, &format!("v{}", VERSION), t.muted);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ghost(ui, t!(self.lang, "проверить", "check"), t).clicked() {
+                        self.check_updates();
+                    }
+                });
+            });
+            small(
+                ui,
+                &format!("git.entitybtw.ru · entitybtw/sd-widgets · {}", VERSION),
+                t.faint,
+            );
+            if self.update_checking {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    small(ui, t!(self.lang, "проверяю релизы…", "checking releases…"), t.muted);
+                });
+            }
+            if !self.update_error.is_empty() {
+                small(ui, &self.update_error, t.bad);
+            }
+            if let Some(info) = self.update_info.clone() {
+                ui.add_space(4.0);
+                divider(ui);
+                ui.horizontal(|ui| {
+                    if info.newer {
+                        tag(ui, &format!("{} → {}", info.current, info.latest), t.good);
+                    } else {
+                        tag(ui, t!(self.lang, "последняя версия", "up to date"), t.good);
+                    }
+                    small(ui, &info.published.chars().take(10).collect::<String>(), t.faint);
+                });
+                if info.newer {
+                    if !info.notes.is_empty() {
+                        ui.label(
+                            RichText::new(sdw_core::util::truncate(&info.notes, 420))
+                                .size(11.5)
+                                .color(t.muted),
+                        );
+                    }
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        if self.update_downloading {
+                            let done = self.update_progress.load(Ordering::Relaxed);
+                            let total = self.update_total.max(1);
+                            ui.add(
+                                egui::ProgressBar::new((done as f32 / total as f32).clamp(0.0, 1.0))
+                                    .desired_width(260.0)
+                                    .text(format!("{}%", done * 100 / total)),
+                            );
+                        } else if primary(
+                            ui,
+                            t!(self.lang, "скачать обновление", "download update"),
+                            t,
+                        )
+                        .clicked()
+                        {
+                            self.download_update();
+                        }
+                        if ghost(ui, t!(self.lang, "страница релиза", "release page"), t).clicked() {
+                            let _ = sdw_core::util::open_url(&info.page);
+                        }
+                    });
+                }
+                if !self.update_path.is_empty() {
+                    mono(ui, &self.update_path, t.muted);
+                    ui.horizontal(|ui| {
+                        if ghost(ui, t!(self.lang, "установить", "install"), t).clicked() {
+                            let path = self.update_path.clone();
+                            self.spawn(move || {
+                                TaskResult::Installed(update::install(std::path::Path::new(&path)))
+                            });
+                        }
+                        if ghost(ui, t!(self.lang, "открыть папку", "open folder"), t).clicked() {
+                            let _ = sdw_core::util::open_url(
+                                &update::updates_dir().display().to_string(),
+                            );
+                        }
+                    });
+                }
+            }
+        });
+        ui.add_space(10.0);
+    }
+
     fn settings_ui(&mut self, ui: &mut Ui, t: &Tokens) {
         let cfg = self.state.cfg();
         self.page_header(
@@ -2647,6 +2862,7 @@ impl App {
             });
         });
         ui.add_space(10.0);
+        self.updates_card(ui, t);
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("sd-widgets").size(15.0).strong());

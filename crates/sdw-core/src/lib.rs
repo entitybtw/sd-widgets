@@ -8,6 +8,7 @@ pub mod ha;
 pub mod i18n;
 pub mod model;
 pub mod udp;
+pub mod update;
 pub mod util;
 
 pub use i18n::{tr, Lang};

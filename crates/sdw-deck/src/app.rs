@@ -12,10 +12,11 @@ use eframe::egui::{
 use sdw_core::api::{self, Client};
 use sdw_core::model::*;
 use sdw_core::udp::GamepadState;
+use sdw_core::update::{self, UpdateInfo};
 use sdw_core::{t, Lang};
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, sync_channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -140,6 +141,8 @@ impl Drop for StreamFeed {
 
 pub struct HaState {
     pub entities: Vec<HaEntity>,
+    pub areas: Vec<String>,
+    pub room: usize,
     pub search: String,
     pub url: String,
     pub token: String,
@@ -148,6 +151,18 @@ pub struct HaState {
     pub pending: bool,
     pub error: String,
     pub last_fetch: Instant,
+}
+
+pub struct UpdateState {
+    pub info: Option<UpdateInfo>,
+    pub error: String,
+    pub checking: bool,
+    pub downloading: bool,
+    pub progress: Arc<AtomicU64>,
+    pub total: u64,
+    pub path: String,
+    pub last_check: Instant,
+    pub notified: bool,
 }
 
 pub struct BindsState {
@@ -171,6 +186,9 @@ pub enum Task {
     MonitorStopped(Result<MonitorStatus, String>),
     Notifications(Result<Vec<Notification>, String>),
     Ha(Result<HaStates, String>),
+    Update(Result<UpdateInfo, String>),
+    Updated(Result<(String, u64), String>),
+    Installed(Result<String, String>),
     Msg(Result<String, String>),
 }
 
@@ -221,6 +239,7 @@ pub struct App {
     pub stream: StreamState,
     pub ha: HaState,
     pub binds: BindsState,
+    pub update: UpdateState,
     pub settings_name: String,
 
     pub osk_open: bool,
@@ -324,6 +343,8 @@ impl App {
             },
             ha: HaState {
                 entities: Vec::new(),
+                areas: Vec::new(),
+                room: 0,
                 search: String::new(),
                 url: String::new(),
                 token: String::new(),
@@ -337,6 +358,17 @@ impl App {
                 editor: None,
                 capture: false,
                 filter: String::new(),
+            },
+            update: UpdateState {
+                info: None,
+                error: String::new(),
+                checking: false,
+                downloading: false,
+                progress: Arc::new(AtomicU64::new(0)),
+                total: 0,
+                path: String::new(),
+                last_check: Instant::now() - Duration::from_secs(86_400),
+                notified: false,
             },
             settings_name: cfg.device_name.clone(),
             osk_open: false,
@@ -898,6 +930,109 @@ impl App {
         }
     }
 
+    /// One-tap start/stop for the extra screen, used on the home page.
+    pub fn toggle_monitor_default(&mut self) {
+        let Some(c) = self.client() else {
+            self.toast(
+                t!(self.lang, "сначала подключите компьютер", "connect a computer first"),
+                false,
+            );
+            return;
+        };
+        let monitor = self.monitor();
+        if monitor.running {
+            self.spawn(move || Task::MonitorStopped(c.stop_monitor().map_err(|e| e.to_string())));
+            return;
+        }
+        let req = MonitorStart {
+            mode: self.stream.mode,
+            backend: self.stream.backend,
+            position: self.stream.position,
+            output: monitor.output.clone(),
+            width: self.stream.width,
+            height: self.stream.height,
+            fps: self.stream.fps,
+            quality: self.stream.quality,
+            input_enabled: self.stream.input,
+            sudo_password: String::new(),
+        };
+        self.spawn(move || Task::Monitor(c.start_monitor(&req).map_err(|e| e.to_string())));
+    }
+
+    pub fn check_updates(&mut self) {
+        if self.update.checking {
+            return;
+        }
+        self.update.checking = true;
+        self.update.error.clear();
+        self.spawn(|| Task::Update(update::check()));
+    }
+
+    pub fn download_update(&mut self) {
+        if self.update.downloading {
+            return;
+        }
+        let Some(info) = self.update.info.clone() else {
+            return;
+        };
+        let Some(asset) = info.asset_for("sdw-deck").cloned() else {
+            self.toast(
+                t!(self.lang, "в релизе нет файла для дека", "no deck file in the release"),
+                false,
+            );
+            return;
+        };
+        self.update.downloading = true;
+        self.update.total = asset.size;
+        self.update.progress = Arc::new(AtomicU64::new(0));
+        let progress = self.update.progress.clone();
+        self.spawn(move || {
+            let dest = update::updates_dir().join(&asset.name);
+            match update::download(&asset, &dest, progress) {
+                Ok(n) => Task::Updated(Ok((dest.display().to_string(), n))),
+                Err(e) => Task::Updated(Err(e)),
+            }
+        });
+    }
+
+    fn maybe_check_updates(&mut self) {
+        if self.update.last_check.elapsed() > Duration::from_secs(6 * 3600) {
+            self.update.last_check = Instant::now();
+            self.check_updates();
+        }
+    }
+
+    pub fn ha_rooms_count(&self) -> usize {
+        let mut areas: Vec<&str> = self
+            .ha
+            .areas
+            .iter()
+            .map(String::as_str)
+            .chain(
+                self.ha
+                    .entities
+                    .iter()
+                    .map(|e| e.area.as_str())
+                    .filter(|a| !a.is_empty()),
+            )
+            .collect();
+        areas.sort_unstable();
+        areas.dedup();
+        let mut n = areas.len();
+        if self
+            .status
+            .as_ref()
+            .map(|s| !s.ha.favorites.is_empty())
+            .unwrap_or(false)
+        {
+            n += 1;
+        }
+        if self.ha.entities.iter().any(|e| e.area.is_empty()) {
+            n += 1;
+        }
+        n.max(1)
+    }
+
     pub fn ha_call(&mut self, call: HaCall) {
         let Some(c) = self.client() else {
             return;
@@ -1280,7 +1415,9 @@ impl App {
                 self.toast(e, false);
             }
             Task::Monitor(Ok(status)) => {
-                if status.running {
+                if status.running && !status.note.is_empty() {
+                    self.toast(status.note.clone(), true);
+                } else if status.running {
                     self.toast(
                         format!(
                             "{} · {}",
@@ -1307,6 +1444,43 @@ impl App {
                 self.toast(t!(self.lang, "экран остановлен", "screen stopped"), true);
             }
             Task::MonitorStopped(Err(e)) => self.toast(e, false),
+            Task::Update(Ok(info)) => {
+                self.update.checking = false;
+                self.update.error.clear();
+                if info.newer && !self.update.notified {
+                    self.update.notified = true;
+                    self.toast(
+                        format!(
+                            "{} {} · {} {}",
+                            t!(self.lang, "доступно обновление", "update available"),
+                            info.latest,
+                            t!(self.lang, "сейчас", "current"),
+                            info.current
+                        ),
+                        true,
+                    );
+                }
+                self.update.info = Some(info);
+            }
+            Task::Update(Err(e)) => {
+                self.update.checking = false;
+                self.update.error = e;
+            }
+            Task::Updated(Ok((path, size))) => {
+                self.update.downloading = false;
+                self.update.total = size;
+                self.update.path = path;
+                self.toast(
+                    t!(self.lang, "обновление скачано", "update downloaded"),
+                    true,
+                );
+            }
+            Task::Updated(Err(e)) => {
+                self.update.downloading = false;
+                self.toast(e, false);
+            }
+            Task::Installed(Ok(msg)) => self.toast(msg, true),
+            Task::Installed(Err(e)) => self.toast(e, false),
             Task::Notifications(Ok(list)) => {
                 self.notif_pending = false;
                 let mut added = 0;
@@ -1339,6 +1513,7 @@ impl App {
                 self.ha.loaded = true;
                 self.ha.error.clear();
                 self.ha.entities = states.entities;
+                self.ha.areas = states.areas;
             }
             Task::Ha(Err(e)) => {
                 self.ha.pending = false;
@@ -1930,6 +2105,7 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, root: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
+        self.maybe_check_updates();
         self.tick(&ctx);
         if self.stream.fullscreen {
             self.fullscreen_ui(root, &ctx);

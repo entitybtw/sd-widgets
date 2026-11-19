@@ -242,6 +242,10 @@ pub struct DisplayOutput {
     pub scale: f32,
     pub primary: bool,
     pub virtual_output: bool,
+    /// The compositor currently drives this output. A connected but disabled
+    /// output has no logical size and must not be used as the layout anchor.
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -311,6 +315,9 @@ pub struct MonitorStatus {
     pub config_hint: String,
     pub config_file: String,
     pub last_error: String,
+    /// Non-fatal message, e.g. an automatic fallback to mirroring.
+    #[serde(default)]
+    pub note: String,
     pub started_at: u64,
 }
 
@@ -415,6 +422,9 @@ pub struct HaEntity {
     pub last_changed: String,
     #[serde(default)]
     pub last_updated: String,
+    /// Home Assistant area (room) name, filled by the daemon.
+    #[serde(default)]
+    pub area: String,
 }
 
 impl HaEntity {
@@ -484,6 +494,30 @@ impl HaEntity {
             .and_then(|v| v.as_u64())
             .map(|v| v.min(100) as u8)
     }
+    pub fn target_temperature(&self) -> Option<f32> {
+        self.attributes
+            .get("temperature")
+            .and_then(|v| v.as_f64())
+            .map(|v| v as f32)
+    }
+    pub fn cover_position(&self) -> Option<u8> {
+        self.attributes
+            .get("current_position")
+            .and_then(|v| v.as_u64())
+            .map(|v| v.min(100) as u8)
+    }
+    pub fn is_open(&self) -> bool {
+        matches!(self.state.as_str(), "open" | "opening")
+    }
+    pub fn supports_brightness(&self) -> bool {
+        self.attributes.get("brightness").is_some()
+            || self
+                .attributes
+                .get("supported_color_modes")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().any(|m| m.as_str() != Some("onoff")))
+                .unwrap_or(false)
+    }
     pub fn icon(&self) -> &str {
         self.attributes
             .get("icon")
@@ -514,6 +548,9 @@ pub struct HaCall {
 pub struct HaStates {
     pub entities: Vec<HaEntity>,
     pub fetched_ms: u64,
+    /// Area names in Home Assistant order; used by the deck for room paging.
+    #[serde(default)]
+    pub areas: Vec<String>,
 }
 
 // ---------------------------------------------------------------- binds

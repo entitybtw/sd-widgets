@@ -234,9 +234,30 @@ pub fn save(cfg: &DaemonConfig) -> Result<(), String> {
     sdw_core::util::atomic_write(&path(), s.as_bytes()).map_err(|e| e.to_string())
 }
 
+fn running_as_root() -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata("/proc/self")
+            .map(|m| m.uid() == 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// Where VIIPER stores its API key.
+///
+/// VIIPER itself uses `/etc/viiper` when the server runs as root and the XDG
+/// config directory otherwise, so the daemon must look in the same place.
 pub fn viiper_key_path() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
+        if running_as_root() {
+            return PathBuf::from("/etc/viiper/viiper.key.txt");
+        }
         sdw_core::util::config_dir()
             .parent()
             .map(|p| p.to_path_buf())
@@ -259,6 +280,34 @@ pub fn viiper_key_path() -> PathBuf {
     {
         sdw_core::util::config_dir().join("viiper.key.txt")
     }
+}
+
+/// Every key file the daemon may read: its own path first, then the paths used
+/// by a root VIIPER service and by older installs.
+pub fn viiper_key_paths() -> Vec<PathBuf> {
+    let mut out = vec![viiper_key_path()];
+    #[cfg(target_os = "linux")]
+    {
+        let mut add = |p: PathBuf| {
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        };
+        add(PathBuf::from("/etc/viiper/viiper.key.txt"));
+        if let Some(home) = dirs::home_dir() {
+            add(home.join(".config/github.com/Alia5/viiper/viiper.key.txt"));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if let Some(appdata) = std::env::var_os("AppData") {
+            let p = PathBuf::from(appdata).join("VIIPER/viiper.key.txt");
+            if !out.contains(&p) {
+                out.push(p);
+            }
+        }
+    }
+    out
 }
 
 pub fn viiper_bin_path() -> PathBuf {

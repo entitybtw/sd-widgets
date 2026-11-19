@@ -35,6 +35,12 @@ struct Cli {
     /// print the config path and addresses, then exit
     #[arg(long)]
     print_config: bool,
+    /// ask git.entitybtw.ru for the newest release, then exit
+    #[arg(long)]
+    check_updates: bool,
+    /// download the newest daemon build from git.entitybtw.ru, then exit
+    #[arg(long)]
+    download_update: bool,
 }
 
 fn main() {
@@ -54,6 +60,51 @@ fn main() {
         let _ = config::save(&cfg);
         println!("пароль сброшен; при следующем запуске откроется настройка");
     }
+    if cli.check_updates || cli.download_update {
+        match sdw_core::update::check() {
+            Ok(info) => {
+                println!(
+                    "сейчас {} · на git.entitybtw.ru {}",
+                    info.current, info.latest
+                );
+                if info.newer {
+                    println!("доступно обновление: {}", info.name);
+                } else {
+                    println!("это последняя версия");
+                }
+                println!("страница: {}", info.page);
+                for a in &info.assets {
+                    println!("  файл {} ({} байт) {}", a.name, a.size, a.url);
+                }
+                if cli.download_update {
+                    match info.asset_for("sdw-daemon") {
+                        Some(asset) => {
+                            let dest = sdw_core::update::updates_dir().join(&asset.name);
+                            println!("скачиваю в {}", dest.display());
+                            let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+                            match sdw_core::update::download(asset, &dest, progress) {
+                                Ok(bytes) => println!("готово: {bytes} байт"),
+                                Err(e) => {
+                                    eprintln!("скачивание: {e}");
+                                    std::process::exit(1);
+                                }
+                            }
+                        }
+                        None => {
+                            eprintln!("в релизе нет файла для этого компьютера");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("проверка обновлений: {e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     if cli.print_config {
         println!("config: {}", config::path().display());
         println!("api:    {}", sdw_core::util::addresses(cfg.api_port).join("  "));

@@ -116,14 +116,27 @@ impl ViiperManager {
         config::viiper_key_path()
     }
 
-    /// Read the key that the VIIPER server uses for encrypted API connections.
+    /// The key that the VIIPER server uses for API authentication.
+    ///
+    /// An empty string is valid: VIIPER does not require auth for localhost
+    /// clients unless `--api.require-local-host-auth` is set.
     pub fn key(&self, cfg: &DaemonConfig) -> String {
         if !cfg.viiper.password.trim().is_empty() {
             return cfg.viiper.password.trim().to_string();
         }
-        std::fs::read_to_string(self.key_path())
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default()
+        for path in config::viiper_key_paths() {
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                let text = text.trim().to_string();
+                if !text.is_empty() {
+                    return text;
+                }
+            }
+        }
+        String::new()
+    }
+
+    fn key_present(&self, cfg: &DaemonConfig) -> bool {
+        !self.key(cfg).is_empty()
     }
 
     pub fn write_key(&self, password: &str) -> Result<(), String> {
@@ -159,11 +172,44 @@ impl ViiperManager {
         let password = if !cfg.viiper.password.trim().is_empty() {
             cfg.viiper.password.trim().to_string()
         } else {
-            std::fs::read_to_string(config::viiper_key_path())
-                .map(|s| s.trim().to_string())
-                .unwrap_or_default()
+            for path in config::viiper_key_paths() {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    let text = text.trim().to_string();
+                    if !text.is_empty() {
+                        return Ok(ViiperClient::new_with_password(addr, text));
+                    }
+                }
+            }
+            String::new()
         };
         Ok(ViiperClient::new_with_password(addr, password))
+    }
+
+    /// True when something accepts TCP connections on the API address. Used to
+    /// tell "VIIPER is not running" apart from "VIIPER runs but wants a key".
+    fn port_open(cfg: &DaemonConfig) -> bool {
+        let Ok(addr) = Self::addr(cfg) else {
+            return false;
+        };
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(350)).is_ok()
+    }
+
+    /// Make sure a self-started VIIPER and the daemon share a key file.
+    fn ensure_key(&self, cfg: &DaemonConfig) {
+        if self.key_present(cfg) {
+            return;
+        }
+        let generated = sdw_core::model::random_id(16);
+        match self.write_key(&generated) {
+            Ok(()) => self.logger.info(format!(
+                "VIIPER: создан ключ API {}",
+                self.key_path().display()
+            )),
+            Err(e) => self.logger.warn(format!(
+                "VIIPER: не удалось сохранить ключ в {}: {e} (локальный доступ останется без пароля)",
+                self.key_path().display()
+            )),
+        }
     }
 
     fn ping(cfg: &DaemonConfig) -> Result<String, String> {
@@ -176,11 +222,19 @@ impl ViiperManager {
     pub fn status(&self, cfg: &DaemonConfig) -> ViiperStatus {
         let bin = self.bin(cfg);
         let key_path = self.key_path();
-        let password_set = !self.key(cfg).is_empty() || key_path.exists();
+        let password_set = self.key_present(cfg);
         let (running, version) = match Self::ping(cfg) {
             Ok(v) => (true, v),
             Err(_) => (false, String::new()),
         };
+        let mut error = self.error();
+        if !running && error.is_empty() && Self::port_open(cfg) {
+            error = format!(
+                "Порт {} занят, но VIIPER не принял подключение без пароля.\
+                 Укажите пароль VIIPER ниже или скопируйте ключ из /etc/viiper/viiper.key.txt.",
+                cfg.viiper.api_addr
+            );
+        }
         ViiperStatus {
             installed: bin.is_some(),
             running,
@@ -191,7 +245,7 @@ impl ViiperManager {
             key_path: key_path.display().to_string(),
             usbip_installed: sdw_core::util::has("usbip"),
             auto_start: cfg.viiper.auto_start,
-            error: self.error(),
+            error,
         }
     }
 
@@ -208,9 +262,31 @@ impl ViiperManager {
             .bin(cfg)
             .ok_or_else(|| "VIIPER не установлен: установите его в разделе «VIIPER»".to_string())?;
 
-        // The key file must exist before the server starts.
+        // Someone already listens on the API port but rejected our handshake.
+        // Starting a second server would only produce a confusing bind error.
+        if Self::port_open(cfg) {
+            let key = self.key(cfg);
+            let msg = if key.is_empty() {
+                format!(
+                    "VIIPER уже слушает {}, но требует авторизацию. \
+                     Введите пароль VIIPER в этом разделе (его можно прочитать в /etc/viiper/viiper.key.txt).",
+                    cfg.viiper.api_addr
+                )
+            } else {
+                format!(
+                    "VIIPER уже слушает {}, но ключ не подошёл. Проверьте пароль VIIPER.",
+                    cfg.viiper.api_addr
+                )
+            };
+            self.set_error(msg.clone());
+            return Err(msg);
+        }
+
+        // Share a key between our own server and the daemon before spawning it.
         if !cfg.viiper.password.trim().is_empty() {
             self.write_key(&cfg.viiper.password)?;
+        } else {
+            self.ensure_key(cfg);
         }
 
         let log_path = sdw_core::util::data_dir().join("viiper.log");

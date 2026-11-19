@@ -9,8 +9,10 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
   and a minimal set of **Material Symbols** icons.
   The grid theme is fully inspired by **Quadra**, a gorgeous hard-edge Steam Deck
   theme — go try it, it's great.
-- **Full customisation**: CSS themes, palette pickers, density, tile grid, page and
-  tile visibility, interface sounds, per-event sound files.
+- **Full customisation**: CSS themes, an exact 15-token palette editor, density,
+  tile grid, page and tile visibility, interface sounds, per-event sound files.
+- **Self-updates**: both applications check the newest release on
+  `git.entitybtw.ru`, show the notes and download the matching build.
 - **Bilingual**: English and Russian, dark and light.
 
 > The product name is lowercase: `sd-widgets`.
@@ -26,7 +28,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control or gesture. |
 | **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality, input forwarding. |
 | **Notifications** | Mirrored desktop notifications, newest first, unread counters. |
-| **Home Assistant** | An app-style entity browser with search and one-tap actions. |
+| **Home Assistant** | Rooms and areas with lights, curtains, climate and media widgets, not a wall of every entity. |
 | **Binds** | Buttons, chords and swipe gestures mapped to actions or remote commands. |
 | **Look** | Presets, palette, CSS editor, grid, density, dock/arrows, page visibility, sounds. |
 | **Settings** | Device name, language, theme, UI scale, input devices, updates. |
@@ -97,6 +99,20 @@ cargo build --release -p sdw-deck -p sdw-daemon
 
 Binaries land in `target/release/`.
 
+## Updates
+
+Both applications check the newest published release on
+`https://git.entitybtw.ru/entitybtw/sd-widgets/releases` when they start and every
+six hours after that. **Settings → Updates** shows the version, the release notes
+and a download button. On Linux the downloaded AppImage replaces the running binary
+(the restart is yours); on Windows and macOS the downloaded file is shown so you can
+swap it in. Headless users can do the same without a window:
+
+```bash
+sdw-daemon --check-updates
+sdw-daemon --download-update
+```
+
 ## Pairing
 
 1. Start `sdw-daemon` on the computer. The first launch opens the setup wizard and
@@ -129,8 +145,9 @@ Details and per-compositor notes: [`docs/MONITOR.md`](docs/MONITOR.md).
 The **Look** page is the whole design system:
 
 - five presets: Grid, Monochrome, Nord, Gruvbox, Terminal;
-- colour pickers for both palettes (`--bg`, `--card`, `--ink`, `--muted`, `--line`,
-  `--accent` and their `--light-*` twins);
+- exact colour pickers for all 15 tokens in both palettes: `bg`, `bg2`, `card`,
+  `well`, `ink`, `strong`, `muted`, `faint`, `line`, `line-strong`, `accent`,
+  `accent-soft`, `good`, `warn`, `bad`;
 - a live CSS editor — any `--name: value;` declaration is picked up;
 - grid on/off, cell size and line opacity;
 - density, font scale, tile height and column count;

@@ -546,6 +546,7 @@ fn ha_states(state: Arc<AppState>, req: Request) {
     let states = HaStates {
         entities: ha.entities.clone(),
         fetched_ms: ha.status.last_sync_ms,
+        areas: ha.areas.clone(),
     };
     drop(ha);
     respond_json(req, 200, &states)

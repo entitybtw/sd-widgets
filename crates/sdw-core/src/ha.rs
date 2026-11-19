@@ -58,12 +58,83 @@ impl HaClient {
             .to_string())
     }
 
+    /// Render a Home Assistant template. Used for area (room) names, which the
+    /// plain REST API does not expose.
+    pub fn template(&self, tpl: &str) -> Result<String, String> {
+        let mut r = self
+            .agent
+            .post(&format!("{}/api/template", self.base))
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .send_json(serde_json::json!({ "template": tpl }))
+            .map_err(|e| e.to_string())?;
+        let status = r.status().as_u16();
+        let text = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
+        if !(200..300).contains(&status) {
+            return Err(format!(
+                "Home Assistant: HTTP {status}: {}",
+                crate::util::truncate(&text, 240)
+            ));
+        }
+        Ok(text)
+    }
+
+    /// Area names and the entity → area mapping. Two template outputs are
+    /// combined in one request; a failure is not fatal (the deck then falls
+    /// back to a single "home" room).
+    pub fn rooms(&self) -> Result<(Vec<String>, Vec<(String, String)>), String> {
+        let tpl = "{% for a in areas() %}~A~{{ a }}\t{{ area_name(a) or a }}\n{% endfor %}{% for s in states %}{% set a = area_id(s.entity_id) %}{% if a %}~E~{{ s.entity_id }}\t{{ area_name(a) or a }}\n{% endif %}{% endfor %}";
+        let text = self.template(tpl)?;
+        let mut areas = Vec::new();
+        let mut entities = Vec::new();
+        for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("~A~") {
+                let (id, name) = rest.split_once('\t').unwrap_or((rest, rest));
+                let name = if name.trim().is_empty() { id } else { name };
+                if !name.trim().is_empty() {
+                    areas.push(name.trim().to_string());
+                }
+            } else if let Some(rest) = line.strip_prefix("~E~") {
+                let (id, name) = rest.split_once('\t').unwrap_or((rest, ""));
+                if !id.trim().is_empty() {
+                    let area = if name.trim().is_empty() {
+                        String::new()
+                    } else {
+                        name.trim().to_string()
+                    };
+                    if !area.is_empty() {
+                        entities.push((id.trim().to_string(), area));
+                    }
+                }
+            }
+        }
+        areas.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+        areas.dedup();
+        Ok((areas, entities))
+    }
+
     pub fn states(&self) -> Result<HaStates, String> {
         let v = self.get("/api/states")?;
-        let entities: Vec<HaEntity> = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        let mut entities: Vec<HaEntity> = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        let mut areas = Vec::new();
+        match self.rooms() {
+            Ok((list, map)) => {
+                areas = list;
+                if !map.is_empty() {
+                    for e in &mut entities {
+                        if let Some((_, area)) = map.iter().find(|(id, _)| id == &e.entity_id) {
+                            e.area = area.clone();
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                // Older Home Assistant builds or a restricted token: ignore.
+            }
+        }
         Ok(HaStates {
             entities,
             fetched_ms: crate::model::now_ms(),
+            areas,
         })
     }
 

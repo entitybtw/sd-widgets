@@ -48,6 +48,7 @@ struct Inner {
     config_hint: String,
     config_file: String,
     last_error: String,
+    note: String,
     started_at: u64,
     output_rect: (i32, i32, u32, u32),
     created_output: Option<String>,
@@ -82,6 +83,7 @@ impl MonitorManager {
             config_hint: String::new(),
             config_file: String::new(),
             last_error: String::new(),
+            note: String::new(),
             started_at: 0,
             output_rect: (0, 0, 0, 0),
             created_output: None,
@@ -91,7 +93,7 @@ impl MonitorManager {
         inner.compositor = compositor.clone();
         inner.outputs = outputs;
         inner.tools = detect_tools();
-        inner.config_hint = config_hint(&compositor, &inner.output, 1280, 800, 60, inner.position);
+        inner.config_hint = config_hint(&compositor, &inner.output, 1280, 800, 60, inner.position, &inner.outputs);
         inner.config_file = config_file_for(&compositor);
         Self {
             inner: Arc::new(Mutex::new(inner)),
@@ -131,6 +133,7 @@ impl MonitorManager {
             config_hint: inner.config_hint.clone(),
             config_file: inner.config_file.clone(),
             last_error: inner.last_error.clone(),
+            note: inner.note.clone(),
             started_at: inner.started_at,
         }
     }
@@ -154,6 +157,7 @@ impl MonitorManager {
                 inner.height,
                 60,
                 inner.position,
+                &inner.outputs,
             );
             inner.config_file = config_file_for(&inner.compositor);
         }
@@ -189,22 +193,19 @@ impl MonitorManager {
             inner.running = false;
             inner.created_output = None;
             inner.rfb = false;
+            inner.note.clear();
         }
     }
 
     pub fn start(&self, req: &MonitorStart, cfg: &DaemonConfig) -> Result<MonitorStatus, String> {
         self.stop();
         self.refresh();
-        let (compositor, outputs, tools) = {
+        let (compositor, outputs) = {
             let inner = self.inner.lock().map_err(|_| "monitor lock")?;
-            (
-                inner.compositor.clone(),
-                inner.outputs.clone(),
-                inner.tools.clone(),
-            )
+            (inner.compositor.clone(), inner.outputs.clone())
         };
         let _ = cfg;
-        let mode = req.mode;
+        let mut mode = req.mode;
         let mut backend = req.backend;
         if backend == MonitorBackend::Auto {
             backend = default_backend(&compositor, mode);
@@ -223,123 +224,162 @@ impl MonitorManager {
         let mut created = None;
         let mut rfb = false;
 
-        match backend {
-            MonitorBackend::Hyprland => {
-                if mode == MonitorMode::Extend {
-                    let before: Vec<String> = outputs.iter().map(|o| o.name.clone()).collect();
-                    if !sdw_core::util::has("hyprctl") {
-                        return Err("hyprctl не найден: Hyprland не запущен или пакет не установлен".into());
+        let mut note = String::new();
+        let setup: Result<(), String> = (|| {
+            match backend {
+                MonitorBackend::Hyprland => {
+                    if mode == MonitorMode::Extend {
+                        let before: Vec<String> = outputs.iter().map(|o| o.name.clone()).collect();
+                        if !sdw_core::util::has("hyprctl") {
+                            return Err("hyprctl не найден: Hyprland не запущен или пакет не установлен".into());
+                        }
+                        let _ = sdw_core::util::run("hyprctl", &["output", "create", "headless"]);
+                        std::thread::sleep(Duration::from_millis(800));
+                        self.refresh();
+                        let now = self.outputs();
+                        let new = now
+                            .iter()
+                            .find(|o| !before.contains(&o.name))
+                            .or_else(|| now.iter().find(|o| o.name.to_ascii_lowercase().contains("headless")));
+                        let Some(new) = new else {
+                            return Err("Hyprland не создал headless-выход. Проверьте `hyprctl output create headless`".into());
+                        };
+                        output = new.name.clone();
+                        std::thread::sleep(Duration::from_millis(700));
+                        created = Some(output.clone());
+                        self.refresh();
+                        rect = output_rect(&self.outputs(), &output);
                     }
-                    let _ = sdw_core::util::run("hyprctl", &["output", "create", "headless"]);
-                    std::thread::sleep(Duration::from_millis(800));
+                }
+                MonitorBackend::Vkms => {
+                    if !cfg!(target_os = "linux") {
+                        return Err("VKMS доступен только на Linux".into());
+                    }
+                    let before: Vec<String> = outputs.iter().map(|o| o.name.clone()).collect();
+                    run_vkms(&req.sudo_password)?;
+                    std::thread::sleep(Duration::from_millis(1600));
                     self.refresh();
                     let now = self.outputs();
                     let new = now
                         .iter()
-                        .find(|o| !before.contains(&o.name))
-                        .or_else(|| now.iter().find(|o| o.name.to_ascii_lowercase().contains("headless")));
+                        .find(|o| !before.contains(&o.name) && !o.name.starts_with("eDP"))
+                        .or_else(|| now.iter().find(|o| o.virtual_output))
+                        .or_else(|| now.iter().find(|o| !before.contains(&o.name)));
                     let Some(new) = new else {
-                        return Err("Hyprland не создал headless-выход. Проверьте `hyprctl output create headless`".into());
+                        let hint = self
+                            .inner
+                            .lock()
+                            .map(|i| i.config_hint.clone())
+                            .unwrap_or_default();
+                        return Err(format!(
+                            "VKMS загружен, но новый выход не появился. Подсказка по конфигу:\n{hint}"
+                        ));
                     };
                     output = new.name.clone();
                     std::thread::sleep(Duration::from_millis(700));
-                    created = Some(output.clone());
                     self.refresh();
                     rect = output_rect(&self.outputs(), &output);
                 }
-            }
-            MonitorBackend::Vkms => {
-                if !cfg!(target_os = "linux") {
-                    return Err("VKMS доступен только на Linux".into());
+                MonitorBackend::Krfb => {
+                    if mode == MonitorMode::Extend {
+                        if !sdw_core::util::has("krfb-virtualmonitor") {
+                            return Err(
+                                "krfb-virtualmonitor не найден. Установите krfb (KDE) и повторите.".into(),
+                            );
+                        }
+                        let child = Command::new("krfb-virtualmonitor")
+                            .args([
+                                "--resolution",
+                                &format!("{width}x{height}"),
+                                "--name",
+                                "SD Widgets",
+                            ])
+                            .stdin(Stdio::null())
+                            .stdout(Stdio::null())
+                            .stderr(Stdio::null())
+                            .spawn()
+                            .map_err(|e| format!("krfb-virtualmonitor: {e}"))?;
+                        if let Ok(mut slot) = self.child.lock() {
+                            *slot = Some(child);
+                        }
+                        rfb = true;
+                        output = "krfb".into();
+                        rect = (0, 0, width, height);
+                    }
                 }
-                let before: Vec<String> = outputs.iter().map(|o| o.name.clone()).collect();
-                run_vkms(&req.sudo_password)?;
-                std::thread::sleep(Duration::from_millis(1600));
+                _ => {}
+            }
+
+            // Put the new output where the user asked: right, left, above or below
+            // the primary display. This is applied live *and* written into the
+            // compositor config, so the layout survives a restart.
+            if !rfb && mode == MonitorMode::Extend && !output.is_empty() && output != "весь экран" {
+                if let Err(e) = apply_output_layout(
+                    &compositor,
+                    &output,
+                    width,
+                    height,
+                    fps,
+                    position,
+                    &self.outputs(),
+                    &self.logger,
+                ) {
+                    self.logger
+                        .warn(format!("не удалось применить раскладку монитора: {e}"));
+                }
+                std::thread::sleep(Duration::from_millis(550));
                 self.refresh();
                 let now = self.outputs();
-                let new = now
-                    .iter()
-                    .find(|o| !before.contains(&o.name) && !o.name.starts_with("eDP"))
-                    .or_else(|| now.iter().find(|o| o.virtual_output))
-                    .or_else(|| now.iter().find(|o| !before.contains(&o.name)));
-                let Some(new) = new else {
-                    return Err(format!(
-                        "VKMS загружен, но новый выход не появился. Добавьте в конфиг niri:\n{}",
-                        config_hint(&compositor, "Virtual-1", width, height, fps, position)
-                    ));
-                };
-                output = new.name.clone();
-                std::thread::sleep(Duration::from_millis(700));
-                self.refresh();
-                rect = output_rect(&self.outputs(), &output);
+                let active = now.iter().any(|o| o.name == output && o.enabled);
+                if !active {
+                    return Err(format!("выход {output} остался выключенным"));
+                }
+                rect = output_rect(&now, &output);
             }
-            MonitorBackend::Krfb => {
-                if mode == MonitorMode::Mirror {
-                    // Fall through to the mirror path below.
-                } else {
-                    if !sdw_core::util::has("krfb-virtualmonitor") {
-                        return Err(
-                            "krfb-virtualmonitor не найден. Установите krfb (KDE) и повторите.".into(),
-                        );
-                    }
-                    let child = Command::new("krfb-virtualmonitor")
-                        .args([
-                            "--resolution",
-                            &format!("{width}x{height}"),
-                            "--name",
-                            "SD Widgets",
-                        ])
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .map_err(|e| format!("krfb-virtualmonitor: {e}"))?;
-                    if let Ok(mut slot) = self.child.lock() {
-                        *slot = Some(child);
-                    }
-                    rfb = true;
-                    output = "krfb".into();
-                    rect = (0, 0, width, height);
+            Ok(())
+        })();
+
+        // A virtual output is a bonus, not a requirement: if the compositor
+        // refuses it (niri + VKMS is a common case), stream a mirror of the main
+        // screen instead of failing with a dead end.
+        if let Err(e) = setup {
+            if mode == MonitorMode::Mirror {
+                return Err(e);
+            }
+            note = format!("{e}; включено зеркало основного экрана");
+            self.logger
+                .warn(format!("Экран: {e} — переключаюсь на зеркало основного экрана"));
+            if backend == MonitorBackend::Hyprland {
+                if let Some(name) = created.take() {
+                    let _ = sdw_core::util::run("hyprctl", &["output", "remove", &name]);
                 }
             }
-            _ => {}
-        }
-
-        // Put the new output where the user asked: right, left, above or below the
-        // primary display. This is applied live *and* written into the compositor
-        // config, so the layout survives a restart.
-        if !rfb && mode == MonitorMode::Extend && !output.is_empty() && output != "весь экран" {
-            if let Err(e) = apply_output_layout(
-                &compositor,
-                &output,
-                width,
-                height,
-                fps,
-                position,
-                &self.outputs(),
-                &self.logger,
-            ) {
-                self.logger
-                    .warn(format!("не удалось применить раскладку монитора: {e}"));
+            if compositor == "niri" {
+                let _ = sdw_core::util::run("niri", &["msg", "output", &output, "off"]);
             }
-            std::thread::sleep(Duration::from_millis(450));
+            mode = MonitorMode::Mirror;
+            backend = MonitorBackend::Mirror;
+            rfb = false;
             self.refresh();
+            let outputs = self.outputs();
+            output = pick_output(&outputs, MonitorMode::Mirror);
+            rect = output_rect(&outputs, &output);
         }
 
         // Choose the actual capture mechanism.
         let capture = if rfb {
             Capture::Rfb
-        } else if backend == MonitorBackend::X11 || (backend == MonitorBackend::Auto && compositor == "x11") {
+        } else if backend == MonitorBackend::X11 || compositor == "x11" {
             if !sdw_core::util::has("ffmpeg") {
                 return Err("Для X11 нужен ffmpeg. Установите его и повторите.".into());
             }
             Capture::FfmpegX11
-        } else if backend == MonitorBackend::Gdigrab || (cfg!(windows) && mode == MonitorMode::Mirror) {
+        } else if backend == MonitorBackend::Gdigrab || compositor == "windows" {
             if !sdw_core::util::has("ffmpeg") {
                 return Err("Для Windows-трансляции нужен ffmpeg в PATH.".into());
             }
             Capture::FfmpegWindows
-        } else if backend == MonitorBackend::MacCapture || cfg!(target_os = "macos") {
+        } else if backend == MonitorBackend::MacCapture || compositor == "macos" {
             Capture::Mac
         } else {
             // Wayland screenshot path: grim, spectacle or gnome-screenshot.
@@ -381,11 +421,13 @@ impl MonitorManager {
             inner.quality = quality;
             inner.input_enabled = req.input_enabled;
             inner.last_error.clear();
+            inner.note = note.clone();
             inner.started_at = now_ms();
             inner.output_rect = rect;
             inner.created_output = created.clone();
             inner.rfb = rfb;
-            inner.config_hint = config_hint(&compositor, &output, width, height, fps, position);
+            let outputs_now = self.outputs();
+            inner.config_hint = config_hint(&compositor, &output, width, height, fps, position, &outputs_now);
             inner.config_file = config_file_for(&compositor);
         }
         self.logger.info(format!(
@@ -520,13 +562,16 @@ fn pick_output(outputs: &[DisplayOutput], mode: MonitorMode) -> String {
         return String::new();
     }
     if mode == MonitorMode::Extend {
-        if let Some(v) = outputs.iter().find(|o| o.virtual_output) {
+        if let Some(v) = outputs.iter().find(|o| o.virtual_output && o.enabled) {
             return v.name.clone();
         }
     }
     outputs
         .iter()
-        .find(|o| o.primary)
+        .find(|o| o.enabled && o.primary && !o.virtual_output)
+        .or_else(|| outputs.iter().find(|o| o.enabled && o.primary))
+        .or_else(|| outputs.iter().find(|o| o.enabled))
+        .or_else(|| outputs.iter().find(|o| o.primary))
         .or_else(|| outputs.first())
         .map(|o| o.name.clone())
         .unwrap_or_default()
@@ -550,22 +595,67 @@ fn layout_xy(
     h: u32,
     position: MonitorPosition,
 ) -> (i32, i32) {
-    let primary = outputs
+    // Anchor on a *real, enabled* output and never on the target itself: a
+    // freshly created virtual output usually sits at 0,0 with no logical size.
+    let reference = outputs
         .iter()
-        .find(|o| o.primary && o.name != output)
-        .or_else(|| outputs.iter().find(|o| o.name != output && !o.virtual_output))
+        .find(|o| o.name != output && o.enabled && o.primary && !o.virtual_output)
+        .or_else(|| outputs.iter().find(|o| o.name != output && o.enabled && !o.virtual_output))
+        .or_else(|| outputs.iter().find(|o| o.name != output && o.enabled))
+        .or_else(|| outputs.iter().find(|o| o.primary))
         .or_else(|| outputs.iter().find(|o| o.name != output))
         .or_else(|| outputs.first());
-    let (px, py, pw, ph) = match primary {
-        Some(o) => (o.x, o.y, o.width.max(1), o.height.max(1)),
+    let (px, py, pw, ph) = match reference {
+        Some(o) => (o.x, o.y, o.width.max(1) as i32, o.height.max(1) as i32),
         None => (0, 0, 1280, 800),
     };
     match position {
-        MonitorPosition::Auto | MonitorPosition::Right => (px + pw as i32, py),
+        MonitorPosition::Auto | MonitorPosition::Right => (px + pw, py),
         MonitorPosition::Left => (px - w as i32, py),
         MonitorPosition::Above => (px, py - h as i32),
-        MonitorPosition::Below => (px, py + ph as i32),
+        MonitorPosition::Below => (px, py + ph),
     }
+}
+
+/// Exact niri mode string for `width`×`height`, using the output's own mode list.
+/// niri rejects a mode that the output does not advertise, so the capture frame
+/// rate (often 15) must never leak into this string.
+fn niri_mode_string(output: &str, width: u32, height: u32) -> Option<String> {
+    let text = sdw_core::util::run("niri", &["msg", "--json", "outputs"]).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let modes = v.get(output)?.get("modes")?.as_array()?;
+    let mut best: Option<(i64, i64, u32, u32, u64)> = None;
+    for m in modes {
+        let w = m["width"].as_u64().unwrap_or(0) as u32;
+        let h = m["height"].as_u64().unwrap_or(0) as u32;
+        if w == 0 || h == 0 {
+            continue;
+        }
+        let r = m["refresh_rate"].as_u64().unwrap_or(60000);
+        let area = (w as i64 - width as i64).abs() * height.max(1) as i64
+            + (h as i64 - height as i64).abs() * width.max(1) as i64;
+        let score = if w == width && h == height { 0 } else { 1_000_000 + area };
+        let dist = (r as i64 - 60_000).abs();
+        if best
+            .map(|(bs, bd, _, _, _)| (score, dist) < (bs, bd))
+            .unwrap_or(true)
+        {
+            best = Some((score, dist, w, h, r));
+        }
+    }
+    let (_, _, w, h, r) = best?;
+    Some(format!("{w}x{h}@{:.3}", r as f64 / 1000.0))
+}
+
+fn niri_output_active(output: &str) -> bool {
+    let text = sdw_core::util::run("niri", &["msg", "--json", "outputs"])
+        .unwrap_or_default();
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    v.get(output)
+        .map(|o| o["logical"].is_object() && o["logical"]["width"].as_u64().unwrap_or(0) > 0)
+        .unwrap_or(false)
 }
 
 /// Put the freshly created output in place and remember the layout.
@@ -588,21 +678,36 @@ fn apply_output_layout(
         "Экран: раскладка {output} → {x},{y} ({})",
         position.label()
     ));
-    let mode = format!("{width}x{height}@{fps}");
+    let mode = format!("{width}x{height}@{}", fps.max(30));
 
     match compositor {
         "niri" => {
-            let _ = sdw_core::util::run("niri", &["msg", "output", output, "on"]);
-            let _ = sdw_core::util::run("niri", &["msg", "output", output, "mode", &mode]);
-            let _ = sdw_core::util::run("niri", &["msg", "output", output, "scale", "1.0"]);
+            let mode = niri_mode_string(output, width, height)
+                .unwrap_or_else(|| format!("{width}x{height}@{}", fps.max(30)));
             let xs = x.to_string();
             let ys = y.to_string();
-            let _ = sdw_core::util::run(
-                "niri",
-                &["msg", "output", output, "position", "set", &xs, &ys],
-            );
+            for attempt in 0..2 {
+                let _ = sdw_core::util::run("niri", &["msg", "output", output, "on"]);
+                let _ = sdw_core::util::run("niri", &["msg", "output", output, "mode", &mode]);
+                let _ = sdw_core::util::run("niri", &["msg", "output", output, "scale", "1.0"]);
+                let _ = sdw_core::util::run(
+                    "niri",
+                    &["msg", "output", output, "position", "set", &xs, &ys],
+                );
+                if niri_output_active(output) {
+                    break;
+                }
+                if attempt == 0 {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            }
+            if !niri_output_active(output) {
+                return Err(format!(
+                    "niri не смог включить выход {output} в режиме {mode}"
+                ));
+            }
             let path = crate::config::niri_config_path();
-            patch_niri_config(&path, output, width, height, fps, x, y)?;
+            patch_niri_config(&path, output, &mode, x, y)?;
         }
         "hyprland" => {
             let spec = format!("{output},{width}x{height}@{fps},{x}x{y},1");
@@ -671,14 +776,12 @@ fn apply_output_layout(
 fn patch_niri_config(
     path: &std::path::Path,
     output: &str,
-    width: u32,
-    height: u32,
-    fps: u32,
+    mode: &str,
     x: i32,
     y: i32,
 ) -> Result<(), String> {
     let block = format!(
-        "output \"{output}\" {{\n    mode \"{width}x{height}@{fps}.000\"\n    scale 1.0\n    position x={x} y={y}\n}}"
+        "output \"{output}\" {{\n    mode \"{mode}\"\n    scale 1.0\n    position x={x} y={y}\n}}"
     );
     let mut text = std::fs::read_to_string(path).unwrap_or_default();
     match find_kdl_block(&text, output) {
@@ -791,7 +894,8 @@ fn patch_sway_config(
 ) -> Result<(), String> {
     let mut text = std::fs::read_to_string(path).unwrap_or_default();
     let line = format!(
-        "output {output} mode {width}x{height}@{fps} position {x} {y} scale 1"
+        "output {output} mode {width}x{height}@{} position {x} {y} scale 1",
+        fps.max(30)
     );
     let mut found = false;
     let mut out = String::with_capacity(text.len() + line.len() + 2);
@@ -910,6 +1014,7 @@ fn detect_all() -> (String, Vec<DisplayOutput>) {
             scale: 1.0,
             primary: true,
             virtual_output: false,
+            enabled: true,
         });
     }
     // Mark the first output at the origin as primary when the compositor is silent.
@@ -930,6 +1035,7 @@ fn niri_outputs() -> Result<Vec<DisplayOutput>, String> {
     let mut out = Vec::new();
     for (name, o) in obj {
         let logical = &o["logical"];
+        let enabled = logical.is_object() && logical["width"].as_u64().unwrap_or(0) > 0;
         let modes = o["modes"].as_array().cloned().unwrap_or_default();
         let current = o["current_mode"].as_u64().unwrap_or(0) as usize;
         let mode = modes.get(current).or_else(|| modes.first());
@@ -949,18 +1055,20 @@ fn niri_outputs() -> Result<Vec<DisplayOutput>, String> {
         out.push(DisplayOutput {
             name: name.clone(),
             description: format!("{make} {model}").trim().to_string(),
-            width: if logical_w > 0 { logical_w } else { w },
-            height: if logical_h > 0 { logical_h } else { h },
+            width: if enabled && logical_w > 0 { logical_w } else { w },
+            height: if enabled && logical_h > 0 { logical_h } else { h },
             refresh,
             x: logical["x"].as_i64().unwrap_or(0) as i32,
             y: logical["y"].as_i64().unwrap_or(0) as i32,
             scale: logical["scale"].as_f64().unwrap_or(1.0) as f32,
-            primary: logical["x"].as_i64().unwrap_or(-1) == 0
+            primary: enabled
+                && logical["x"].as_i64().unwrap_or(-1) == 0
                 && logical["y"].as_i64().unwrap_or(-1) == 0,
             virtual_output: is_virtual_name(name),
+            enabled,
         });
     }
-    out.sort_by_key(|o| (o.x, o.y));
+    out.sort_by_key(|o| (!o.enabled, o.x, o.y));
     Ok(out)
 }
 
@@ -987,6 +1095,7 @@ fn hypr_outputs() -> Result<Vec<DisplayOutput>, String> {
             scale: m["scale"].as_f64().unwrap_or(1.0) as f32,
             primary: m["focused"].as_bool().unwrap_or(false) && m["x"].as_i64().unwrap_or(-1) == 0,
             virtual_output: is_virtual_name(&name),
+            enabled: true,
         });
     }
     Ok(out)
@@ -1029,6 +1138,7 @@ fn kde_outputs() -> Result<Vec<DisplayOutput>, String> {
             scale: o["scale"].as_f64().unwrap_or(1.0) as f32,
             primary: o["primary"].as_bool().unwrap_or(false),
             virtual_output: is_virtual_name(&name),
+            enabled: true,
         });
     }
     Ok(out)
@@ -1056,6 +1166,7 @@ fn sway_outputs() -> Result<Vec<DisplayOutput>, String> {
             scale: o["scale"].as_f64().unwrap_or(1.0) as f32,
             primary: rect["x"].as_i64().unwrap_or(-1) == 0 && rect["y"].as_i64().unwrap_or(-1) == 0,
             virtual_output: is_virtual_name(&name),
+            enabled: true,
         });
     }
     Ok(out)
@@ -1092,6 +1203,7 @@ fn xrandr_outputs() -> Result<Vec<DisplayOutput>, String> {
                 scale: 1.0,
                 primary,
                 virtual_output: is_virtual_name(name),
+                enabled: true,
             });
         }
     }
@@ -1122,6 +1234,7 @@ fn windows_outputs() -> Result<Vec<DisplayOutput>, String> {
             scale: 1.0,
             primary: p[5].eq_ignore_ascii_case("true"),
             virtual_output: false,
+            enabled: true,
         });
     }
     Ok(out)
@@ -1154,6 +1267,7 @@ fn mac_outputs() -> Result<Vec<DisplayOutput>, String> {
                 scale: 1.0,
                 primary,
                 virtual_output: false,
+                enabled: true,
             });
             idx += 1;
         }
@@ -1247,21 +1361,23 @@ fn config_hint(
     h: u32,
     fps: u32,
     position: MonitorPosition,
+    outputs: &[DisplayOutput],
 ) -> String {
     let out = if output.is_empty() || output == "весь экран" || output == "krfb" {
         "Virtual-1"
     } else {
         output
     };
-    let (hx, hy) = match position {
-        MonitorPosition::Left => (-(w as i32), 0),
-        MonitorPosition::Above => (0, -(h as i32)),
-        MonitorPosition::Below => (0, h as i32),
-        MonitorPosition::Auto | MonitorPosition::Right => (2560, 0),
+    let (hx, hy) = layout_xy(outputs, out, w, h, position);
+    let niri_mode = if compositor == "niri" {
+        niri_mode_string(out, w, h).unwrap_or_else(|| format!("{w}x{h}@{fps}.000"))
+    } else {
+        format!("{w}x{h}@{}", fps.max(30))
     };
+    let fps = fps.max(30);
     match compositor {
         "niri" => format!(
-            "# niri: ~/.config/niri/config.kdl\noutput \"{out}\" {{\n    mode \"{w}x{h}@{fps}.000\"\n    scale 1.0\n    position x={hx} y={hy}\n}}\n\n# Один раз загрузить VKMS:\nsudo modprobe vkms num_outputs=1\n\n# Чтобы виртуальный экран появлялся после перезагрузки:\n# /etc/modules-load.d/sd-widgets.conf → vkms\n# /etc/modprobe.d/sd-widgets.conf → options vkms num_outputs=1"
+            "# niri: ~/.config/niri/config.kdl\noutput \"{out}\" {{\n    mode \"{niri_mode}\"\n    scale 1.0\n    position x={hx} y={hy}\n}}\n\n# Один раз загрузить VKMS:\nsudo modprobe vkms num_outputs=1\n\n# Чтобы виртуальный экран появлялся после перезагрузки:\n# /etc/modules-load.d/sd-widgets.conf → vkms\n# /etc/modprobe.d/sd-widgets.conf → options vkms num_outputs=1"
         ),
         "hyprland" => format!(
             "# Hyprland: ~/.config/hypr/hyprland.conf\nmonitor={out},{w}x{h}@{fps},{hx}x{hy},1\n\n# Или одной командой:\nhyprctl output create headless\nhyprctl keyword monitor {out},{w}x{h}@{fps},{hx}x{hy},1"

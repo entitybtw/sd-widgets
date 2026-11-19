@@ -80,6 +80,7 @@ impl Default for Logger {
 pub struct HaRuntime {
     pub status: HaStatus,
     pub entities: Vec<HaEntity>,
+    pub areas: Vec<String>,
     pub client: Option<HaClient>,
     pub last_sync: Instant,
 }
@@ -99,6 +100,7 @@ impl HaRuntime {
                 favorites: cfg.ha.favorites.clone(),
             },
             entities: Vec::new(),
+            areas: Vec::new(),
             client,
             last_sync: Instant::now() - Duration::from_secs(3600),
         }
@@ -119,6 +121,7 @@ impl HaRuntime {
                 self.status.last_sync_ms = states.fetched_ms;
                 self.status.error.clear();
                 self.entities = states.entities;
+                self.areas = states.areas;
                 self.last_sync = Instant::now();
                 Ok(())
             }
