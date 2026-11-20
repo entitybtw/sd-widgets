@@ -228,8 +228,13 @@ pub struct App {
     bluetooth: Option<sdw_core::model::BluetoothStatus>,
     bluetooth_pending: bool,
     bluetooth_loaded: bool,
+    /// When the last status was read: the page reloads on its own once it is
+    /// older than a couple of seconds.
+    bluetooth_at: Option<Instant>,
     bluetooth_err: String,
     bluetooth_remove: Option<String>,
+    /// The action in flight, with the device it belongs to, so its row spins.
+    bluetooth_busy: Option<(String, String)>,
 
     // updates
     update_info: Option<UpdateInfo>,
@@ -465,8 +470,10 @@ impl App {
             bluetooth: None,
             bluetooth_pending: false,
             bluetooth_loaded: false,
+            bluetooth_at: None,
             bluetooth_err: String::new(),
             bluetooth_remove: None,
+            bluetooth_busy: None,
             update_info: None,
             update_error: String::new(),
             update_checking: false,
@@ -654,20 +661,29 @@ impl App {
                 TaskResult::Bluetooth(Ok(status)) => {
                     self.bluetooth_pending = false;
                     self.bluetooth_loaded = true;
+                    self.bluetooth_at = Some(Instant::now());
                     self.bluetooth_err = status.error.clone();
                     self.bluetooth = Some(status);
                 }
                 TaskResult::Bluetooth(Err(e)) => {
                     self.bluetooth_pending = false;
                     self.bluetooth_loaded = true;
+                    self.bluetooth_at = Some(Instant::now());
                     self.bluetooth_err = e;
                 }
                 TaskResult::BtAction(Ok(message)) => {
                     self.toast(message, true);
+                    self.bluetooth_busy = None;
                     self.bluetooth_loaded = false;
+                    self.bluetooth_at = None;
                     self.bluetooth_remove = None;
                 }
-                TaskResult::BtAction(Err(e)) => self.toast(e, false),
+                TaskResult::BtAction(Err(e)) => {
+                    self.bluetooth_busy = None;
+                    self.bluetooth_loaded = false;
+                    self.bluetooth_at = None;
+                    self.toast(e, false);
+                }
                 TaskResult::Installed(Ok(msg)) => self.toast(msg, true),
                 TaskResult::Installed(Err(e)) => self.toast(format!("установка: {e}"), false),
             }
@@ -4237,25 +4253,45 @@ impl App {
                 "headphones, keyboards and other devices, with battery where reported."
             ),
         );
-        if !self.bluetooth_loaded && !self.bluetooth_pending {
+        // The page is opened in the middle of a pairing session more often than
+        // not, and BlueZ changes state behind its back: while the tab is open
+        // the status is re-read every couple of seconds, and right away after a
+        // press. Nothing is left to a "refresh" button.
+        let age = self.bluetooth_at.map(|at| at.elapsed());
+        let stale = age.map(|age| age > Duration::from_secs(2)).unwrap_or(true);
+        if self.bluetooth_busy.is_none()
+            && (!self.bluetooth_loaded || stale)
+            && !self.bluetooth_pending
+        {
             self.bluetooth_pending = true;
-            self.spawn(|| TaskResult::Bluetooth(Ok(crate::bluetooth::status())));
+            let lang = self.lang;
+            self.spawn(move || TaskResult::Bluetooth(Ok(crate::bluetooth::status(lang))));
+            ui.ctx().request_repaint_after(Duration::from_secs(2));
         }
 
         let status = self.bluetooth.clone();
         let mut action: Option<(&'static str, String)> = None;
         let mut remove_ask: Option<String> = None;
-        let mut refresh = false;
+
+        // An action in flight: its row spins and its state has already changed,
+        // so a press never looks ignored. BlueZ can take a whole pairing to
+        // answer, and that is exactly when a spinner matters.
+        let busy = self.bluetooth_busy.clone();
+        let busy_for = |name: &str, address: &str| {
+            busy.as_ref()
+                .is_some_and(|(a, addr)| a == name && addr == address)
+        };
 
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
                 ui.label(hud(t!(self.lang, "адаптер", "adapter"), t.faint));
-                if self.bluetooth_pending {
+                if self.bluetooth_pending || busy.is_some() {
                     ui.spinner();
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ghost(ui, t!(self.lang, "обновить", "refresh"), t).clicked() {
-                        refresh = true;
+                        self.bluetooth_loaded = false;
+                        self.bluetooth_at = None;
                     }
                 });
             });
@@ -4282,22 +4318,52 @@ impl App {
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
-                        if primary(ui, t!(self.lang, "искать устройства", "scan"), t).clicked()
-                        {
-                            action = Some(("scan", String::new()));
+                        // One scan button that knows whether it starts or stops:
+                        // a second press must not pile up another scan.
+                        let scanning = bt.discovering;
+                        let label = if scanning {
+                            t!(self.lang, "остановить поиск", "stop scanning")
+                        } else {
+                            t!(self.lang, "искать устройства", "scan for devices")
+                        };
+                        let scan = if scanning {
+                            ghost(ui, label, t)
+                        } else {
+                            primary(ui, label, t)
+                        };
+                        if scan.clicked() {
+                            action =
+                                Some((if scanning { "scan_off" } else { "scan" }, String::new()));
                         }
-                        if bt.powered {
-                            if ghost(ui, t!(self.lang, "выключить bluetooth", "bluetooth off"), t)
-                                .clicked()
-                            {
-                                action = Some(("power_off", String::new()));
-                            }
-                        } else if ghost(ui, t!(self.lang, "включить bluetooth", "bluetooth on"), t)
-                            .clicked()
-                        {
-                            action = Some(("power_on", String::new()));
+                        let (label, power_action) = if bt.powered {
+                            (
+                                t!(self.lang, "выключить bluetooth", "bluetooth off"),
+                                "power_off",
+                            )
+                        } else {
+                            (
+                                t!(self.lang, "включить bluetooth", "bluetooth on"),
+                                "power_on",
+                            )
+                        };
+                        if ghost(ui, label, t).clicked() {
+                            action = Some((power_action, String::new()));
+                        }
+                        if busy_for("scan", "") || busy_for("scan_off", "") {
+                            ui.spinner();
                         }
                     });
+                    if bt.discovering {
+                        small(
+                            ui,
+                            t!(
+                                self.lang,
+                                "держите устройство рядом и включите на нём режим сопряжения — оно появится в списке само.",
+                                "hold the device nearby and put it in pairing mode — it will appear in the list by itself."
+                            ),
+                            t.faint,
+                        );
+                    }
                 }
                 _ => small(
                     ui,
@@ -4335,6 +4401,7 @@ impl App {
         }
         for d in devices {
             let armed = self.bluetooth_remove.as_deref() == Some(d.address.as_str());
+            let working = busy.as_ref().is_some_and(|(_, addr)| addr == &d.address);
             card(ui, t, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(theme::icon(
@@ -4377,6 +4444,10 @@ impl App {
                             if pct >= 30 { t.good } else { t.warn },
                         );
                     }
+                    if working {
+                        ui.spinner();
+                        small(ui, t!(self.lang, "выполняется…", "working…"), t.accent);
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if armed {
                             if primary(ui, t!(self.lang, "точно удалить", "remove it"), t).clicked()
@@ -4386,46 +4457,111 @@ impl App {
                             if ghost(ui, t!(self.lang, "отмена", "cancel"), t).clicked() {
                                 remove_ask = Some(String::new());
                             }
+                        } else if d.connected {
+                            if ghost(ui, t!(self.lang, "отключить", "disconnect"), t).clicked()
+                            {
+                                action = Some(("disconnect", d.address.clone()));
+                            }
+                            if ghost(ui, t!(self.lang, "удалить", "remove"), t).clicked() {
+                                remove_ask = Some(d.address.clone());
+                            }
+                        } else if d.blocked {
+                            if ghost(ui, t!(self.lang, "удалить", "remove"), t).clicked() {
+                                remove_ask = Some(d.address.clone());
+                            }
                         } else {
+                            // The action a person actually wants sits on the
+                            // right edge, and one press is enough: an unpaired
+                            // device is paired and connected in one go.
+                            if primary(ui, t!(self.lang, "подключить", "connect"), t).clicked()
+                            {
+                                action = Some((
+                                    if d.paired { "connect" } else { "pair_connect" },
+                                    d.address.clone(),
+                                ));
+                            }
                             if ghost(ui, t!(self.lang, "удалить", "remove"), t).clicked() {
                                 remove_ask = Some(d.address.clone());
                             }
                             if !d.trusted
-                                && !d.connected
                                 && ghost(ui, t!(self.lang, "доверять", "trust"), t).clicked()
                             {
                                 action = Some(("trust", d.address.clone()));
                             }
-                            if !d.paired {
-                                if ghost(ui, t!(self.lang, "спарить", "pair"), t).clicked() {
-                                    action = Some(("pair", d.address.clone()));
-                                }
-                            } else if d.connected {
-                                if ghost(ui, t!(self.lang, "отключить", "disconnect"), t).clicked()
-                                {
-                                    action = Some(("disconnect", d.address.clone()));
-                                }
-                            } else if primary(ui, t!(self.lang, "подключить", "connect"), t)
-                                .clicked()
-                            {
-                                action = Some(("connect", d.address.clone()));
-                            }
                         }
                     });
                 });
+                if d.blocked {
+                    small(
+                        ui,
+                        t!(
+                            self.lang,
+                            "устройство заблокировано в bluez — сначала разблокируйте его в системе.",
+                            "the device is blocked in bluez — unblock it in the system first."
+                        ),
+                        t.warn,
+                    );
+                }
             });
             ui.add_space(6.0);
         }
 
-        if refresh {
-            self.bluetooth_loaded = false;
-        }
         if let Some(address) = remove_ask {
             self.bluetooth_remove = (!address.is_empty()).then_some(address);
         }
         if let Some((action, address)) = action {
             self.bluetooth_remove = None;
-            self.spawn(move || TaskResult::BtAction(crate::bluetooth::action(action, &address)));
+            // Show the result of the press at once; the refresh after the reply
+            // reconciles with what BlueZ actually did.
+            self.bluetooth_optimistic(action, &address);
+            self.bluetooth_busy = Some((action.to_string(), address.clone()));
+            let lang = self.lang;
+            self.spawn(move || {
+                TaskResult::BtAction(crate::bluetooth::action(action, &address, lang))
+            });
+        }
+    }
+
+    /// Move the Bluetooth state the moment a button is pressed, so the page
+    /// answers at the speed of the finger and the reply only corrects it.
+    fn bluetooth_optimistic(&mut self, action: &str, address: &str) {
+        let Some(bt) = self.bluetooth.as_mut() else {
+            return;
+        };
+        match action {
+            "power_on" => bt.powered = true,
+            "power_off" => {
+                bt.powered = false;
+                bt.discovering = false;
+            }
+            "scan" => {
+                bt.powered = true;
+                bt.discovering = true;
+            }
+            "scan_off" => bt.discovering = false,
+            _ => {}
+        }
+        if address.is_empty() {
+            return;
+        }
+        if action == "remove" {
+            bt.devices.retain(|d| d.address != address);
+            return;
+        }
+        if let Some(d) = bt.devices.iter_mut().find(|d| d.address == address) {
+            match action {
+                "pair" => d.paired = true,
+                "pair_connect" => {
+                    d.paired = true;
+                    d.trusted = true;
+                    d.connected = true;
+                }
+                "connect" => d.connected = true,
+                "disconnect" => d.connected = false,
+                "trust" => d.trusted = true,
+                "untrust" => d.trusted = false,
+                _ => {}
+            }
         }
     }
 

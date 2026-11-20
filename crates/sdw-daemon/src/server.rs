@@ -128,7 +128,11 @@ fn handle(state: Arc<AppState>, mut req: Request) {
 
         (Method::Post, "/api/v1/remote") => remote_command(state, req),
         (Method::Post, "/api/v1/power") => power_command(state, req),
-        (Method::Get, "/api/v1/bluetooth") => respond_json(req, 200, &crate::bluetooth::status()),
+        (Method::Get, "/api/v1/bluetooth") => respond_json(
+            req,
+            200,
+            &crate::bluetooth::status(sdw_core::Lang::from_code(&state.cfg().lang)),
+        ),
         (Method::Post, "/api/v1/bluetooth/action") => bluetooth_action(state, req),
         (Method::Get, "/api/v1/apps") => apps_list(req),
         (Method::Post, "/api/v1/apps/launch") => app_launch(state, req),
@@ -626,7 +630,8 @@ fn bluetooth_action(state: Arc<AppState>, mut req: Request) {
         .and_then(Value::as_str)
         .unwrap_or("")
         .trim();
-    match crate::bluetooth::action(action, address) {
+    let lang = sdw_core::Lang::from_code(&state.cfg().lang);
+    match crate::bluetooth::action(action, address, lang) {
         Ok(message) => {
             state
                 .logger

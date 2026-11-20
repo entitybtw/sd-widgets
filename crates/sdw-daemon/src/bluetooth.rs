@@ -7,15 +7,24 @@
 //! the desktop panel.
 
 use sdw_core::model::{BluetoothDevice, BluetoothStatus};
+use sdw_core::{t, Lang};
 use std::process::Command;
 
-pub fn status() -> BluetoothStatus {
+pub fn status(lang: Lang) -> BluetoothStatus {
     let mut out = BluetoothStatus::default();
     if !sdw_core::util::has("bluetoothctl") {
-        out.error = "Нужен bluetoothctl (пакет bluez)".into();
+        out.error = t!(
+            lang,
+            "нужен bluetoothctl (пакет bluez)",
+            "bluetoothctl is missing (bluez package)"
+        )
+        .into();
         return out;
     }
-    let show = match run(&["show"]) {
+    // One `bluetoothctl` answers `show` and `devices` together, so a status
+    // refresh is a pair of processes instead of one per device: the page can be
+    // reloaded after every press without a visible pause.
+    let listing = match script(&["show".into(), "devices".into()]) {
         Ok(text) => text,
         Err(e) => {
             out.error = e;
@@ -23,36 +32,65 @@ pub fn status() -> BluetoothStatus {
         }
     };
     let mut adapter = String::new();
-    for line in show.lines() {
-        let line = line.trim();
+    let mut listed: Vec<(String, String)> = Vec::new();
+    for raw in listing.lines() {
+        let line = raw.trim_end_matches('\r').trim();
         if let Some(rest) = line.strip_prefix("Controller ") {
             adapter = rest.split_whitespace().next().unwrap_or("").to_string();
         } else if let Some(value) = line.strip_prefix("Powered:") {
             out.powered = value.trim().eq_ignore_ascii_case("yes");
         } else if let Some(value) = line.strip_prefix("Discovering:") {
             out.discovering = value.trim().eq_ignore_ascii_case("yes");
+        } else if let Some(rest) = line.strip_prefix("Device ") {
+            let mut parts = rest.splitn(2, ' ');
+            let address = parts.next().unwrap_or("").trim();
+            let name = parts.next().unwrap_or("").trim();
+            if valid_address(address) {
+                listed.push((address.to_string(), name.to_string()));
+            }
         }
     }
     if adapter.is_empty() {
-        out.error = "Bluetooth-адаптер не найден".into();
+        out.error = t!(
+            lang,
+            "bluetooth-адаптер не найден",
+            "no bluetooth adapter found"
+        )
+        .into();
         return out;
     }
     out.available = true;
     out.adapter = adapter;
 
-    let list = run(&["devices"]).unwrap_or_default();
-    for line in list.lines() {
-        let Some(rest) = line.trim().strip_prefix("Device ") else {
-            continue;
-        };
-        let mut parts = rest.splitn(2, ' ');
-        let address = parts.next().unwrap_or("").trim();
-        let name = parts.next().unwrap_or("").trim();
-        if !valid_address(address) {
-            continue;
+    if listed.is_empty() {
+        return out;
+    }
+    // Every `info` in the same process; the blocks are split back apart below.
+    let commands: Vec<String> = listed.iter().map(|(a, _)| format!("info {a}")).collect();
+    let details = script(&commands).unwrap_or_default();
+    let mut blocks: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut current: Option<&str> = None;
+    for raw in details.lines() {
+        let line = raw.trim_end_matches('\r').trim();
+        if let Some(rest) = line.strip_prefix("Device ") {
+            if let Some(address) = rest.split_whitespace().next() {
+                if valid_address(address) && !blocks.contains_key(address) {
+                    blocks.insert(address.to_string(), String::new());
+                    current = Some(address);
+                    continue;
+                }
+            }
         }
-        let info = run(&["info", address]).unwrap_or_default();
-        let mut device = parse_info(address, name, &info);
+        if let Some(address) = current {
+            if let Some(block) = blocks.get_mut(address) {
+                block.push_str(line);
+                block.push('\n');
+            }
+        }
+    }
+    for (address, name) in &listed {
+        let info = blocks.get(address).map(String::as_str).unwrap_or("");
+        let mut device = parse_info(address, name, info);
         if device.battery.is_none() && device.connected {
             device.battery = upower_battery(address);
         }
@@ -66,6 +104,39 @@ pub fn status() -> BluetoothStatus {
             .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
     out
+}
+
+/// Feed a list of commands to one `bluetoothctl` and take its output. The CLI
+/// prints prompts with ANSI escapes between commands; nothing here matches a
+/// prompt line, so the callers read the value lines and ignore the rest.
+fn script(commands: &[String]) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("bluetoothctl")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("bluetoothctl: {e}"))?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        for command in commands {
+            let _ = writeln!(stdin, "{command}");
+        }
+        let _ = writeln!(stdin, "quit");
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("bluetoothctl: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() && text.trim().is_empty() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        return Err(if err.is_empty() {
+            format!("bluetoothctl: код {}", out.status.code().unwrap_or(-1))
+        } else {
+            err
+        });
+    }
+    Ok(text)
 }
 
 fn parse_info(address: &str, listed_name: &str, info: &str) -> BluetoothDevice {
@@ -129,23 +200,27 @@ fn upower_battery(address: &str) -> Option<u8> {
 
 /// Run one declared Bluetooth action. Addresses are checked here, so the deck
 /// cannot use the CLI as a free-form command channel.
-pub fn action(action: &str, address: &str) -> Result<String, String> {
+pub fn action(action: &str, address: &str, lang: Lang) -> Result<String, String> {
     let action = action.trim();
+    let invalid = || t!(lang, "неверный адрес устройства", "invalid device address").to_string();
     match action {
         "scan" => {
             // BlueZ scans until told to stop; a detached process ends by itself.
             sdw_core::util::spawn_detached("bluetoothctl", &["--timeout", "12", "scan", "on"])
-                .map(|_| "поиск устройств".into())
+                .map(|_| t!(lang, "поиск устройств", "scanning for devices").to_string())
         }
-        "scan_off" => run(&["scan", "off"]).map(|_| "поиск остановлен".into()),
-        "power_on" => run(&["power", "on"]).map(|_| "Bluetooth включён".into()),
-        "power_off" => run(&["power", "off"]).map(|_| "Bluetooth выключен".into()),
+        "scan_off" => run(&["scan", "off"])
+            .map(|_| t!(lang, "поиск остановлен", "scanning stopped").to_string()),
+        "power_on" => run(&["power", "on"])
+            .map(|_| t!(lang, "bluetooth включён", "bluetooth is on").to_string()),
+        "power_off" => run(&["power", "off"])
+            .map(|_| t!(lang, "bluetooth выключен", "bluetooth is off").to_string()),
         // One press from the deck has to be enough: BlueZ keeps pairing and
         // connecting as two separate steps, so the daemon runs both and only
         // reports success when the device is actually connected.
         "pair_connect" => {
             if !valid_address(address) {
-                return Err("Неверный адрес устройства".into());
+                return Err(invalid());
             }
             let pair = run(&["--timeout", "25", "pair", address]);
             if let Err(e) = &pair {
@@ -160,31 +235,32 @@ pub fn action(action: &str, address: &str) -> Result<String, String> {
                     return Err(e.clone());
                 }
             }
-            run(&["--timeout", "25", "connect", address]).map(|_| message("connect", address))
+            // Remembering the device makes the next visit connect by itself.
+            let _ = run(&["trust", address]);
+            run(&["--timeout", "25", "connect", address]).map(|_| message(lang, "connect", address))
         }
         "connect" | "disconnect" | "pair" | "trust" | "untrust" | "remove" | "info" => {
             if !valid_address(address) {
-                return Err("Неверный адрес устройства".into());
+                return Err(invalid());
             }
-            let verb = match action {
-                "info" => "info",
-                other => other,
-            };
-            run(&["--timeout", "20", verb, address]).map(|_| message(verb, address))
+            run(&["--timeout", "20", action, address]).map(|_| message(lang, action, address))
         }
-        other => Err(format!("Неизвестное действие: {other}")),
+        other => Err(format!(
+            "{} {other}",
+            t!(lang, "неизвестное действие:", "unknown action:")
+        )),
     }
 }
 
-fn message(verb: &str, address: &str) -> String {
+fn message(lang: Lang, verb: &str, address: &str) -> String {
     let what = match verb {
-        "connect" => "подключено",
-        "disconnect" => "отключено",
-        "pair" => "спарено",
-        "trust" => "доверенное устройство",
-        "untrust" => "больше не доверенное",
-        "remove" => "удалено",
-        _ => "готово",
+        "connect" => t!(lang, "подключено", "connected"),
+        "disconnect" => t!(lang, "отключено", "disconnected"),
+        "pair" => t!(lang, "спарено", "paired"),
+        "trust" => t!(lang, "доверенное устройство", "trusted"),
+        "untrust" => t!(lang, "больше не доверенное", "no longer trusted"),
+        "remove" => t!(lang, "удалено", "removed"),
+        _ => t!(lang, "готово", "done"),
     };
     format!("{address}: {what}")
 }
