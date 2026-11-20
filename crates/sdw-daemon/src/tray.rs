@@ -10,7 +10,7 @@ use crate::state::AppState;
 use sdw_core::t;
 use sdw_core::Lang;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Duration;
@@ -52,8 +52,7 @@ fn start_linux(state: Arc<AppState>) -> Option<TrayHandle> {
     let stop_thread = stop.clone();
     let bus_name = format!("org.kde.StatusNotifierItem-{}-1", std::process::id());
     let title = format!("sd-widgets · {}", sdw_core::util::hostname());
-    let lang = Lang::from_code(&state.cfg().lang);
-    let port = state.cfg().api_port;
+    let menu_state = Arc::clone(&state);
 
     let (ready_tx, ready_rx) = channel::<bool>();
     let logger = state.logger.clone();
@@ -66,7 +65,10 @@ fn start_linux(state: Arc<AppState>) -> Option<TrayHandle> {
                 pixmaps: icon_pixmaps(),
                 menu: menu_path(),
             };
-            let menu = Menu { lang, port };
+            let menu = Menu {
+                state: menu_state,
+                revision: AtomicU32::new(1),
+            };
             let name_for_conn = bus_name.clone();
             let built = (move || -> zbus::Result<Connection> {
                 let conn = Connection::session()?;
@@ -179,6 +181,19 @@ impl Sni {
         self.menu.clone()
     }
 
+    /// Left click on the icon: the same as the first menu entry.
+    fn activate(&self, _x: i32, _y: i32) {
+        crate::config::request("show");
+    }
+
+    /// Middle click and wheel have no meaning here, but a bar calls them and
+    /// must not see "unknown method".
+    fn secondary_activate(&self, _x: i32, _y: i32) {}
+
+    fn context_menu(&self, _x: i32, _y: i32) {}
+
+    fn scroll(&self, _delta: i32, _orientation: &str) {}
+
     #[zbus(property)]
     fn tool_tip(&self) -> (String, Vec<(i32, i32, Vec<u8>)>, String, String) {
         (
@@ -192,46 +207,84 @@ impl Sni {
 
 #[cfg(target_os = "linux")]
 struct Menu {
-    lang: Lang,
-    port: u16,
+    state: Arc<AppState>,
+    /// Bumped when the menu changes; clients refetch on `LayoutUpdated`.
+    revision: AtomicU32,
 }
 
 #[cfg(target_os = "linux")]
+type MenuProps = HashMap<String, zbus::zvariant::OwnedValue>;
+#[cfg(target_os = "linux")]
+type MenuNode = (i32, MenuProps, Vec<zbus::zvariant::Value<'static>>);
+
+/// Menu ids. The numbers are part of the D-Bus contract, not an enum.
+#[cfg(target_os = "linux")]
+const MENU_OPEN: i32 = 1;
+#[cfg(target_os = "linux")]
+const MENU_WEB: i32 = 2;
+#[cfg(target_os = "linux")]
+const MENU_SEPARATOR: i32 = 3;
+#[cfg(target_os = "linux")]
+const MENU_QUIT: i32 = 4;
+
+#[cfg(target_os = "linux")]
 impl Menu {
-    fn open_label(&self) -> &'static str {
-        t!(self.lang, "открыть окно", "open window")
-    }
-    fn web_label(&self) -> &'static str {
-        t!(self.lang, "веб-интерфейс", "web interface")
-    }
-    fn quit_label(&self) -> &'static str {
-        t!(self.lang, "выход", "quit")
+    fn lang(&self) -> Lang {
+        Lang::from_code(&self.state.cfg().lang)
     }
 
-    /// One menu entry as a dbusmenu `(ia{sv}av)` structure.
-    fn item(&self, id: i32, label: &str, enabled: bool) -> zbus::zvariant::Value<'static> {
-        let mut props: HashMap<String, zbus::zvariant::OwnedValue> = HashMap::new();
-        props.insert("label".into(), owned(label.to_string()));
-        props.insert("enabled".into(), owned(enabled));
-        props.insert("visible".into(), owned(true));
-        if label.is_empty() {
-            props.insert("type".into(), owned("separator"));
-        } else {
-            props.insert("type".into(), owned("standard"));
+    fn label_of(&self, id: i32) -> String {
+        let lang = self.lang();
+        match id {
+            MENU_OPEN => t!(lang, "открыть окно", "open window").to_string(),
+            MENU_WEB => t!(lang, "веб-интерфейс", "web interface").to_string(),
+            MENU_QUIT => t!(lang, "выход", "quit").to_string(),
+            _ => String::new(),
         }
-        let children: Vec<zbus::zvariant::Value<'static>> = Vec::new();
-        zbus::zvariant::Value::Structure(zbus::zvariant::Structure::from((id, props, children)))
     }
 
-    fn layout(&self) -> zbus::zvariant::Value<'static> {
-        let children = vec![
-            self.item(1, self.open_label(), true),
-            self.item(2, self.web_label(), true),
-            self.item(3, "", false),
-            self.item(4, self.quit_label(), true),
-        ];
-        let props: HashMap<String, zbus::zvariant::OwnedValue> = HashMap::new();
-        zbus::zvariant::Value::Structure(zbus::zvariant::Structure::from((0, props, children)))
+    /// The properties of one entry. `names` is what the client asked for; an
+    /// empty list means everything. Unknown entries still answer with `type`
+    /// so a client can drop them instead of drawing a blank row.
+    fn props_of(&self, id: i32, names: &[String]) -> MenuProps {
+        let mut all: MenuProps = HashMap::new();
+        if id == 0 {
+            // The root is a container, not an entry: giving it a type and an
+            // empty label makes some clients draw a blank row above the menu.
+            all.insert("children-display".into(), owned("submenu"));
+            return all;
+        }
+        let separator = id == MENU_SEPARATOR;
+        all.insert("label".into(), owned(self.label_of(id)));
+        all.insert(
+            "type".into(),
+            owned(if separator { "separator" } else { "standard" }),
+        );
+        all.insert("enabled".into(), owned(!separator));
+        all.insert("visible".into(), owned(true));
+        if names.is_empty() {
+            return all;
+        }
+        all.into_iter()
+            .filter(|(k, _)| names.iter().any(|n| n == k))
+            .collect()
+    }
+
+    /// One node of the tree. `depth` is the dbusmenu recursion depth: -1 means
+    /// everything, 0 the node alone, n its n levels of children.
+    fn node(&self, id: i32, depth: i32, names: &[String]) -> MenuNode {
+        let expand = (id == 0 || id == -1) && (depth < 0 || depth > 0);
+        let next = if depth > 0 { depth - 1 } else { depth };
+        let children = if expand {
+            [MENU_OPEN, MENU_WEB, MENU_SEPARATOR, MENU_QUIT]
+                .into_iter()
+                .map(|child| zbus::zvariant::Value::Structure(self.node(child, next, names).into()))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let parent = if -1 == id { 0 } else { id };
+        (parent, self.props_of(parent, names), children)
     }
 }
 
@@ -253,58 +306,38 @@ impl Menu {
         "normal"
     }
 
+    /// The root node with its entries. Returning a node that already contains
+    /// the root again (`(0, ..(0, ..)))`) is what made bars draw an empty
+    /// menu: the tree must start at the requested parent and hold the entries
+    /// directly.
     fn get_layout(
         &self,
-        _parent_id: i32,
-        _recursion_depth: i32,
-        _property_names: Vec<String>,
-    ) -> (
-        u32,
-        (
-            i32,
-            HashMap<String, zbus::zvariant::OwnedValue>,
-            Vec<zbus::zvariant::Value<'static>>,
-        ),
-    ) {
-        (1, (0, HashMap::new(), vec![self.layout()]))
+        parent_id: i32,
+        recursion_depth: i32,
+        property_names: Vec<String>,
+    ) -> (u32, MenuNode) {
+        let node = self.node(parent_id, recursion_depth, &property_names);
+        (self.revision.load(Ordering::Relaxed), node)
     }
 
     fn get_group_properties(
         &self,
         ids: Vec<i32>,
-        _property_names: Vec<String>,
-    ) -> Vec<(i32, HashMap<String, zbus::zvariant::OwnedValue>)> {
-        let mut out = Vec::new();
-        for id in ids {
-            let (label, enabled) = match id {
-                1 => (self.open_label(), true),
-                2 => (self.web_label(), true),
-                4 => (self.quit_label(), true),
-                _ => ("", false),
-            };
-            let mut props: HashMap<String, zbus::zvariant::OwnedValue> = HashMap::new();
-            props.insert("label".into(), owned(label));
-            props.insert("enabled".into(), owned(enabled));
-            props.insert("visible".into(), owned(true));
-            out.push((id, props));
-        }
-        out
+        property_names: Vec<String>,
+    ) -> Vec<(i32, MenuProps)> {
+        ids.into_iter()
+            .map(|id| (id, self.props_of(id, &property_names)))
+            .collect()
     }
 
     fn get_property(&self, id: i32, name: &str) -> zbus::fdo::Result<zbus::zvariant::OwnedValue> {
-        let (label, enabled) = match id {
-            1 => (self.open_label(), true),
-            2 => (self.web_label(), true),
-            4 => (self.quit_label(), true),
-            _ => ("", false),
-        };
-        Ok(match name {
-            "label" => owned(label),
-            "enabled" => owned(enabled),
-            "visible" => owned(true),
-            "type" => owned(if id == 3 { "separator" } else { "standard" }),
-            _ => owned(""),
-        })
+        let names = [name.to_string()];
+        match self.props_of(id, &names).into_iter().next() {
+            Some((_, value)) => Ok(value),
+            None => Err(zbus::fdo::Error::Failed(format!(
+                "no property {name} on item {id}"
+            ))),
+        }
     }
 
     fn event(&self, id: i32, event_id: &str, _data: zbus::zvariant::Value<'_>, _timestamp: u32) {
@@ -312,16 +345,16 @@ impl Menu {
             return;
         }
         match id {
-            1 => crate::config::request("show"),
-            2 => {
-                let url = format!("http://127.0.0.1:{}", self.port);
+            MENU_OPEN => crate::config::request("show"),
+            MENU_WEB => {
+                let url = format!("http://127.0.0.1:{}", self.state.cfg().api_port);
                 let _ = std::process::Command::new("xdg-open")
                     .arg(&url)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .spawn();
             }
-            4 => crate::config::request("quit"),
+            MENU_QUIT => crate::config::request("quit"),
             _ => {}
         }
     }
