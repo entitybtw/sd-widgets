@@ -617,6 +617,11 @@ pub struct App {
     pub popups: Vec<NotifPopup>,
     /// Decoded notification pictures, keyed by notification id.
     pub notif_art: HashMap<u64, Option<egui::TextureHandle>>,
+    /// How many pictures may still be decoded in this pass. Decoding a whole
+    /// list of JPEGs at once is what made the notifications page hitch.
+    pub notif_art_budget: u8,
+    /// The pass the budget above belongs to.
+    pub notif_art_pass: u64,
     /// The system on-screen keyboard is open for the focused field.
     pub kb_open: bool,
     pub task_tx: Sender<Task>,
@@ -810,6 +815,8 @@ impl App {
             toast: None,
             popups: Vec::new(),
             notif_art: HashMap::new(),
+            notif_art_budget: 2,
+            notif_art_pass: 0,
             kb_open: false,
             task_tx,
             task_rx,
@@ -2367,6 +2374,20 @@ impl App {
         if let Some(slot) = self.notif_art.get(&id) {
             return slot.clone();
         }
+        // Two pictures per pass is invisible to the eye and keeps the page
+        // responsive while a list of them fills in from the top.
+        let pass = ctx.cumulative_pass_nr();
+        if self.notif_art_pass != pass {
+            self.notif_art_pass = pass;
+            self.notif_art_budget = 2;
+        }
+        if self.notif_art_budget == 0 {
+            // The placeholder is drawn for this frame; a repaint right after
+            // lets the next picture decode.
+            ctx.request_repaint();
+            return None;
+        }
+        self.notif_art_budget -= 1;
         let tex = sdw_core::util::b64_decode(image)
             .and_then(|bytes| image::load_from_memory(&bytes).ok())
             .map(|img| {
@@ -2638,14 +2659,20 @@ impl App {
                     )
                 });
             }
-            other => match crate::actions::run(other, self.lang) {
-                Ok(message) => {
-                    if !message.is_empty() {
-                        self.toast(message, true);
-                    }
+            other => {
+                // Local actions spawn processes and a shell command can run
+                // for seconds; doing that on the UI thread froze the whole
+                // deck, so a bind looked like the app had hung. Tell the user
+                // it started, then report the result when the thread is done.
+                if matches!(other, Action::Shell { .. } | Action::Launch { .. }) {
+                    self.toast(t!(self.lang, "выполняется…", "running…").to_string(), true);
                 }
-                Err(e) => self.toast(e, false),
-            },
+                let action = other.clone();
+                let lang = self.lang;
+                self.spawn(move || {
+                    Task::Msg(crate::actions::run(&action, lang).map_err(|e| e.to_string()))
+                });
+            }
         }
     }
 
@@ -3361,15 +3388,23 @@ impl App {
             .frame(egui::Frame::new().fill(t.bg).inner_margin(Margin {
                 left,
                 right,
-                top: 4,
+                // The page rises a touch as it fades in. It is the panel
+                // margin, not a spacer inside the scroll area: a spacer would
+                // change the content height on every frame of the swap and
+                // make the list re-lay out under the finger.
+                top: (4.0 + (1.0 - ease) * 14.0) as i8,
                 bottom: 4,
             }))
             .show(root, |ui| {
                 theme::backdrop(ui, &t);
                 ui.set_opacity(ease * drag_fade);
-                ui.add_space((1.0 - ease) * 14.0);
-                self.page_scroll_id =
-                    Some(ui.make_persistent_id(egui::IdSalt::new(("deck-page", self.page_epoch))));
+                // The ScrollArea claims its background drags under
+                // `id.with("area")`; it is the one drag that must not block
+                // the page swipe, so remember the same id.
+                self.page_scroll_id = Some(
+                    ui.make_persistent_id(egui::IdSalt::new(("deck-page", self.page_epoch)))
+                        .with("area"),
+                );
                 let area = ScrollArea::vertical()
                     .id_salt(("deck-page", self.page_epoch))
                     .auto_shrink([false, false])

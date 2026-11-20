@@ -1059,10 +1059,13 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut ask: Option<PowerAction> = None;
     let mut cancel = false;
     theme::card(ui, t, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(theme::hud(t!(lang, "питание", "power"), t.faint));
-            if !online {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        theme::row_ends(
+            ui,
+            |ui| {
+                ui.label(theme::hud(t!(lang, "питание", "power"), t.faint));
+            },
+            |ui| {
+                if !online {
                     ui.label(
                         RichText::new(t!(
                             lang,
@@ -1072,9 +1075,9 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         .size(12.0)
                         .color(t.warn),
                     );
-                });
-            }
-        });
+                }
+            },
+        );
         ui.add_space(6.0);
 
         if let Some(action) = app.power_confirm {
@@ -1100,7 +1103,11 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
         } else {
             ui.horizontal_top(|ui| {
                 let count = PowerAction::ALL.len() as f32;
-                let width = ((ui.available_width() - 8.0 * (count - 1.0)) / count).max(104.0);
+                // The slots run without gaps and centre their own contents:
+                // five slots plus four gaps rounded up past the card and the
+                // border jumped out by a dozen pixels.
+                ui.spacing_mut().item_spacing.x = 0.0;
+                let width = (ui.available_width() / count).floor().max(104.0);
                 for action in PowerAction::ALL {
                     ui.allocate_ui_with_layout(
                         Vec2::new(width, 0.0),
@@ -1132,17 +1139,20 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut refresh = false;
     let mut launched: Option<(String, String)> = None;
     theme::card(ui, t, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(theme::hud(t!(lang, "приложения", "applications"), t.faint));
-            if app.control_apps_pending {
-                ui.spinner();
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        theme::row_ends(
+            ui,
+            |ui| {
+                ui.label(theme::hud(t!(lang, "приложения", "applications"), t.faint));
+                if app.control_apps_pending {
+                    ui.spinner();
+                }
+            },
+            |ui| {
                 if theme::ghost(ui, t!(lang, "обновить", "refresh"), t).clicked() {
                     refresh = true;
                 }
-            });
-        });
+            },
+        );
         ui.horizontal(|ui| {
             ui.add(
                 TextEdit::singleline(&mut app.control_filter)
@@ -5996,10 +6006,12 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             );
         });
         ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            if theme::slider(
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 104.0).max(240.0);
+            if theme::slider_with_width(
                 ui,
                 t,
+                width,
                 t!(app.lang, "масштаб ui", "ui scale"),
                 &mut app.cfg.ui_scale,
                 0.75..=crate::app::max_ui_scale(),
@@ -6007,24 +6019,22 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ) {
                 app.save_soon();
             }
-            ui.horizontal(|ui| {
-                if theme::ghost(ui, "1×", t).clicked() {
-                    app.cfg.ui_scale = 1.0;
-                    app.save();
-                }
-            });
-            ui.add_space(4.0);
-            if theme::slider(
-                ui,
-                t,
-                t!(app.lang, "рисунок", "drawing"),
-                &mut app.deck_view.cfg.scale,
-                0.6..=1.4,
-                |v| format!("{:.0}%", v * 100.0),
-            ) {
-                app.save_soon();
+            if theme::ghost(ui, "1×", t).clicked() {
+                app.cfg.ui_scale = 1.0;
+                app.save();
             }
         });
+        ui.add_space(2.0);
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "рисунок", "drawing"),
+            &mut app.deck_view.cfg.scale,
+            0.6..=1.4,
+            |v| format!("{:.0}%", v * 100.0),
+        ) {
+            app.save_soon();
+        }
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             theme::switch(ui, &mut app.cfg.show_clock, t);
@@ -6058,19 +6068,17 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             );
         });
         ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            if theme::slider(
-                ui,
-                t,
-                t!(app.lang, "размер стрелок", "arrow size"),
-                &mut app.cfg.style.arrow_size,
-                28.0..=96.0,
-                |v| format!("{v:.0} px"),
-            ) {
-                app.apply_style(ui.ctx());
-                app.save_soon();
-            }
-        });
+        if theme::slider(
+            ui,
+            t,
+            t!(app.lang, "размер стрелок", "arrow size"),
+            &mut app.cfg.style.arrow_size,
+            28.0..=96.0,
+            |v| format!("{v:.0} px"),
+        ) {
+            app.apply_style(ui.ctx());
+            app.save_soon();
+        }
         ui.label(
             RichText::new(t!(
                 app.lang,
