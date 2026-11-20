@@ -3087,9 +3087,12 @@ impl App {
             if self.page_turn_active {
                 let width = ctx.content_rect().width().max(1.0);
                 let left = (self.page_turn_to - self.page_turn_from).abs();
-                let dur = 0.10 + 0.16 * (left / width).min(1.0);
+                // A long, sine-shaped ease: the page keeps the speed the finger
+                // gave it and loses it smoothly, instead of shooting off and
+                // stopping dead.
+                let dur = 0.20 + 0.22 * (left / width).min(1.0);
                 let k = (self.page_turn_at.elapsed().as_secs_f32() / dur).min(1.0);
-                let ease = 1.0 - (1.0 - k).powi(3);
+                let ease = (k * std::f32::consts::FRAC_PI_2).sin();
                 self.page_slide =
                     self.page_turn_from + (self.page_turn_to - self.page_turn_from) * ease;
                 if k >= 1.0 {
