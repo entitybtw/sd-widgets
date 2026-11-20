@@ -1319,6 +1319,12 @@ pub fn slider(
 /// Set the spacing before adding one.
 pub fn slider_len(ui: &mut Ui, width: f32) {
     ui.spacing_mut().slider_width = width.max(90.0);
+    // The rail is painted with `widgets.inactive.bg_fill`, which is the card
+    // colour: on a card the unfilled part of the track disappears and a slider
+    // looks cut off at its handle. The trough takes the hairline colour, so the
+    // whole track reads as one bar with the accent fill on top of it.
+    let t = Tokens::get(ui.ctx());
+    ui.visuals_mut().widgets.inactive.bg_fill = t.line;
 }
 
 /// The slider with a second flag: `true` when the finger or mouse was let go,
