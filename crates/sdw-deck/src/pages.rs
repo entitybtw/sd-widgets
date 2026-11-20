@@ -2273,9 +2273,10 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
 // ---------------------------------------------------------------- screen
 
-fn backend_list() -> [MonitorBackend; 7] {
+fn backend_list() -> [MonitorBackend; 8] {
     [
         MonitorBackend::Auto,
+        MonitorBackend::NiriVirtual,
         MonitorBackend::Hyprland,
         MonitorBackend::Vkms,
         MonitorBackend::Krfb,
@@ -2364,6 +2365,17 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ),
         t.faint,
     );
+    if monitor.niri_virtual {
+        theme::small(
+            ui,
+            t!(
+                app.lang,
+                "niri умеет виртуальные выходы (biri): дополнительный монитор рисуется тем же GPU и не зависит от VKMS.",
+                "niri can create virtual outputs (biri): the extra monitor is drawn by the same GPU and needs no VKMS."
+            ),
+            t.good,
+        );
+    }
     ui.add_space(8.0);
 
     let area = ui.available_rect_before_wrap();

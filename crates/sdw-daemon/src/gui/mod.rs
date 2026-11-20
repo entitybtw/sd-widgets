@@ -2618,6 +2618,7 @@ impl App {
                                 .show_ui(ui, |ui| {
                                     for b in [
                                         MonitorBackend::Auto,
+                                        MonitorBackend::NiriVirtual,
                                         MonitorBackend::Hyprland,
                                         MonitorBackend::Vkms,
                                         MonitorBackend::Krfb,
@@ -2697,14 +2698,50 @@ impl App {
                             ),
                         );
                     });
-                    // VKMS is the part that makes niri, sway and a virtual
-                    // machine work, so show its readiness and prepare it in
-                    // one press instead of leaving the user with a snippet.
-                    let wants_vkms = matches!(
-                        self.screen.backend,
-                        MonitorBackend::Vkms | MonitorBackend::Auto
-                    ) && self.screen.mode == MonitorMode::Extend
+                    // VKMS is the part that makes sway, a virtual machine and
+                    // a stock niri work, so show its readiness and prepare it
+                    // in one press instead of leaving the user with a snippet.
+                    let wants_vkms = (matches!(self.screen.backend, MonitorBackend::Vkms)
+                        || (self.screen.backend == MonitorBackend::Auto
+                            && !s.monitor.niri_virtual))
+                        && self.screen.mode == MonitorMode::Extend
                         && cfg!(target_os = "linux");
+                    let wants_niri = (matches!(self.screen.backend, MonitorBackend::NiriVirtual)
+                        || (self.screen.backend == MonitorBackend::Auto && s.monitor.niri_virtual))
+                        && self.screen.mode == MonitorMode::Extend;
+                    if wants_niri {
+                        ui.add_space(8.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(hud(t!(self.lang, "готовность", "readiness"), t.faint));
+                            tag(
+                                ui,
+                                if s.monitor.niri_virtual {
+                                    t!(self.lang, "виртуальные выходы niri", "niri virtual outputs")
+                                } else {
+                                    t!(self.lang, "нужен biri", "biri is required")
+                                },
+                                if s.monitor.niri_virtual {
+                                    t.good
+                                } else {
+                                    t.warn
+                                },
+                            );
+                            tag(
+                                ui,
+                                t!(self.lang, "vkms не нужен", "no vkms needed"),
+                                t.muted,
+                            );
+                        });
+                        small(
+                            ui,
+                            t!(
+                                self.lang,
+                                "дополнительный монитор рисует сам композитор, поэтому он работает и с NVIDIA. на стоковом niri установите biri: paru -S biri-altinstall-git",
+                                "the compositor draws the extra monitor itself, so it works with NVIDIA too. on stock niri install biri: paru -S biri-altinstall-git"
+                            ),
+                            t.faint,
+                        );
+                    }
                     if wants_vkms {
                         ui.add_space(8.0);
                         ui.horizontal_wrapped(|ui| {
@@ -5498,6 +5535,7 @@ fn backend_label(l: Lang, b: MonitorBackend) -> &'static str {
     match b {
         MonitorBackend::Auto => t!(l, "авто", "auto"),
         MonitorBackend::Hyprland => "hyprland headless",
+        MonitorBackend::NiriVirtual => t!(l, "niri виртуальный", "niri virtual"),
         MonitorBackend::Vkms => "vkms",
         MonitorBackend::Krfb => "kde krfb",
         MonitorBackend::Mirror => t!(l, "зеркало", "mirror"),

@@ -3,7 +3,9 @@
 //! There is no single portable way to add a monitor, so the daemon detects the
 //! compositor and picks the least surprising mechanism:
 //!
-//! * niri / wlroots: VKMS output + `grim` (or a mirror of an existing output)
+//! * niri with virtual outputs (biri or the upstream patch): an output drawn by
+//!   the compositor itself + `grim`
+//! * niri / wlroots without them: VKMS output + `grim` (or a mirror of an existing output)
 //! * Hyprland: native headless output + `grim`
 //! * KDE Plasma: `krfb-virtualmonitor` + a tiny built-in RFB client
 //! * X11: `ffmpeg -f x11grab`
@@ -21,6 +23,10 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Name of the output this daemon creates for streaming. A fixed name makes it
+/// easy to find, reuse and remove, and shows up in the Deck's output list.
+const NIRI_VIRTUAL_NAME: &str = "sdw-deck";
 
 #[derive(Debug, Clone, Default)]
 pub struct SharedFrame {
@@ -51,6 +57,9 @@ struct Inner {
     started_at: u64,
     output_rect: (i32, i32, u32, u32),
     created_output: Option<String>,
+    /// The running niri can create virtual outputs (`niri msg
+    /// create-virtual-output`), which is how biri and patched builds behave.
+    niri_virtual: bool,
     /// Output this daemon enabled for streaming, and the compositor config
     /// text from before its layout was written. Both are restored on stop, so
     /// a finished stream never leaves a phantom monitor behind.
@@ -91,6 +100,7 @@ impl MonitorManager {
             started_at: 0,
             output_rect: (0, 0, 0, 0),
             created_output: None,
+            niri_virtual: niri_virtual_available(),
             layout_output: None,
             layout_restore: None,
             rfb: false,
@@ -151,6 +161,7 @@ impl MonitorManager {
             vm: vm_kind(),
             vkms: vkms_available(),
             vkms_loaded: vkms_loaded(),
+            niri_virtual: inner.niri_virtual,
             started_at: inner.started_at,
         }
     }
@@ -172,10 +183,12 @@ impl MonitorManager {
     pub fn refresh(&self) {
         let (compositor, outputs) = detect_all();
         let tools = detect_tools();
+        let niri_virtual = niri_virtual_available();
         if let Ok(mut inner) = self.inner.lock() {
             inner.compositor = compositor;
             inner.outputs = outputs;
             inner.tools = tools;
+            inner.niri_virtual = niri_virtual;
             inner.config_hint = config_hint(
                 &inner.compositor,
                 &inner.output,
@@ -216,15 +229,25 @@ impl MonitorManager {
                 )
             })
             .unwrap_or((None, None, None, String::new()));
-        if let Some(name) = created {
-            if sdw_core::util::has("hyprctl") {
-                let _ = sdw_core::util::run("hyprctl", &["output", "remove", &name]);
-            }
-        }
         // A virtual screen that stays enabled after the stream ends leaves
         // windows on a display nobody can see, so turn it off explicitly.
         if let Some(name) = layout_output {
             disable_output(&compositor, &name);
+        }
+        // And remove an output this daemon created: nothing should be left in
+        // `niri msg outputs` or `hyprctl monitors` after the stream stops.
+        if let Some(name) = created {
+            match compositor.as_str() {
+                "niri" => {
+                    let _ = sdw_core::util::run("niri", &["msg", "remove-virtual-output", &name]);
+                }
+                "hyprland" => {
+                    if sdw_core::util::has("hyprctl") {
+                        let _ = sdw_core::util::run("hyprctl", &["output", "remove", &name]);
+                    }
+                }
+                _ => {}
+            }
         }
         // And give the compositor its original config back: the layout block
         // was written for the stream, not for the next login.
@@ -311,6 +334,51 @@ impl MonitorManager {
                         self.refresh();
                         rect = output_rect(&self.outputs(), &output);
                     }
+                }
+                MonitorBackend::NiriVirtual => {
+                    if compositor != "niri" {
+                        return Err(
+                            "Виртуальный выход niri доступен только в сессии niri или biri".into(),
+                        );
+                    }
+                    if !niri_virtual_available() {
+                        return Err("Запущенный niri не умеет создавать виртуальные выходы. \
+                             Установите biri (`paru -S biri-altinstall-git`) и войдите в сессию \
+                             biri: он рисует выход тем же GPU и не зависит от VKMS."
+                            .into());
+                    }
+                    // A previous run may have been killed before it removed its
+                    // output; a stale same-name output would make creation fail.
+                    let _ = sdw_core::util::run(
+                        "niri",
+                        &["msg", "remove-virtual-output", NIRI_VIRTUAL_NAME],
+                    );
+                    let (ws, hs, rs) = (
+                        width.to_string(),
+                        height.to_string(),
+                        fps.max(30).to_string(),
+                    );
+                    sdw_core::util::run(
+                        "niri",
+                        &[
+                            "msg",
+                            "create-virtual-output",
+                            "--name",
+                            NIRI_VIRTUAL_NAME,
+                            "--width",
+                            &ws,
+                            "--height",
+                            &hs,
+                            "--refresh-rate",
+                            &rs,
+                        ],
+                    )
+                    .map_err(|e| format!("niri не создал виртуальный выход: {e}"))?;
+                    output = NIRI_VIRTUAL_NAME.to_string();
+                    created = Some(output.clone());
+                    std::thread::sleep(Duration::from_millis(500));
+                    self.refresh();
+                    rect = output_rect(&self.outputs(), &output);
                 }
                 MonitorBackend::Vkms => {
                     if !cfg!(target_os = "linux") {
@@ -420,7 +488,10 @@ impl MonitorManager {
                 let now = self.outputs();
                 let active = now.iter().any(|o| o.name == output && o.enabled);
                 if !active {
-                    if compositor == "niri" && vkms_loaded() {
+                    if compositor == "niri"
+                        && backend != MonitorBackend::NiriVirtual
+                        && vkms_loaded()
+                    {
                         // niri asks the render GPU to draw into the extra
                         // scanner's buffers; with the NVIDIA driver it cannot
                         // produce a linear buffer, so the compositor logs
@@ -455,7 +526,11 @@ impl MonitorManager {
                 }
             }
             if compositor == "niri" {
-                let _ = sdw_core::util::run("niri", &["msg", "output", &output, "off"]);
+                if let Some(name) = created.take() {
+                    let _ = sdw_core::util::run("niri", &["msg", "remove-virtual-output", &name]);
+                } else {
+                    let _ = sdw_core::util::run("niri", &["msg", "output", &output, "off"]);
+                }
             }
             mode = MonitorMode::Mirror;
             backend = MonitorBackend::Mirror;
@@ -673,7 +748,17 @@ fn default_backend(compositor: &str, mode: MonitorMode) -> MonitorBackend {
     }
     match compositor {
         "hyprland" => MonitorBackend::Hyprland,
-        "niri" | "sway" | "wayland" => MonitorBackend::Vkms,
+        // biri (or a patched niri) draws the extra output on the same GPU, so
+        // prefer it over a VKMS device the compositor often refuses to scan
+        // out, especially with the NVIDIA driver.
+        "niri" => {
+            if niri_virtual_available() {
+                MonitorBackend::NiriVirtual
+            } else {
+                MonitorBackend::Vkms
+            }
+        }
+        "sway" | "wayland" => MonitorBackend::Vkms,
         "kde" => MonitorBackend::Krfb,
         // GNOME and an unidentified desktop have no output API the daemon can
         // drive, but VKMS still adds a real connector the compositor picks up.
@@ -833,13 +918,27 @@ fn apply_output_layout(
 
     match compositor {
         "niri" => {
-            let mode = niri_mode_string(output, width, height)
-                .unwrap_or_else(|| format!("{width}x{height}@{}", fps.max(30)));
+            let ours = output.starts_with("sdw-");
+            let mode = if ours {
+                // A virtual output accepts any mode; never borrow a physical
+                // output's mode list here.
+                format!("{width}x{height}@{}", fps.max(30))
+            } else {
+                niri_mode_string(output, width, height)
+                    .unwrap_or_else(|| format!("{width}x{height}@{}", fps.max(30)))
+            };
             let xs = x.to_string();
             let ys = y.to_string();
             for attempt in 0..2 {
                 let _ = sdw_core::util::run("niri", &["msg", "output", output, "on"]);
-                let _ = sdw_core::util::run("niri", &["msg", "output", output, "mode", &mode]);
+                if ours {
+                    let _ = sdw_core::util::run(
+                        "niri",
+                        &["msg", "output", output, "custom-mode", &mode],
+                    );
+                } else {
+                    let _ = sdw_core::util::run("niri", &["msg", "output", output, "mode", &mode]);
+                }
                 let _ = sdw_core::util::run("niri", &["msg", "output", output, "scale", "1.0"]);
                 let _ = sdw_core::util::run(
                     "niri",
@@ -1166,6 +1265,17 @@ fn niri_works() -> bool {
     sdw_core::util::run("niri", &["msg", "version"]).is_ok()
 }
 
+/// The running niri exposes `create-virtual-output`. Stock niri does not; biri
+/// (a fork carrying the virtual-output work) and patched builds do.
+fn niri_virtual_available() -> bool {
+    if !cfg!(target_os = "linux") || !sdw_core::util::has("niri") {
+        return false;
+    }
+    sdw_core::util::run("niri", &["msg", "--help"])
+        .map(|help| help.contains("create-virtual-output"))
+        .unwrap_or(false)
+}
+
 fn detect_all() -> (String, Vec<DisplayOutput>) {
     let compositor = detect_compositor();
     let mut outputs = match compositor.as_str() {
@@ -1463,7 +1573,11 @@ fn parse_geometry(s: &str) -> Option<(u32, u32, i32, i32)> {
 
 fn is_virtual_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    n.contains("virtual") || n.contains("headless") || n.contains("vkms") || n.starts_with("wl-")
+    n.contains("virtual")
+        || n.contains("headless")
+        || n.contains("vkms")
+        || n.starts_with("wl-")
+        || n.starts_with("sdw-")
 }
 
 // ---------------------------------------------------------------- tools
@@ -1488,6 +1602,11 @@ fn detect_tools() -> Vec<ToolStatus> {
             "sudo pacman -S ffmpeg",
         ),
         tool("niri", "Управление выходами niri", "sudo pacman -S niri"),
+        tool(
+            "biri",
+            "niri с виртуальными выходами (доп. монитор без VKMS)",
+            "paru -S biri-altinstall-git",
+        ),
         tool(
             "hyprctl",
             "Управление выходами Hyprland",
@@ -1556,8 +1675,11 @@ fn config_hint(
     };
     let fps = fps.max(30);
     match compositor {
+        "niri" if niri_virtual_available() => format!(
+            "# niri (biri): виртуальный выход\nniri msg create-virtual-output --name {out} --width {w} --height {h} --refresh-rate {fps}\n\n# Убрать выход:\nniri msg remove-virtual-output {out}\n\n# Демон делает это сам при запуске и остановке экрана;\n# вручную достаточно одной команды выше."
+        ),
         "niri" => format!(
-            "# niri: ~/.config/niri/config.kdl\noutput \"{out}\" {{\n    mode \"{niri_mode}\"\n    scale 1.0\n    position x={hx} y={hy}\n}}\n\n# Один раз загрузить VKMS:\nsudo modprobe vkms num_outputs=1\n\n# Чтобы виртуальный экран появлялся после перезагрузки:\n# /etc/modules-load.d/sd-widgets.conf → vkms\n# /etc/modprobe.d/sd-widgets.conf → options vkms num_outputs=1"
+            "# niri: ~/.config/niri/config.kdl\noutput \"{out}\" {{\n    mode \"{niri_mode}\"\n    scale 1.0\n    position x={hx} y={hy}\n}}\n\n# Один раз загрузить VKMS:\nsudo modprobe vkms num_outputs=1\n\n# Чтобы виртуальный экран появлялся после перезагрузки:\n# /etc/modules-load.d/sd-widgets.conf → vkms\n# /etc/modprobe.d/sd-widgets.conf → options vkms num_outputs=1\n\n# Настоящий доп. монитор без VKMS даёт biri:\n# paru -S biri-altinstall-git, затем войти в сессию biri"
         ),
         "hyprland" => format!(
             "# Hyprland: ~/.config/hypr/hyprland.conf\nmonitor={out},{w}x{h}@{fps},{hx}x{hy},1\n\n# Или одной командой:\nhyprctl output create headless\nhyprctl keyword monitor {out},{w}x{h}@{fps},{hx}x{hy},1"

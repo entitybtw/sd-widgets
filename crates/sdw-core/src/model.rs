@@ -368,6 +368,10 @@ pub enum MonitorBackend {
     #[default]
     Auto,
     Hyprland,
+    /// A real output created inside niri itself (biri or the upstream
+    /// virtual-output patch). Unlike VKMS it is rendered by the same GPU, so
+    /// it works on NVIDIA where a second DRM device cannot be scanned out.
+    NiriVirtual,
     Vkms,
     Krfb,
     Mirror,
@@ -385,6 +389,7 @@ impl MonitorBackend {
             crate::i18n::Lang::Ru => match self {
                 Self::Auto => "Авто",
                 Self::Hyprland => "Hyprland headless",
+                Self::NiriVirtual => "niri виртуальный выход",
                 Self::Vkms => "VKMS (виртуальный DRM)",
                 Self::Krfb => "KDE Krfb",
                 Self::Mirror => "Зеркало (grim)",
@@ -394,6 +399,7 @@ impl MonitorBackend {
             crate::i18n::Lang::En => match self {
                 Self::Auto => "Auto",
                 Self::Hyprland => "Hyprland headless",
+                Self::NiriVirtual => "niri virtual output",
                 Self::Vkms => "VKMS (virtual DRM)",
                 Self::Krfb => "KDE Krfb",
                 Self::Mirror => "Mirror (grim)",
@@ -498,6 +504,11 @@ pub struct MonitorStatus {
     /// The kernel has a `vkms` module that can provide a virtual output.
     #[serde(default)]
     pub vkms: bool,
+    /// The running niri was built with virtual outputs (`niri msg
+    /// create-virtual-output`). Such an output is rendered by the compositor's
+    /// own GPU and works where VKMS cannot be scanned out.
+    #[serde(default)]
+    pub niri_virtual: bool,
     /// `vkms` is loaded right now.
     #[serde(default)]
     pub vkms_loaded: bool,

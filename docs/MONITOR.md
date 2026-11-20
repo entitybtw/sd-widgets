@@ -20,9 +20,30 @@ hyprctl output create headless sdw-monitor
 The daemon then applies the requested position and size, and writes a matching
 `monitor =` line into `~/.config/hypr/hyprland.conf`.
 
-### niri (virtual, via VKMS)
+### niri / biri (virtual, native)
 
-niri has no native virtual outputs. The daemon:
+Stock niri cannot create outputs. **biri**, a niri fork that carries the
+virtual-output work, can:
+
+```
+niri msg create-virtual-output --name sdw-deck --width 1280 --height 800 --refresh-rate 60
+niri msg output sdw-deck custom-mode "1280x800@60"
+niri msg remove-virtual-output sdw-deck
+```
+
+The daemon detects this at runtime by looking for `create-virtual-output` in
+`niri msg --help`, so one binary serves both stock niri and biri. When the command
+exists, the extra screen is a real output drawn by the compositor itself: no VKMS
+module, no second DRM device, and it works with the NVIDIA proprietary driver.
+The wizard lists `biri-altinstall-git` (AUR, `paru -S biri-altinstall-git`) among
+the tools, and the session has to be biri rather than niri.
+
+The output is named `sdw-deck`, laid out on the requested side and removed again
+when the stream stops. Without biri the daemon falls back to the VKMS path below.
+
+### niri on stock (virtual, via VKMS)
+
+Stock niri has no native virtual outputs (see biri above). The daemon:
 
 1. loads `vkms`, trying `modprobe`, passwordless `sudo`, `pkexec` and finally the
    password typed in the wizard, in that order,
@@ -44,9 +65,8 @@ niri draws every output with one render GPU. A VKMS connector is a separate DRM
 device, and with the NVIDIA proprietary driver niri cannot produce a buffer the
 VKMS scanner accepts (`No supported renderer buffer format found`), so the
 connector stays off. On such a machine the extra-screen button gives a mirror,
-which is honest and works; a true second screen needs a compositor that supports
-scan-out from a second GPU (sway/wlroots or Hyprland handle this) or a GPU whose
-driver can render into linear buffers.
+which is honest and works. A true second screen on niri needs biri, whose virtual
+output is drawn by niri itself (see above).
 
 The daemon positions a new output against the outermost edge of the existing
 desktop, not against the primary display, so a "right" screen does not land on
