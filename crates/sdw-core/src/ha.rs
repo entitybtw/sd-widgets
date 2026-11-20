@@ -426,40 +426,25 @@ pub fn is_sensor(e: &HaEntity) -> bool {
 }
 
 pub fn domain_label(domain: &str, lang: crate::i18n::Lang) -> &'static str {
-    use crate::i18n::Lang;
-    match (domain, lang) {
-        ("light", Lang::Ru) => "Свет",
-        ("light", Lang::En) => "Lights",
-        ("switch", Lang::Ru) => "Выключатели",
-        ("switch", Lang::En) => "Switches",
-        ("climate", Lang::Ru) => "Климат",
-        ("climate", Lang::En) => "Climate",
-        ("media_player", Lang::Ru) => "Медиа",
-        ("media_player", Lang::En) => "Media",
-        ("scene", Lang::Ru) => "Сцены",
-        ("scene", Lang::En) => "Scenes",
-        ("script", Lang::Ru) => "Скрипты",
-        ("script", Lang::En) => "Scripts",
-        ("cover", Lang::Ru) => "Шторы",
-        ("cover", Lang::En) => "Covers",
-        ("fan", Lang::Ru) => "Вентиляторы",
-        ("fan", Lang::En) => "Fans",
-        ("sensor", Lang::Ru) => "Датчики",
-        ("sensor", Lang::En) => "Sensors",
-        ("binary_sensor", Lang::Ru) => "Датчики",
-        ("binary_sensor", Lang::En) => "Sensors",
-        (_, Lang::Ru) => "Другое",
-        (_, Lang::En) => "Other",
-    }
+    let (ru, en) = match domain {
+        "light" => ("Свет", "Lights"),
+        "switch" => ("Выключатели", "Switches"),
+        "climate" => ("Климат", "Climate"),
+        "media_player" => ("Медиа", "Media"),
+        "scene" => ("Сцены", "Scenes"),
+        "script" => ("Скрипты", "Scripts"),
+        "cover" => ("Шторы", "Covers"),
+        "fan" => ("Вентиляторы", "Fans"),
+        "sensor" | "binary_sensor" => ("Датчики", "Sensors"),
+        _ => ("Другое", "Other"),
+    };
+    word(lang, ru, en)
 }
 
 // ---------------------------------------------------------------- state text
 
 fn word(lang: crate::i18n::Lang, ru: &'static str, en: &'static str) -> &'static str {
-    match lang {
-        crate::i18n::Lang::Ru => ru,
-        crate::i18n::Lang::En => en,
-    }
+    crate::i18n::tr(lang, ru, en)
 }
 
 /// `8589.934592` in a 22 px tile is noise. Round it to something a person can

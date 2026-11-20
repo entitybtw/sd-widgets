@@ -282,20 +282,19 @@ impl PadKind {
         self.hint_lang(crate::i18n::Lang::Ru)
     }
     pub fn hint_lang(self, lang: crate::i18n::Lang) -> &'static str {
-        match lang {
-            crate::i18n::Lang::Ru => match self {
-                Self::Xbox360 => "Самый совместимый: XInput, Steam, почти все игры.",
-                Self::DualShock4 => "PS4-пад, гироскоп и тачпад.",
-                Self::DualSense => "PS5-пад, гироскоп и тачпад.",
-                Self::SwitchPro => "Nintendo Switch 2 Pro, гироскоп.",
-            },
-            crate::i18n::Lang::En => match self {
-                Self::Xbox360 => "The most compatible: XInput, Steam, nearly every game.",
-                Self::DualShock4 => "PS4 pad, gyro and touchpad.",
-                Self::DualSense => "PS5 pad, gyro and touchpad.",
-                Self::SwitchPro => "Nintendo Switch 2 Pro, gyro.",
-            },
-        }
+        let (ru, en) = match self {
+            Self::Xbox360 => (
+                "Самый совместимый: XInput, Steam, почти все игры.",
+                "The most compatible: XInput, Steam, nearly every game.",
+            ),
+            Self::DualShock4 => ("PS4-пад, гироскоп и тачпад.", "PS4 pad, gyro and touchpad."),
+            Self::DualSense => ("PS5-пад, гироскоп и тачпад.", "PS5 pad, gyro and touchpad."),
+            Self::SwitchPro => (
+                "Nintendo Switch 2 Pro, гироскоп.",
+                "Nintendo Switch 2 Pro, gyro.",
+            ),
+        };
+        crate::i18n::tr(lang, ru, en)
     }
 }
 
@@ -349,16 +348,11 @@ impl MonitorMode {
     }
 
     pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
-        match lang {
-            crate::i18n::Lang::Ru => match self {
-                Self::Extend => "Дополнительный монитор",
-                Self::Mirror => "Зеркало экрана",
-            },
-            crate::i18n::Lang::En => match self {
-                Self::Extend => "Extra monitor",
-                Self::Mirror => "Screen mirror",
-            },
-        }
+        let (ru, en) = match self {
+            Self::Extend => ("Дополнительный монитор", "Extra monitor"),
+            Self::Mirror => ("Зеркало экрана", "Screen mirror"),
+        };
+        crate::i18n::tr(lang, ru, en)
     }
 }
 
@@ -385,28 +379,17 @@ impl MonitorBackend {
     }
 
     pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
-        match lang {
-            crate::i18n::Lang::Ru => match self {
-                Self::Auto => "Авто",
-                Self::Hyprland => "Hyprland headless",
-                Self::NiriVirtual => "niri виртуальный выход",
-                Self::Vkms => "VKMS (виртуальный DRM)",
-                Self::Krfb => "KDE Krfb",
-                Self::Mirror => "Зеркало (grim)",
-                Self::X11 => "X11 (ffmpeg)",
-                Self::Gdigrab => "Windows (gdigrab)",
-            },
-            crate::i18n::Lang::En => match self {
-                Self::Auto => "Auto",
-                Self::Hyprland => "Hyprland headless",
-                Self::NiriVirtual => "niri virtual output",
-                Self::Vkms => "VKMS (virtual DRM)",
-                Self::Krfb => "KDE Krfb",
-                Self::Mirror => "Mirror (grim)",
-                Self::X11 => "X11 (ffmpeg)",
-                Self::Gdigrab => "Windows (gdigrab)",
-            },
-        }
+        let (ru, en) = match self {
+            Self::Auto => ("Авто", "Auto"),
+            Self::Hyprland => ("Hyprland headless", "Hyprland headless"),
+            Self::NiriVirtual => ("niri виртуальный выход", "niri virtual output"),
+            Self::Vkms => ("VKMS (виртуальный DRM)", "VKMS (virtual DRM)"),
+            Self::Krfb => ("KDE Krfb", "KDE Krfb"),
+            Self::Mirror => ("Зеркало (grim)", "Mirror (grim)"),
+            Self::X11 => ("X11 (ffmpeg)", "X11 (ffmpeg)"),
+            Self::Gdigrab => ("Windows (gdigrab)", "Windows (gdigrab)"),
+        };
+        crate::i18n::tr(lang, ru, en)
     }
 }
 
@@ -460,16 +443,14 @@ impl MonitorPosition {
     }
 
     pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
-        match lang {
-            crate::i18n::Lang::Ru => self.label(),
-            crate::i18n::Lang::En => match self {
-                Self::Auto => "Auto",
-                Self::Right => "Right",
-                Self::Left => "Left",
-                Self::Above => "Above",
-                Self::Below => "Below",
-            },
-        }
+        let (ru, en) = match self {
+            Self::Auto => ("Авто", "Auto"),
+            Self::Right => ("Справа", "Right"),
+            Self::Left => ("Слева", "Left"),
+            Self::Above => ("Сверху", "Above"),
+            Self::Below => ("Снизу", "Below"),
+        };
+        crate::i18n::tr(lang, ru, en)
     }
 }
 
@@ -823,25 +804,17 @@ impl HaEntity {
             .unwrap_or(6500)
     }
     pub fn supports_color_temp(&self) -> bool {
-        self.attributes.get("color_temp_kelvin").is_some()
-            || self
-                .attributes
-                .get("supported_color_modes")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter().any(|m| {
-                        matches!(
-                            m.as_str(),
-                            Some("color_temp")
-                                | Some("hs")
-                                | Some("xy")
-                                | Some("rgb")
-                                | Some("rgbw")
-                                | Some("rgbww")
-                        )
-                    })
-                })
-                .unwrap_or(false)
+        // Only a lamp that can actually take a temperature: an RGB-only bulb
+        // still reports a stale `color_temp_kelvin`, and presets must not be
+        // sent to it as kelvin.
+        match self
+            .attributes
+            .get("supported_color_modes")
+            .and_then(|v| v.as_array())
+        {
+            Some(modes) => modes.iter().any(|m| m.as_str() == Some("color_temp")),
+            None => self.attributes.get("color_temp_kelvin").is_some(),
+        }
     }
     pub fn supports_color(&self) -> bool {
         self.attributes.get("rgb_color").is_some()
@@ -1014,20 +987,13 @@ impl SwipeDir {
     }
 
     pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
-        match lang {
-            crate::i18n::Lang::Ru => match self {
-                Self::Left => "влево",
-                Self::Right => "вправо",
-                Self::Up => "вверх",
-                Self::Down => "вниз",
-            },
-            crate::i18n::Lang::En => match self {
-                Self::Left => "left",
-                Self::Right => "right",
-                Self::Up => "up",
-                Self::Down => "down",
-            },
-        }
+        let (ru, en) = match self {
+            Self::Left => ("влево", "left"),
+            Self::Right => ("вправо", "right"),
+            Self::Up => ("вверх", "up"),
+            Self::Down => ("вниз", "down"),
+        };
+        crate::i18n::tr(lang, ru, en)
     }
 }
 
@@ -1088,42 +1054,24 @@ impl GestureSpec {
     }
 
     pub fn label_lang(&self, lang: crate::i18n::Lang) -> String {
-        match lang {
-            crate::i18n::Lang::Ru => {
-                let fingers = match self.fingers {
-                    1 => "1 палец".to_string(),
-                    2 => "2 пальца".to_string(),
-                    3 => "3 пальца".to_string(),
-                    4 => "4 пальца".to_string(),
-                    n => format!("{n} пальцев"),
-                };
-                match self.kind {
-                    GestureKind::Swipe => format!(
-                        "{fingers}: свайп {}",
-                        self.dir.unwrap_or(SwipeDir::Left).label()
-                    ),
-                    GestureKind::Tap => format!("{fingers}: тап"),
-                    GestureKind::LongPress => format!("{fingers}: удержание"),
-                    GestureKind::PinchIn => format!("{fingers}: сжать"),
-                    GestureKind::PinchOut => format!("{fingers}: разжать"),
-                }
-            }
-            crate::i18n::Lang::En => {
-                let fingers = match self.fingers {
-                    1 => "1 finger".to_string(),
-                    n => format!("{n} fingers"),
-                };
-                match self.kind {
-                    GestureKind::Swipe => format!(
-                        "{fingers}: swipe {}",
-                        self.dir.unwrap_or(SwipeDir::Left).label_lang(lang)
-                    ),
-                    GestureKind::Tap => format!("{fingers}: tap"),
-                    GestureKind::LongPress => format!("{fingers}: long press"),
-                    GestureKind::PinchIn => format!("{fingers}: pinch in"),
-                    GestureKind::PinchOut => format!("{fingers}: pinch out"),
-                }
-            }
+        let dir = self.dir.unwrap_or(SwipeDir::Left).label_lang(lang);
+        // "1 палец", "2 пальца", "5 пальцев" — the count picks the word.
+        let fingers = match self.fingers {
+            1 => format!("1 {}", crate::t!(lang, "палец", "finger")),
+            2..=4 => format!("{} {}", self.fingers, crate::t!(lang, "пальца", "fingers")),
+            n => format!("{n} {}", crate::t!(lang, "пальцев", "fingers")),
+        };
+        let what = match self.kind {
+            GestureKind::Swipe => crate::t!(lang, "свайп", "swipe"),
+            GestureKind::Tap => crate::t!(lang, "тап", "tap"),
+            GestureKind::LongPress => crate::t!(lang, "удержание", "long press"),
+            GestureKind::PinchIn => crate::t!(lang, "сжать", "pinch in"),
+            GestureKind::PinchOut => crate::t!(lang, "разжать", "pinch out"),
+        };
+        if matches!(self.kind, GestureKind::Swipe) {
+            format!("{fingers}: {what} {dir}")
+        } else {
+            format!("{fingers}: {what}")
         }
     }
 }
@@ -1153,14 +1101,12 @@ impl Trigger {
     pub fn label_lang(&self, lang: crate::i18n::Lang) -> String {
         match self {
             Self::Gesture { spec } => spec.label_lang(lang),
-            Self::Button { label, .. } => match lang {
-                crate::i18n::Lang::Ru => format!("Кнопка: {label}"),
-                crate::i18n::Lang::En => format!("Button: {label}"),
-            },
-            Self::Combo { label, .. } => match lang {
-                crate::i18n::Lang::Ru => format!("Комбо: {label}"),
-                crate::i18n::Lang::En => format!("Combo: {label}"),
-            },
+            Self::Button { label, .. } => {
+                crate::t!(lang, "Кнопка: {label}", "Button: {label}").replace("{label}", label)
+            }
+            Self::Combo { label, .. } => {
+                crate::t!(lang, "Комбо: {label}", "Combo: {label}").replace("{label}", label)
+            }
         }
     }
 }
@@ -1242,63 +1188,54 @@ impl Action {
     }
 
     pub fn label_lang(&self, lang: crate::i18n::Lang) -> String {
-        match lang {
-            crate::i18n::Lang::Ru => match self {
-                Self::None => "Ничего".into(),
-                Self::Shell { command } => format!("Команда: {command}"),
-                Self::Launch { target } => format!("Запустить: {target}"),
-                Self::Volume { delta } => format!("Громкость {delta:+}%"),
-                Self::VolumeSet { percent } => format!("Громкость {percent}%"),
-                Self::Mute => "Выключить звук".into(),
-                Self::Brightness { delta } => format!("Яркость {delta:+}%"),
-                Self::BrightnessSet { percent } => format!("Яркость {percent}%"),
-                Self::Media { command } => format!("Медиа: {command}"),
-                Self::Key { combo } => format!("Клавиши: {combo}"),
-                Self::Page { page } => format!("Открыть: {page}"),
-                Self::Remote { command, .. } => format!("ПК: {command}"),
-                Self::Ha {
-                    domain,
-                    service,
-                    entity,
-                    ..
-                } => {
-                    if entity.is_empty() {
-                        format!("HA: {domain}.{service}")
-                    } else {
-                        format!("HA: {domain}.{service} · {entity}")
-                    }
+        match self {
+            Self::None => crate::t!(lang, "Ничего", "Nothing").into(),
+            Self::Shell { command } => crate::t!(lang, "Команда: {command}", "Command: {command}")
+                .replace("{command}", command),
+            Self::Launch { target } => crate::t!(lang, "Запустить: {target}", "Launch: {target}")
+                .replace("{target}", target),
+            Self::Volume { delta } => crate::t!(lang, "Громкость {delta:+}%", "Volume {delta:+}%")
+                .replace("{delta:+}", &format!("{delta:+}")),
+            Self::VolumeSet { percent } => {
+                crate::t!(lang, "Громкость {percent}%", "Volume {percent}%")
+                    .replace("{percent}", &percent.to_string())
+            }
+            Self::Mute => crate::t!(lang, "Выключить звук", "Mute").into(),
+            Self::Brightness { delta } => {
+                crate::t!(lang, "Яркость {delta:+}%", "Brightness {delta:+}%")
+                    .replace("{delta:+}", &format!("{delta:+}"))
+            }
+            Self::BrightnessSet { percent } => {
+                crate::t!(lang, "Яркость {percent}%", "Brightness {percent}%")
+                    .replace("{percent}", &percent.to_string())
+            }
+            Self::Media { command } => crate::t!(lang, "Медиа: {command}", "Media: {command}")
+                .replace("{command}", command),
+            Self::Key { combo } => {
+                crate::t!(lang, "Клавиши: {combo}", "Keys: {combo}").replace("{combo}", combo)
+            }
+            Self::Page { page } => {
+                crate::t!(lang, "Открыть: {page}", "Open: {page}").replace("{page}", page)
+            }
+            Self::Remote { command, .. } => {
+                crate::t!(lang, "ПК: {command}", "PC: {command}").replace("{command}", command)
+            }
+            Self::Ha {
+                domain,
+                service,
+                entity,
+                ..
+            } => {
+                if entity.is_empty() {
+                    format!("HA: {domain}.{service}")
+                } else {
+                    format!("HA: {domain}.{service} · {entity}")
                 }
-                Self::Url { url } => format!("Открыть URL: {url}"),
-                Self::Http { method, url, .. } => format!("{method} {url}"),
-            },
-            crate::i18n::Lang::En => match self {
-                Self::None => "Nothing".into(),
-                Self::Shell { command } => format!("Command: {command}"),
-                Self::Launch { target } => format!("Launch: {target}"),
-                Self::Volume { delta } => format!("Volume {delta:+}%"),
-                Self::VolumeSet { percent } => format!("Volume {percent}%"),
-                Self::Mute => "Mute".into(),
-                Self::Brightness { delta } => format!("Brightness {delta:+}%"),
-                Self::BrightnessSet { percent } => format!("Brightness {percent}%"),
-                Self::Media { command } => format!("Media: {command}"),
-                Self::Key { combo } => format!("Keys: {combo}"),
-                Self::Page { page } => format!("Open: {page}"),
-                Self::Remote { command, .. } => format!("PC: {command}"),
-                Self::Ha {
-                    domain,
-                    service,
-                    entity,
-                    ..
-                } => {
-                    if entity.is_empty() {
-                        format!("HA: {domain}.{service}")
-                    } else {
-                        format!("HA: {domain}.{service} · {entity}")
-                    }
-                }
-                Self::Url { url } => format!("Open URL: {url}"),
-                Self::Http { method, url, .. } => format!("{method} {url}"),
-            },
+            }
+            Self::Url { url } => {
+                crate::t!(lang, "Открыть URL: {url}", "Open URL: {url}").replace("{url}", url)
+            }
+            Self::Http { method, url, .. } => format!("{method} {url}"),
         }
     }
 
@@ -1307,36 +1244,21 @@ impl Action {
     }
 
     pub fn kind_label_lang(&self, lang: crate::i18n::Lang) -> &'static str {
-        match lang {
-            crate::i18n::Lang::Ru => match self {
-                Self::None => "Ничего",
-                Self::Shell { .. } => "Команда",
-                Self::Launch { .. } => "Приложение",
-                Self::Volume { .. } | Self::VolumeSet { .. } | Self::Mute => "Звук",
-                Self::Brightness { .. } | Self::BrightnessSet { .. } => "Яркость",
-                Self::Media { .. } => "Медиа",
-                Self::Key { .. } => "Клавиши",
-                Self::Page { .. } => "Страница",
-                Self::Remote { .. } => "ПК",
-                Self::Ha { .. } => "Home Assistant",
-                Self::Url { .. } => "URL",
-                Self::Http { .. } => "HTTP",
-            },
-            crate::i18n::Lang::En => match self {
-                Self::None => "Nothing",
-                Self::Shell { .. } => "Command",
-                Self::Launch { .. } => "App",
-                Self::Volume { .. } | Self::VolumeSet { .. } | Self::Mute => "Sound",
-                Self::Brightness { .. } | Self::BrightnessSet { .. } => "Brightness",
-                Self::Media { .. } => "Media",
-                Self::Key { .. } => "Keys",
-                Self::Page { .. } => "Page",
-                Self::Remote { .. } => "PC",
-                Self::Ha { .. } => "Home Assistant",
-                Self::Url { .. } => "URL",
-                Self::Http { .. } => "HTTP",
-            },
-        }
+        let (ru, en) = match self {
+            Self::None => ("Ничего", "Nothing"),
+            Self::Shell { .. } => ("Команда", "Command"),
+            Self::Launch { .. } => ("Приложение", "App"),
+            Self::Volume { .. } | Self::VolumeSet { .. } | Self::Mute => ("Звук", "Sound"),
+            Self::Brightness { .. } | Self::BrightnessSet { .. } => ("Яркость", "Brightness"),
+            Self::Media { .. } => ("Медиа", "Media"),
+            Self::Key { .. } => ("Клавиши", "Keys"),
+            Self::Page { .. } => ("Страница", "Page"),
+            Self::Remote { .. } => ("ПК", "PC"),
+            Self::Ha { .. } => ("Home Assistant", "Home Assistant"),
+            Self::Url { .. } => ("URL", "URL"),
+            Self::Http { .. } => ("HTTP", "HTTP"),
+        };
+        crate::i18n::tr(lang, ru, en)
     }
 }
 

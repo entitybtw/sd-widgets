@@ -946,7 +946,11 @@ impl eframe::App for App {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
                             .add(egui::Button::new(hud(
-                                if self.dark { "light" } else { "dark" },
+                                if self.dark {
+                                    t!(self.lang, "светлая", "light")
+                                } else {
+                                    t!(self.lang, "тёмная", "dark")
+                                },
                                 t.muted,
                             )))
                             .clicked()
@@ -955,11 +959,7 @@ impl eframe::App for App {
                         }
                         if ui
                             .add(egui::Button::new(hud(self.lang.short(), t.muted)))
-                            .on_hover_text(if self.lang == Lang::Ru {
-                                "switch to english"
-                            } else {
-                                "переключить на русский"
-                            })
+                            .on_hover_text(t!(self.lang, "переключить язык", "switch the language"))
                             .clicked()
                         {
                             self.set_lang(self.lang.toggle());
@@ -1227,7 +1227,11 @@ impl App {
                 }
                 if ui
                     .add(egui::Button::new(hud(
-                        if self.dark { "light" } else { "dark" },
+                        if self.dark {
+                            t!(self.lang, "светлая", "light")
+                        } else {
+                            t!(self.lang, "тёмная", "dark")
+                        },
                         t.muted,
                     )))
                     .clicked()
@@ -1306,17 +1310,13 @@ impl App {
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 ui.label(hud(t!(self.lang, "язык", "language"), t.faint));
-                if ui
-                    .selectable_label(self.lang == Lang::Ru, "русский")
-                    .clicked()
-                {
-                    self.set_lang(Lang::Ru);
-                }
-                if ui
-                    .selectable_label(self.lang == Lang::En, "english")
-                    .clicked()
-                {
-                    self.set_lang(Lang::En);
+                for lang in Lang::ALL {
+                    if ui
+                        .selectable_label(self.lang == lang, lang.label().to_lowercase())
+                        .clicked()
+                    {
+                        self.set_lang(lang);
+                    }
                 }
                 ui.add_space(16.0);
                 ui.label(hud(t!(self.lang, "тема", "theme"), t.faint));
@@ -1663,7 +1663,7 @@ impl App {
             for addr in &self.status.addresses {
                 ui.horizontal(|ui| {
                     mono(ui, addr, t.accent_ink);
-                    theme::copy_button(ui, addr, t);
+                    theme::copy_button(ui, self.lang, addr, t);
                 });
             }
         });
@@ -1771,7 +1771,7 @@ impl App {
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 for addr in &s.addresses {
-                    theme::copy_button(ui, addr, t);
+                    theme::copy_button(ui, self.lang, addr, t);
                     mono(ui, addr, t.accent_ink);
                     ui.add_space(8.0);
                 }
@@ -1780,253 +1780,249 @@ impl App {
         ui.add_space(10.0);
 
         let mut go: Option<Page> = None;
-        egui::Grid::new("overview-grid")
-            .num_columns(2)
-            .spacing([12.0, 12.0])
-            .show(ui, |ui| {
-                // viiper
-                card(ui, t, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("viiper").size(15.0).strong());
-                        tag(
-                            ui,
-                            if s.viiper.running {
-                                t!(self.lang, "работает", "running")
-                            } else {
-                                t!(self.lang, "выключен", "off")
-                            },
-                            if s.viiper.running { t.good } else { t.bad },
-                        );
-                    });
+        ui.columns(2, |cols| {
+            // viiper
+            card(&mut cols[0], t, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("viiper").size(15.0).strong());
+                    tag(
+                        ui,
+                        if s.viiper.running {
+                            t!(self.lang, "работает", "running")
+                        } else {
+                            t!(self.lang, "выключен", "off")
+                        },
+                        if s.viiper.running { t.good } else { t.bad },
+                    );
+                });
+                small(
+                    ui,
+                    &if s.viiper.installed {
+                        format!("{} · {}", s.viiper.version, s.viiper.api_addr)
+                    } else {
+                        t!(self.lang, "не установлен", "not installed").to_string()
+                    },
+                    t.muted,
+                );
+                ui.add_space(6.0);
+                small(
+                    ui,
+                    &format!(
+                        "{} {} · {} {}",
+                        s.pads.len(),
+                        t!(self.lang, "виртуальных падов", "virtual pads"),
+                        s.viiper.usb_addr,
+                        t!(self.lang, "usb", "usb")
+                    ),
+                    t.faint,
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if s.viiper.running {
+                        if ghost(ui, t!(self.lang, "стоп", "stop"), t).clicked() {
+                            self.stop_viiper();
+                        }
+                        if ghost(ui, t!(self.lang, "перезапуск", "restart"), t).clicked()
+                        {
+                            self.start_viiper(true);
+                        }
+                    } else if s.viiper.installed {
+                        if primary(ui, t!(self.lang, "запустить", "start"), t).clicked() {
+                            self.start_viiper(false);
+                        }
+                    } else if primary(ui, t!(self.lang, "установить", "install"), t).clicked()
+                    {
+                        go = Some(Page::Install);
+                    }
+                    if ui
+                        .add(egui::Button::new(hud(
+                            t!(self.lang, "подробнее", "details"),
+                            t.faint,
+                        )))
+                        .clicked()
+                    {
+                        go = Some(Page::Gamepads);
+                    }
+                });
+            });
+            cols[0].add_space(12.0);
+            // notifications
+            card(&mut cols[0], t, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(t!(self.lang, "уведомления", "notifications"))
+                            .size(15.0)
+                            .strong(),
+                    );
+                    tag(
+                        ui,
+                        &format!("{}", s.notifications.count),
+                        if s.notifications.listening {
+                            t.good
+                        } else {
+                            t.warn
+                        },
+                    );
+                });
+                small(
+                    ui,
+                    if s.notifications.listening {
+                        t!(self.lang, "зеркалирование включено", "mirroring is on")
+                    } else {
+                        t!(
+                            self.lang,
+                            "ожидает демон уведомлений",
+                            "waiting for a notification daemon"
+                        )
+                    },
+                    t.muted,
+                );
+                ui.add_space(6.0);
+                for n in s.notifications.recent.iter().take(2) {
                     small(
                         ui,
-                        &if s.viiper.installed {
-                            format!("{} · {}", s.viiper.version, s.viiper.api_addr)
-                        } else {
-                            t!(self.lang, "не установлен", "not installed").to_string()
-                        },
-                        t.muted,
+                        &format!("{} · {}", n.app, sdw_core::util::truncate(&n.summary, 44)),
+                        t.ink,
                     );
-                    ui.add_space(6.0);
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ghost(ui, t!(self.lang, "проверить", "test"), t).clicked() {
+                        self.state.notifications.add_test();
+                    }
+                    if ui
+                        .add(egui::Button::new(hud(t!(self.lang, "все", "all"), t.faint)))
+                        .clicked()
+                    {
+                        go = Some(Page::Notifications);
+                    }
+                });
+            });
+            // screen
+            card(&mut cols[1], t, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(t!(self.lang, "экран", "screen"))
+                            .size(15.0)
+                            .strong(),
+                    );
+                    tag(
+                        ui,
+                        if s.monitor.running {
+                            t!(self.lang, "в эфире", "live")
+                        } else {
+                            t!(self.lang, "выключен", "off")
+                        },
+                        if s.monitor.running { t.good } else { t.muted },
+                    );
+                });
+                small(
+                    ui,
+                    &if s.monitor.running {
+                        format!(
+                            "{} · {}×{} · {}",
+                            s.monitor.backend_label,
+                            s.monitor.width,
+                            s.monitor.height,
+                            s.monitor.output
+                        )
+                    } else {
+                        t!(
+                            self.lang,
+                            "дополнительный монитор или зеркало",
+                            "extra monitor or mirror"
+                        )
+                        .to_string()
+                    },
+                    t.muted,
+                );
+                ui.add_space(6.0);
+                if s.monitor.running {
                     small(
                         ui,
                         &format!(
                             "{} {} · {} {}",
-                            s.pads.len(),
-                            t!(self.lang, "виртуальных падов", "virtual pads"),
-                            s.viiper.usb_addr,
-                            t!(self.lang, "usb", "usb")
+                            s.monitor.frames,
+                            t!(self.lang, "кадров", "frames"),
+                            s.monitor.frame_age_ms,
+                            t!(self.lang, "мс", "ms")
                         ),
                         t.faint,
                     );
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if s.viiper.running {
-                            if ghost(ui, t!(self.lang, "стоп", "stop"), t).clicked() {
-                                self.stop_viiper();
-                            }
-                            if ghost(ui, t!(self.lang, "перезапуск", "restart"), t).clicked()
-                            {
-                                self.start_viiper(true);
-                            }
-                        } else if s.viiper.installed {
-                            if primary(ui, t!(self.lang, "запустить", "start"), t).clicked()
-                            {
-                                self.start_viiper(false);
-                            }
-                        } else if primary(ui, t!(self.lang, "установить", "install"), t).clicked()
-                        {
-                            go = Some(Page::Install);
-                        }
-                        if ui
-                            .add(egui::Button::new(hud(
-                                t!(self.lang, "подробнее", "details"),
-                                t.faint,
-                            )))
-                            .clicked()
-                        {
-                            go = Some(Page::Gamepads);
-                        }
-                    });
-                });
-
-                // screen
-                card(ui, t, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(t!(self.lang, "экран", "screen"))
-                                .size(15.0)
-                                .strong(),
-                        );
-                        tag(
-                            ui,
-                            if s.monitor.running {
-                                t!(self.lang, "в эфире", "live")
-                            } else {
-                                t!(self.lang, "выключен", "off")
-                            },
-                            if s.monitor.running { t.good } else { t.muted },
-                        );
-                    });
-                    small(
-                        ui,
-                        &if s.monitor.running {
-                            format!(
-                                "{} · {}×{} · {}",
-                                s.monitor.backend_label,
-                                s.monitor.width,
-                                s.monitor.height,
-                                s.monitor.output
-                            )
-                        } else {
-                            t!(
-                                self.lang,
-                                "дополнительный монитор или зеркало",
-                                "extra monitor or mirror"
-                            )
-                            .to_string()
-                        },
-                        t.muted,
-                    );
-                    ui.add_space(6.0);
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
                     if s.monitor.running {
-                        small(
-                            ui,
-                            &format!(
-                                "{} {} · {} {}",
-                                s.monitor.frames,
-                                t!(self.lang, "кадров", "frames"),
-                                s.monitor.frame_age_ms,
-                                t!(self.lang, "мс", "ms")
-                            ),
+                        if ghost(ui, t!(self.lang, "остановить", "stop"), t).clicked() {
+                            self.state.monitor.stop();
+                        }
+                    } else if primary(ui, t!(self.lang, "настроить", "set up"), t).clicked()
+                    {
+                        go = Some(Page::Screen);
+                    }
+                    if ui
+                        .add(egui::Button::new(hud(
+                            t!(self.lang, "открыть", "open"),
                             t.faint,
-                        );
+                        )))
+                        .clicked()
+                    {
+                        go = Some(Page::Screen);
                     }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if s.monitor.running {
-                            if ghost(ui, t!(self.lang, "остановить", "stop"), t).clicked()
-                            {
-                                self.state.monitor.stop();
-                            }
-                        } else if primary(ui, t!(self.lang, "настроить", "set up"), t).clicked()
-                        {
-                            go = Some(Page::Screen);
-                        }
-                        if ui
-                            .add(egui::Button::new(hud(
-                                t!(self.lang, "открыть", "open"),
-                                t.faint,
-                            )))
-                            .clicked()
-                        {
-                            go = Some(Page::Screen);
-                        }
-                    });
                 });
-                ui.end_row();
-
-                // notifications
-                card(ui, t, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(t!(self.lang, "уведомления", "notifications"))
-                                .size(15.0)
-                                .strong(),
-                        );
-                        tag(
-                            ui,
-                            &format!("{}", s.notifications.count),
-                            if s.notifications.listening {
-                                t.good
-                            } else {
-                                t.warn
-                            },
-                        );
-                    });
-                    small(
+            });
+            cols[1].add_space(12.0);
+            // ha
+            card(&mut cols[1], t, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("home assistant").size(15.0).strong());
+                    tag(
                         ui,
-                        if s.notifications.listening {
-                            t!(self.lang, "зеркалирование включено", "mirroring is on")
+                        if s.ha.connected {
+                            t!(self.lang, "онлайн", "online")
+                        } else if s.ha.configured {
+                            t!(self.lang, "ошибка", "error")
                         } else {
-                            t!(
-                                self.lang,
-                                "ожидает демон уведомлений",
-                                "waiting for a notification daemon"
-                            )
+                            t!(self.lang, "не настроен", "not set")
                         },
-                        t.muted,
+                        if s.ha.connected {
+                            t.good
+                        } else if s.ha.configured {
+                            t.bad
+                        } else {
+                            t.muted
+                        },
                     );
-                    ui.add_space(6.0);
-                    for n in s.notifications.recent.iter().take(2) {
-                        small(
-                            ui,
-                            &format!("{} · {}", n.app, sdw_core::util::truncate(&n.summary, 44)),
-                            t.ink,
-                        );
-                    }
-                    ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ghost(ui, t!(self.lang, "проверить", "test"), t).clicked() {
-                            self.state.notifications.add_test();
-                        }
-                        if ui
-                            .add(egui::Button::new(hud(t!(self.lang, "все", "all"), t.faint)))
-                            .clicked()
-                        {
-                            go = Some(Page::Notifications);
-                        }
-                    });
                 });
-
-                // ha
-                card(ui, t, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("home assistant").size(15.0).strong());
-                        tag(
-                            ui,
-                            if s.ha.connected {
-                                t!(self.lang, "онлайн", "online")
-                            } else if s.ha.configured {
-                                t!(self.lang, "ошибка", "error")
-                            } else {
-                                t!(self.lang, "не настроен", "not set")
-                            },
-                            if s.ha.connected {
-                                t.good
-                            } else if s.ha.configured {
-                                t.bad
-                            } else {
-                                t.muted
-                            },
-                        );
-                    });
-                    small(
-                        ui,
-                        &if s.ha.configured {
-                            format!(
-                                "{} · {} {}",
-                                s.ha.url,
-                                s.ha.entities,
-                                t!(self.lang, "сущностей", "entities")
-                            )
-                        } else {
-                            t!(
-                                self.lang,
-                                "свет, сцены и датчики на деке",
-                                "lights, scenes and sensors on the deck"
-                            )
-                            .to_string()
-                        },
-                        t.muted,
-                    );
-                    ui.add_space(8.0);
+                small(
+                    ui,
+                    &if s.ha.configured {
+                        format!(
+                            "{} · {} {}",
+                            s.ha.url,
+                            s.ha.entities,
+                            t!(self.lang, "сущностей", "entities")
+                        )
+                    } else {
+                        t!(
+                            self.lang,
+                            "свет, сцены и датчики на деке",
+                            "lights, scenes and sensors on the deck"
+                        )
+                        .to_string()
+                    },
+                    t.muted,
+                );
+                ui.add_space(8.0);
+                // A plain button in a column takes the whole row, so it gets
+                // a horizontal band of its own.
+                ui.horizontal(|ui| {
                     if primary(ui, t!(self.lang, "открыть", "open"), t).clicked() {
                         go = Some(Page::HomeAssistant);
                     }
                 });
-                ui.end_row();
             });
+        });
 
         ui.add_space(10.0);
         card(ui, t, |ui| {
@@ -2115,13 +2111,16 @@ impl App {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if s.viiper.running {
-                        if ghost(ui, "restart", t).clicked() {
+                        if ghost(ui, t!(self.lang, "перезапуск", "restart"), t).clicked()
+                        {
                             self.start_viiper(true);
                         }
-                        if ghost(ui, "stop", t).clicked() {
+                        if ghost(ui, t!(self.lang, "стоп", "stop"), t).clicked() {
                             self.stop_viiper();
                         }
-                    } else if s.viiper.installed && primary(ui, "start", t).clicked() {
+                    } else if s.viiper.installed
+                        && primary(ui, t!(self.lang, "запустить", "start"), t).clicked()
+                    {
                         self.start_viiper(false);
                     }
                 });
@@ -2309,7 +2308,7 @@ impl App {
                     {
                         self.show_pad_secret = !self.show_pad_secret;
                     }
-                    theme::copy_button(ui, &p.udp_secret, t);
+                    theme::copy_button(ui, self.lang, &p.udp_secret, t);
                 });
             });
         }
@@ -2924,7 +2923,12 @@ impl App {
                                         t.muted,
                                     ));
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        theme::copy_button(ui, &s.monitor.config_hint, t);
+                                        theme::copy_button(
+                                            ui,
+                                            self.lang,
+                                            &s.monitor.config_hint,
+                                            t,
+                                        );
                                     });
                                 });
                                 if !s.monitor.config_file.is_empty() {
@@ -3915,7 +3919,7 @@ impl App {
             if let Some(token) = &self.new_token {
                 ui.horizontal(|ui| {
                     mono(ui, token, t.accent_ink);
-                    theme::copy_button(ui, token, t);
+                    theme::copy_button(ui, self.lang, token, t);
                 });
             }
         });
@@ -5329,17 +5333,13 @@ impl App {
             ui.add_space(8.0);
             divider(ui);
             row(ui, t, t!(self.lang, "язык", "language"), "", |ui| {
-                if ui
-                    .selectable_label(self.lang == Lang::Ru, "русский")
-                    .clicked()
-                {
-                    self.set_lang(Lang::Ru);
-                }
-                if ui
-                    .selectable_label(self.lang == Lang::En, "english")
-                    .clicked()
-                {
-                    self.set_lang(Lang::En);
+                for lang in Lang::ALL {
+                    if ui
+                        .selectable_label(self.lang == lang, lang.label().to_lowercase())
+                        .clicked()
+                    {
+                        self.set_lang(lang);
+                    }
                 }
             });
             row(ui, t, t!(self.lang, "тема", "theme"), "", |ui| {

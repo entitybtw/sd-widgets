@@ -3545,6 +3545,8 @@ fn ha_pager(ui: &mut Ui, t: &Tokens, page: &mut usize, pages: usize, total: usiz
                 total,
                 if lang == Lang::Ru {
                     "плиток"
+                } else if lang == Lang::Uk {
+                    "плиток"
                 } else {
                     "tiles"
                 }
@@ -5784,7 +5786,7 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(13.0)
                     .color(t.muted),
             );
-            for lang in [Lang::Ru, Lang::En] {
+            for lang in Lang::ALL {
                 if ui
                     .selectable_label(app.lang == lang, lang.label())
                     .clicked()

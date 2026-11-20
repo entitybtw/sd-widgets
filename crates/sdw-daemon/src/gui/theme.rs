@@ -4,6 +4,8 @@ use eframe::egui::{
     self, Color32, CornerRadius, FontData, FontDefinitions, FontFamily, FontId, Margin, Response,
     RichText, Stroke, TextStyle, Ui, Vec2, Visuals,
 };
+use sdw_core::i18n::Lang;
+use sdw_core::t;
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]
@@ -401,15 +403,22 @@ pub fn divider(ui: &mut Ui) {
     ui.add_space(4.0);
 }
 
-pub fn copy_button(ui: &mut Ui, text: &str, t: &Tokens) {
+pub fn copy_button(ui: &mut Ui, lang: Lang, text: &str, t: &Tokens) {
     if ui
         .add(
-            egui::Button::new(RichText::new("copy").size(11.0).color(t.muted))
-                .fill(Color32::TRANSPARENT)
-                .stroke(Stroke::new(1.0, t.line))
-                .corner_radius(0),
+            egui::Button::new(
+                RichText::new(t!(lang, "копировать", "copy"))
+                    .size(11.0)
+                    .color(t.muted),
+            )
+            .fill(Color32::TRANSPARENT)
+            .stroke(Stroke::new(1.0, t.line))
+            .corner_radius(0),
         )
-        .on_hover_text(text)
+        .on_hover_text(format!(
+            "{text}\n{}",
+            t!(lang, "скопировать адрес", "copy the text")
+        ))
         .clicked()
     {
         ui.ctx().copy_text(text.to_string());

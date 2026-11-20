@@ -42,7 +42,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
   the Deck speakers, with a configurable number of “are you sure?” steps.
 - **Self-updates**: both applications check the newest release on
   `git.entitybtw.ru`, show the notes and download the matching build.
-- **Bilingual**: English and Russian, dark and light.
+- **Three languages**: Russian, Ukrainian and English; dark and light.
 
 > The product name is lowercase: `sd-widgets`.
 

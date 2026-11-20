@@ -22,7 +22,9 @@
 - `discovery.rs` — UDP LAN discovery.
 - `udp.rs` — gamepad input packets and `GamepadState`.
 - `config.rs` — Deck config load/save (atomic write).
-- `i18n.rs` — `t!(lang, "ru", "en")`.
+- `i18n.rs` — `t!(lang, "ru", "en")` plus the Russian → Ukrainian table in
+  `i18n/uk.rs`; a missing row falls back to Russian and the
+  `every_string_written_in_a_call_has_a_ukrainian_row` test catches it.
 - `ha.rs` — Home Assistant helpers.
 - `addons.rs` — declarative addon manifests, install/remove, settings values,
   `AddonInfo` for the status payload.

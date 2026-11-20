@@ -159,10 +159,11 @@ pub fn fullscreen(app: &mut App, root: &mut Ui, ctx: &egui::Context) {
             ui.painter().text(
                 pos2(rect.center().x, rect.bottom() - 16.0),
                 Align2::CENTER_CENTER,
-                match lang {
-                    Lang::Ru => "нажмите или esc, чтобы выйти",
-                    _ => "tap or press esc to exit",
-                },
+                t!(
+                    lang,
+                    "нажмите или esc, чтобы выйти",
+                    "tap or press esc to exit"
+                ),
                 FontId::new(11.5, FontFamily::Monospace),
                 Color32::from_white_alpha(90),
             );
@@ -1208,11 +1209,13 @@ fn color_edit(ui: &mut Ui, value: &mut String, t: &Tokens) {
 
 fn weekday_name(lang: Lang, weekday: u32) -> &'static str {
     let ru = ["вс", "пн", "вт", "ср", "чт", "пт", "сб"];
+    let uk = ["нд", "пн", "вт", "ср", "чт", "пт", "сб"];
     let en = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
     let idx = (weekday as usize).min(6);
     match lang {
         Lang::Ru => ru[idx],
-        _ => en[idx],
+        Lang::Uk => uk[idx],
+        Lang::En => en[idx],
     }
 }
 
