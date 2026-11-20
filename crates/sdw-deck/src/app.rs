@@ -592,6 +592,9 @@ pub struct App {
     pub bluetooth_err: String,
     /// Address waiting for a second press before it is removed.
     pub bluetooth_remove: Option<String>,
+    /// The action in flight and the device it belongs to, so its row spins
+    /// while BlueZ pairs or connects.
+    pub bluetooth_busy: Option<(String, String)>,
 
     /// Pull-down control panel: the Deck's own volume and brightness plus the
     /// newest notifications.
@@ -836,6 +839,7 @@ impl App {
             bluetooth_at: None,
             bluetooth_err: String::new(),
             bluetooth_remove: None,
+            bluetooth_busy: None,
             quick_open: false,
             quick_volume: None,
             quick_muted: false,
@@ -2003,6 +2007,10 @@ impl App {
             return;
         };
         let (action, address) = (action.to_string(), address.to_string());
+        // Answer the press before the computer does: the chip flips and the row
+        // starts spinning at once, then the reply brings the real state.
+        self.bluetooth_optimistic(&action, &address);
+        self.bluetooth_busy = Some((action.clone(), address.clone()));
         let lang = self.lang;
         self.spawn(move || {
             Task::BtAction(
@@ -2017,6 +2025,49 @@ impl App {
                     .map_err(|e| e.to_string()),
             )
         });
+    }
+
+    /// Move the Bluetooth state the moment a button is pressed; the reload
+    /// after the reply corrects it against what BlueZ actually did.
+    fn bluetooth_optimistic(&mut self, action: &str, address: &str) {
+        let Some(bt) = self.bluetooth.as_mut() else {
+            return;
+        };
+        match action {
+            "power_on" => bt.powered = true,
+            "power_off" => {
+                bt.powered = false;
+                bt.discovering = false;
+            }
+            "scan" => {
+                bt.powered = true;
+                bt.discovering = true;
+            }
+            "scan_off" => bt.discovering = false,
+            _ => {}
+        }
+        if address.is_empty() {
+            return;
+        }
+        if action == "remove" {
+            bt.devices.retain(|d| d.address != address);
+            return;
+        }
+        if let Some(d) = bt.devices.iter_mut().find(|d| d.address == address) {
+            match action {
+                "pair" => d.paired = true,
+                "pair_connect" => {
+                    d.paired = true;
+                    d.trusted = true;
+                    d.connected = true;
+                }
+                "connect" => d.connected = true,
+                "disconnect" => d.connected = false,
+                "trust" => d.trusted = true,
+                "untrust" => d.trusted = false,
+                _ => {}
+            }
+        }
     }
 
     /// Drop a notification locally and on the computer.
@@ -3259,9 +3310,14 @@ impl App {
             }
             Task::BtAction(Ok(message)) => {
                 self.toast(message, true);
+                self.bluetooth_busy = None;
                 self.bluetooth_at = None;
             }
-            Task::BtAction(Err(e)) => self.toast(e, false),
+            Task::BtAction(Err(e)) => {
+                self.bluetooth_busy = None;
+                self.bluetooth_at = None;
+                self.toast(e, false);
+            }
             Task::QuickMute(Ok(muted)) => {
                 self.quick_muted = muted;
                 if self.quick_volume == Some(0) && !muted {

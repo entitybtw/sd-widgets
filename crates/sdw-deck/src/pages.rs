@@ -1609,18 +1609,28 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
         .bluetooth_at
         .map(|at| at.elapsed() > Duration::from_secs(if discovering { 3 } else { 20 }))
         .unwrap_or(true);
-    if online && stale {
+    if online && stale && app.bluetooth_busy.is_none() {
         app.load_bluetooth();
+    }
+    if discovering {
+        ui.ctx().request_repaint_after(Duration::from_secs(3));
     }
 
     let status = app.bluetooth.clone();
     let mut action: Option<(&'static str, String)> = None;
     let mut remove_ask: Option<String> = None;
+    // An action in flight: its row spins and its state has already changed, so
+    // a press never looks ignored while BlueZ pairs.
+    let busy = app.bluetooth_busy.clone();
+    let busy_for = |name: &str, address: &str| {
+        busy.as_ref()
+            .is_some_and(|(a, addr)| a == name && addr == address)
+    };
 
     theme::card(ui, t, |ui| {
         ui.horizontal(|ui| {
             ui.label(theme::hud(t!(lang, "адаптер", "adapter"), t.faint));
-            if app.bluetooth_pending {
+            if app.bluetooth_pending || busy.is_some() {
                 ui.spinner();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -1682,6 +1692,13 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     };
                     if theme::ghost(ui, power.0, t).clicked() {
                         action = Some((power.1, String::new()));
+                    }
+                    if busy_for("scan", "")
+                        || busy_for("scan_off", "")
+                        || busy_for("power_on", "")
+                        || busy_for("power_off", "")
+                    {
+                        ui.spinner();
                     }
                 });
                 if bt.discovering {
@@ -1792,6 +1809,14 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             // A nearby device that is not paired yet lives by
                             // its signal: showing it tells "there it is, move
                             // closer" without a second screen.
+                            if busy.as_ref().is_some_and(|(_, addr)| addr == &d.address) {
+                                ui.spinner();
+                                theme::chip(
+                                    ui,
+                                    t!(lang, "выполняется…", "working…"),
+                                    t.accent,
+                                );
+                            }
                             if let Some(rssi) = d.rssi.filter(|_| !d.connected) {
                                 ui.label(theme::icon(
                                     theme::icon::SIGNAL,
