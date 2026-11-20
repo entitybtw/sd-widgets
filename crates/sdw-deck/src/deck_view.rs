@@ -761,7 +761,11 @@ fn screen_content(
             Pos2::new(pad.center().x, pad.bottom() - h * 0.02),
             Align2::CENTER_BOTTOM,
             if input.devices == 0 {
-                t!(input.lang, "нет доступа к /dev/input", "no access to /dev/input")
+                t!(
+                    input.lang,
+                    "нет доступа к /dev/input",
+                    "no access to /dev/input"
+                )
             } else {
                 t!(input.lang, "нажмите кнопку", "press a button")
             },

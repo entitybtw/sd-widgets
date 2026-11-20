@@ -7,10 +7,10 @@
 use sdw_core::model::GestureSpec;
 use sdw_core::model::{GestureKind, SwipeDir};
 use sdw_core::udp::{self, GamepadState};
+use sdw_core::{t, Lang};
 use std::collections::HashSet;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use sdw_core::{t, Lang};
 use std::time::{Duration, Instant};
 
 pub const EV_KEY: u16 = 1;
@@ -173,11 +173,8 @@ pub fn start() -> InputHandle {
     let (devices, has_gamepad, errors) = scan_into(&raw_tx, &mut scan);
 
     #[cfg(not(target_os = "linux"))]
-    let (devices, has_gamepad, errors): (Vec<String>, bool, Vec<String>) = (
-        Vec::new(),
-        false,
-        vec![ERROR_LINUX_ONLY.into()],
-    );
+    let (devices, has_gamepad, errors): (Vec<String>, bool, Vec<String>) =
+        (Vec::new(), false, vec![ERROR_LINUX_ONLY.into()]);
 
     let evt_tx2 = evt_tx.clone();
     let device_list = devices.clone();

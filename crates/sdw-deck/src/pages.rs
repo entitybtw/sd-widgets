@@ -2445,10 +2445,7 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .show_ui(ui, |ui| {
                         for b in backend_list() {
                             if ui
-                                .selectable_label(
-                                    app.stream.backend == b,
-                                    b.label_lang(app.lang),
-                                )
+                                .selectable_label(app.stream.backend == b, b.label_lang(app.lang))
                                 .clicked()
                             {
                                 app.stream.backend = b;
@@ -4393,12 +4390,8 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         Task::Msg(
                             c.ha_config(&url, &token, &[])
                                 .map(|_| {
-                                    t!(
-                                        lang,
-                                        "home assistant подключён",
-                                        "home assistant connected"
-                                    )
-                                    .to_string()
+                                    t!(lang, "home assistant подключён", "home assistant connected")
+                                        .to_string()
                                 })
                                 .map_err(|e| e.to_string()),
                         )

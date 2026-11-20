@@ -160,7 +160,12 @@ pub fn set_brightness(percent: u8, lang: Lang) -> Result<(), String> {
         let value = percent.to_string();
         return sdw_core::util::run("light", &["-S", &value]).map(|_| ());
     }
-    Err(t!(lang, "нет доступа к подсветке", "no access to the backlight").into())
+    Err(t!(
+        lang,
+        "нет доступа к подсветке",
+        "no access to the backlight"
+    )
+    .into())
 }
 
 fn percent_of(value: u32, max: u32) -> u8 {

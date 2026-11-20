@@ -1739,8 +1739,12 @@ impl App {
             return;
         };
         let Ok(img) = image::load_from_memory(&bytes) else {
-            self.stream.error =
-                t!(self.lang, "не удалось декодировать кадр", "could not decode the frame").into();
+            self.stream.error = t!(
+                self.lang,
+                "не удалось декодировать кадр",
+                "could not decode the frame"
+            )
+            .into();
             return;
         };
         let size = [img.width() as usize, img.height() as usize];

@@ -531,7 +531,11 @@ fn seed_defaults(app: &mut App) {
             Action::Brightness { delta: -5 },
         ),
         (
-            t!(lang, "три пальца вправо: компьютеры", "three fingers right: computers"),
+            t!(
+                lang,
+                "три пальца вправо: компьютеры",
+                "three fingers right: computers"
+            ),
             Trigger::Gesture {
                 spec: GestureSpec {
                     kind: GestureKind::Swipe,

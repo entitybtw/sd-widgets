@@ -536,7 +536,10 @@ impl App {
                     self.update_downloading = false;
                     self.update_path = path.clone();
                     self.update_total = size;
-                    self.toast(t!(self.lang, "обновление скачано", "update downloaded"), true);
+                    self.toast(
+                        t!(self.lang, "обновление скачано", "update downloaded"),
+                        true,
+                    );
                 }
                 TaskResult::Updated(Err(e)) => {
                     self.update_downloading = false;
@@ -671,9 +674,7 @@ impl App {
             } else {
                 state.viiper.start(&cfg)
             };
-            TaskResult::Msg(
-                r.map(|_| t!(lang, "viiper запущен", "viiper started").to_string()),
-            )
+            TaskResult::Msg(r.map(|_| t!(lang, "viiper запущен", "viiper started").to_string()))
         });
     }
 
@@ -697,7 +698,10 @@ impl App {
             sudo_password: self.screen.sudo.clone(),
         };
         let state = self.state.clone();
-        self.toast(t!(self.lang, "запускаю экран…", "starting the screen…"), true);
+        self.toast(
+            t!(self.lang, "запускаю экран…", "starting the screen…"),
+            true,
+        );
         self.spawn(move || {
             let cfg = state.cfg();
             let r = state.monitor.start(&req, &cfg);
@@ -2304,9 +2308,11 @@ impl App {
                                 let state = self.state.clone();
                                 let lang = self.lang;
                                 self.spawn(move || {
-                                    TaskResult::Msg(state.viiper.delete_pad(&id).map(|_| {
-                                        t!(lang, "пад удалён", "pad removed").to_string()
-                                    }))
+                                    TaskResult::Msg(
+                                        state.viiper.delete_pad(&id).map(|_| {
+                                            t!(lang, "пад удалён", "pad removed").to_string()
+                                        }),
+                                    )
                                 });
                             }
                         });
@@ -2451,9 +2457,11 @@ impl App {
                             };
                             let lang = self.lang;
                             self.spawn(move || {
-                                TaskResult::Msg(state.monitor.input(&input).map(|_| {
-                                    t!(lang, "клик отправлен", "click sent").to_string()
-                                }))
+                                TaskResult::Msg(
+                                    state.monitor.input(&input).map(|_| {
+                                        t!(lang, "клик отправлен", "click sent").to_string()
+                                    }),
+                                )
                             });
                         }
                     }
@@ -3160,8 +3168,10 @@ impl App {
                             h.apply(entities, rooms, views);
                         }
                         TaskResult::Msg(if ok {
-                            Ok(t!(lang, "home assistant отвечает", "home assistant answers")
-                                .to_string())
+                            Ok(
+                                t!(lang, "home assistant отвечает", "home assistant answers")
+                                    .to_string(),
+                            )
                         } else {
                             Err(t!(
                                 lang,
@@ -3969,9 +3979,7 @@ impl App {
                     let logger = self.state.logger.clone();
                     let jobs = self.state.jobs.clone();
                     let lang = self.lang;
-                    let _ = jobs.start(
-                        t!(lang, "установка", "installation"),
-                        move |ctx| {
+                    let _ = jobs.start(t!(lang, "установка", "installation"), move |ctx| {
                         let _ = install::install(&components, &sudo, &ctx, &logger);
                     });
                 }

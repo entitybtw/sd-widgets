@@ -85,7 +85,12 @@ fn volume_delta(delta: i32, lang: Lang) -> Result<String, String> {
         return util::run("amixer", &["sset", "Master", &step])
             .map(|_| format!("{} {delta:+}%", t!(lang, "громкость", "volume")));
     }
-    Err(t!(lang, "нет wpctl, pactl или amixer", "no wpctl, pactl or amixer").into())
+    Err(t!(
+        lang,
+        "нет wpctl, pactl или amixer",
+        "no wpctl, pactl or amixer"
+    )
+    .into())
 }
 
 fn volume_set(percent: u8, lang: Lang) -> Result<String, String> {
@@ -102,7 +107,12 @@ fn volume_set(percent: u8, lang: Lang) -> Result<String, String> {
         return util::run("amixer", &["sset", "Master", &value])
             .map(|_| format!("{} {value}", t!(lang, "громкость", "volume")));
     }
-    Err(t!(lang, "нет wpctl, pactl или amixer", "no wpctl, pactl or amixer").into())
+    Err(t!(
+        lang,
+        "нет wpctl, pactl или amixer",
+        "no wpctl, pactl or amixer"
+    )
+    .into())
 }
 
 fn volume_mute(lang: Lang) -> Result<String, String> {
@@ -118,7 +128,12 @@ fn volume_mute(lang: Lang) -> Result<String, String> {
         return util::run("amixer", &["sset", "Master", "toggle"])
             .map(|_| t!(lang, "звук переключён", "sound toggled").to_string());
     }
-    Err(t!(lang, "нет wpctl, pactl или amixer", "no wpctl, pactl or amixer").into())
+    Err(t!(
+        lang,
+        "нет wpctl, pactl или amixer",
+        "no wpctl, pactl or amixer"
+    )
+    .into())
 }
 
 fn brightness_delta(delta: i32, lang: Lang) -> Result<String, String> {
@@ -183,7 +198,12 @@ fn media(command: &str, lang: Lang) -> Result<String, String> {
         util::run("playerctl", &[action])
             .map(|_| format!("{}: {action}", t!(lang, "медиа", "media")))
     } else {
-        Err(t!(lang, "playerctl не установлен", "playerctl is not installed").into())
+        Err(t!(
+            lang,
+            "playerctl не установлен",
+            "playerctl is not installed"
+        )
+        .into())
     }
 }
 
