@@ -521,15 +521,22 @@ pub struct App {
     /// +1 when walking forward through the pages, -1 when walking back.
     pub page_dir: f32,
     /// Live horizontal offset while a finger swipe is in progress, in points.
-    /// It makes the page follow the finger instead of jumping on release.
+    /// It makes the page follow the finger instead of jumping on release, and
+    /// it keeps carrying the page through the turn after the finger is gone.
     pub page_slide: f32,
-    /// Where the page was when the finger left, and the moment it did: the
-    /// offset eases from there to zero instead of snapping.
-    pub page_settle_from: f32,
-    pub page_settle_at: Instant,
+    /// The turn that follows the release: the offset the finger left, the one
+    /// the page must reach and when the turn started. `page_turn_to_page` is
+    /// the page waiting at the end (`None` when the page goes back).
+    pub page_turn_from: f32,
+    pub page_turn_to: f32,
+    pub page_turn_at: Instant,
+    pub page_turn_to_page: Option<Page>,
+    pub page_turn_active: bool,
     /// The page was turned by a swipe, so it needs no fade-in of its own: the
     /// finger already showed where it comes from.
     pub page_instant: bool,
+    /// The swipe already played its own cue; `set_page` must not play a second.
+    pub page_silent: bool,
     pub page_at: Instant,
     pub status: Option<DaemonStatus>,
     pub status_err: String,
@@ -738,9 +745,13 @@ impl App {
             page_epoch: 1,
             page_dir: 1.0,
             page_slide: 0.0,
-            page_settle_from: 0.0,
-            page_settle_at: Instant::now(),
+            page_turn_from: 0.0,
+            page_turn_to: 0.0,
+            page_turn_at: Instant::now(),
+            page_turn_to_page: None,
+            page_turn_active: false,
             page_instant: false,
+            page_silent: false,
             page_at: Instant::now(),
             status: None,
             status_err: String::new(),
@@ -1189,6 +1200,9 @@ impl App {
                     modifiers,
                 } => {
                     self.swipe_blocked = false;
+                    // A tap during a turn lands it at once: the page must not
+                    // keep moving under a finger that already wants it.
+                    self.finish_page_turn();
                     self.edge_swipe = Some((pos, pos, Instant::now()));
                     out.push(egui::Event::PointerButton {
                         pos,
@@ -1231,7 +1245,7 @@ impl App {
                                 // Only a clearly horizontal drag previews the
                                 // next page; vertical scrolling stays intact.
                                 let w = rect.width().max(1.0);
-                                self.page_slide = dx.clamp(-w * 0.6, w * 0.6);
+                                self.page_slide = dx.clamp(-w, w);
                             } else if self.page_slide != 0.0 {
                                 self.page_slide = 0.0;
                             }
@@ -1300,23 +1314,36 @@ impl App {
                             self.set_quick(true);
                         } else {
                             self.quick_pull = 0.0;
-                            let edge =
-                                start.x <= rect.left() + 64.0 || start.x >= rect.right() - 64.0;
-                            let min = if edge { 110.0 } else { 160.0 };
                             let gesture_recent =
                                 self.last_gesture.as_ref().is_some_and(|(_, when)| {
                                     when.elapsed() < Duration::from_millis(450)
                                 });
-                            if !self.swipe_blocked
+                            // A page turns when it has been dragged a fifth of
+                            // the way, or on a quick flick: the rest of the
+                            // move is carried by the turn, not by the finger.
+                            let width = rect.width().max(1.0);
+                            let flick =
+                                at.elapsed() < Duration::from_millis(320) && dx.abs() > 56.0;
+                            let commit = !self.swipe_blocked
                                 && !gesture_recent
-                                && at.elapsed() < Duration::from_millis(900)
-                                && dx.abs() > min
-                                && dx.abs() > dy.abs() * 2.0
-                            {
-                                self.page_slide = 0.0;
-                                self.nav_step(if dx < 0.0 { 1 } else { -1 });
-                            } else if !self.swipe_blocked {
-                                self.page_slide = 0.0;
+                                && dx.abs() > dy.abs() * 1.6
+                                && (dx.abs() > width * 0.2 || flick);
+                            if commit {
+                                // The cue belongs to the flick itself; the
+                                // page lands a fraction of a second later.
+                                sound::play(
+                                    &self.cfg.sound,
+                                    if dx < 0.0 { Cue::Navigate } else { Cue::Back },
+                                );
+                                self.page_silent = true;
+                                let to = if dx < 0.0 { -width } else { width };
+                                self.start_page_turn(
+                                    to,
+                                    self.step_page(if dx < 0.0 { 1 } else { -1 }),
+                                );
+                                self.page_silent = false;
+                            } else {
+                                self.start_page_turn(0.0, None);
                             }
                         }
                     }
@@ -1489,6 +1516,8 @@ impl App {
     pub fn set_page(&mut self, page: Page) {
         // Any explicit navigation leaves the full-screen clock behind.
         self.clock_full = false;
+        // A swipe that just landed already animated its own entrance.
+        self.page_instant = false;
         if self.page != page {
             if let (Some(a), Some(b)) = (
                 Page::ORDER.iter().position(|p| *p == self.page),
@@ -1501,14 +1530,16 @@ impl App {
             self.page_epoch += 1;
             self.cfg.last_page = page.key().to_string();
             self.save();
-            sound::play(
-                &self.cfg.sound,
-                if self.page_dir >= 0.0 {
-                    Cue::Navigate
-                } else {
-                    Cue::Back
-                },
-            );
+            if !self.page_silent {
+                sound::play(
+                    &self.cfg.sound,
+                    if self.page_dir >= 0.0 {
+                        Cue::Navigate
+                    } else {
+                        Cue::Back
+                    },
+                );
+            }
             if page == Page::Notifications {
                 self.notif_unread = 0;
             }
@@ -3025,13 +3056,19 @@ impl App {
     }
 
     fn nav_step(&mut self, delta: i32) {
+        if let Some(page) = self.step_page(delta) {
+            self.set_page(page);
+        }
+    }
+
+    /// The page `delta` steps away in the dock order, if there is one.
+    fn step_page(&self, delta: i32) -> Option<Page> {
         let pages = self.dock_pages();
         if pages.is_empty() {
-            return;
+            return None;
         }
-        let idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as i32;
-        let next = (idx + delta).rem_euclid(pages.len() as i32) as usize;
-        self.set_page(pages[next]);
+        let idx = pages.iter().position(|p| *p == self.page)? as i32;
+        Some(pages[(idx + delta).rem_euclid(pages.len() as i32) as usize])
     }
 
     // ------------------------------------------------------------ frame
@@ -3042,17 +3079,26 @@ impl App {
             self.applied_dark = self.dark;
         }
         self.apply_scale(ctx);
-        // A swipe that committed (or did not) eases from where the finger left
-        // the page to where the page belongs. Time based, so the turn takes
-        // the same 0.24 s whatever the frame rate is.
+        // The turn after the finger left: the offset eases from where it was
+        // released to where the page belongs, so a swipe keeps moving in its
+        // own direction instead of snapping to a stop under the finger.
         let dragging = self.edge_swipe.is_some() || !self.touch.points.is_empty();
         if !dragging {
-            self.page_slide = 0.0;
-            if self.page_settle_from != 0.0 {
-                if self.page_settle_at.elapsed() >= Duration::from_millis(240) {
-                    self.page_settle_from = 0.0;
+            if self.page_turn_active {
+                let width = ctx.content_rect().width().max(1.0);
+                let left = (self.page_turn_to - self.page_turn_from).abs();
+                let dur = 0.10 + 0.16 * (left / width).min(1.0);
+                let k = (self.page_turn_at.elapsed().as_secs_f32() / dur).min(1.0);
+                let ease = 1.0 - (1.0 - k).powi(3);
+                self.page_slide =
+                    self.page_turn_from + (self.page_turn_to - self.page_turn_from) * ease;
+                if k >= 1.0 {
+                    self.finish_page_turn();
+                } else {
+                    ctx.request_repaint();
                 }
-                ctx.request_repaint();
+            } else {
+                self.page_slide = 0.0;
             }
         }
         if self.last_clock.elapsed() >= Duration::from_secs(1) {
@@ -3626,14 +3672,43 @@ impl App {
 
     // ------------------------------------------------------------ chrome
 
-    /// The distance a released page still has to travel, eased over 0.24 s.
-    fn settle_offset(&self) -> f32 {
-        if self.page_settle_from == 0.0 {
-            return 0.0;
+    /// Start the turn that follows a released swipe. `to` is the offset the
+    /// page must reach: a full width when the swipe commits, zero when it
+    /// falls back. With animations off there is nothing to carry, so the page
+    /// switches at once.
+    fn start_page_turn(&mut self, to: f32, page: Option<Page>) {
+        if !theme::style().animations {
+            self.page_slide = 0.0;
+            if let Some(p) = page {
+                self.set_page(p);
+                self.page_instant = true;
+            }
+            return;
         }
-        let k = (self.page_settle_at.elapsed().as_secs_f32() / 0.24).min(1.0);
-        let ease = 1.0 - (1.0 - k).powi(3);
-        self.page_settle_from * (1.0 - ease)
+        self.page_turn_from = self.page_slide;
+        self.page_turn_to = to;
+        self.page_turn_at = Instant::now();
+        self.page_turn_to_page = page;
+        self.page_turn_active = true;
+    }
+
+    /// Land the turn at once, without waiting for the ease to run out.
+    fn finish_page_turn(&mut self) {
+        if !self.page_turn_active {
+            return;
+        }
+        self.page_turn_active = false;
+        self.page_slide = 0.0;
+        self.page_turn_from = 0.0;
+        self.page_turn_to = 0.0;
+        if let Some(p) = self.page_turn_to_page.take() {
+            // The release already played the cue and the finger already
+            // showed where the page comes from: no fade, no second sound.
+            self.page_silent = true;
+            self.set_page(p);
+            self.page_silent = false;
+            self.page_instant = true;
+        }
     }
 
     /// Draw one page into `ui`, scrolled on its own. `track` keeps the live
@@ -3655,8 +3730,14 @@ impl App {
             .scroll_source(egui::scroll_area::ScrollSource {
                 scroll_bar: false,
                 // gamescope often reports the deck touchscreen as a mouse, so
-                // egui's OnTouch default never turns on.
-                drag: egui::scroll_area::DragScroll::Always,
+                // egui's OnTouch default never turns on. While the page is
+                // being swiped aside the scroll area lets go of the drag: a
+                // horizontal turn must never scroll the page vertically.
+                drag: if self.page_slide.abs() > 1.0 {
+                    egui::scroll_area::DragScroll::Never
+                } else {
+                    egui::scroll_area::DragScroll::Always
+                },
                 mouse_wheel: true,
             })
             .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
@@ -3677,9 +3758,9 @@ impl App {
     fn chrome_ui(&mut self, root: &mut Ui, ctx: &egui::Context) {
         let t = Tokens::get(ctx);
         // A page turned by a swipe was already dragged into view, so it gets no
-        // fade-in of its own: the settle below finishes the movement the finger
+        // fade-in of its own: the turn below finishes the movement the finger
         // started. Taps and arrows keep the fade and the slight rise.
-        let anim = if !theme::style().animations || self.page_instant {
+        let anim = if !theme::style().animations || self.page_instant || self.page_turn_active {
             1.0
         } else {
             ctx.animate_bool_with_time(Id::new(("page", self.page_epoch)), true, 0.28)
@@ -3687,7 +3768,15 @@ impl App {
         let ease = 1.0 - (1.0 - anim).powi(3);
         let width = ctx.content_rect().width().max(1.0);
         let travel = (width * 0.12).clamp(36.0, 220.0);
-        let slide = self.page_slide + self.settle_offset() + (1.0 - ease) * travel * self.page_dir;
+        let slide = self.page_slide + (1.0 - ease) * travel * self.page_dir;
+
+        // The floating arrows sit over the window edge. The page is inset by
+        // their width so that no card, slider or button ever ends under one.
+        let arrow_inset = if theme::style().arrows {
+            (theme::style().arrow_size.clamp(28.0, 96.0) + 16.0).max(34.0)
+        } else {
+            34.0
+        };
 
         // While the finger drags the page aside, the neighbour is drawn where
         // it will land: the page turn follows the finger instead of being a
@@ -3713,8 +3802,8 @@ impl App {
             .show(root, |ui| self.top_bar(ui, &t));
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(t.bg).inner_margin(Margin {
-                left: 34,
-                right: 34,
+                left: arrow_inset as i8,
+                right: arrow_inset as i8,
                 // The page rises a touch as it fades in. It is a translation,
                 // not a spacer inside the scroll area: a spacer would change
                 // the content height on every frame of the swap and make the

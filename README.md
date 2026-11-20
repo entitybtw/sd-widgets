@@ -75,10 +75,11 @@ Every page can be reached by the **visible left/right arrows**, by the floating
 glyph dock, by three-finger swipes, by keyboard, or with the deck's own controls:
 the left stick and d-pad move a cursor, the right stick scrolls, **A** clicks,
 **B** goes back, **LB/RB** change pages, **Y** opens Home and **View** opens
-Settings. Drag anywhere on a page to scroll; a horizontal swipe from a screen
-edge also switches pages. While you swipe, the page follows your finger; on
-release it either eases back or slides into the next space with a fade and a
-directional slide, and the tiles stagger in behind it.
+Settings. Drag anywhere on a page to scroll; a horizontal swipe also switches
+pages — a fifth of the screen or a quick flick is enough. While you swipe, the
+page follows your finger; on release it either eases back or finishes the turn
+into the next page, while the arrows and the dock keep their fade. Every page is
+inset from the arrows, so no card, slider or button ever ends under one.
 
 ### On the computer (`sdw-daemon`)
 
