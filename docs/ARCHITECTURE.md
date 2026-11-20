@@ -107,7 +107,8 @@ truly need it (monitor, VIIPER, jobs, notifications).
 - No rounded corners anywhere (`radius` is forced to 0 in the theme engine).
 - Flat surfaces, 1 px borders, a 2 px accent cap on selected tiles.
 - Motion: cubic ease, page fade + rise + directional slide, staggered tiles.
-- Typography: Archivo for UI, JetBrains Mono for labels and data.
+- Typography: Archivo for UI, JetBrains Mono for labels and data, and a bundled
+  monochrome Noto Emoji as the fallback for symbols Archivo does not carry.
 
 ## Failure modes
 

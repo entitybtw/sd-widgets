@@ -697,11 +697,23 @@ pub fn install_fonts(ctx: &egui::Context) {
             "/../../assets/fonts/JetBrainsMono-Regular.ttf"
         )))),
     );
+    // Mirrored desktop notifications can carry any emoji. egui's bundled
+    // fallback only covers a small subset, so keep a full monochrome set
+    // behind the interface fonts.
+    fonts.font_data.insert(
+        "noto-emoji".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../assets/fonts/NotoEmoji.ttf"
+        )))),
+    );
     if let Some(f) = fonts.families.get_mut(&FontFamily::Proportional) {
         f.insert(0, "archivo".to_owned());
+        f.insert(1, "noto-emoji".to_owned());
     }
     if let Some(f) = fonts.families.get_mut(&FontFamily::Monospace) {
         f.insert(0, "jetbrains".to_owned());
+        f.insert(1, "noto-emoji".to_owned());
     }
     fonts.families.insert(
         FontFamily::Name("material".into()),

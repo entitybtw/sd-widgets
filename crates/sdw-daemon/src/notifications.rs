@@ -123,6 +123,11 @@ impl NotificationStore {
         if replaces != 0 {
             inner.items.retain(|n| n.id != replaces);
         }
+        let summary = notification_text(summary);
+        let body = notification_text(body);
+        if summary.trim().is_empty() && body.trim().is_empty() {
+            return 0;
+        }
         let id = if replaces != 0 {
             replaces
         } else {
@@ -399,8 +404,8 @@ impl NotificationStore {
             return;
         }
         let app = unescape(&p.strings[0]);
-        let summary = unescape(&p.strings[2]);
-        let body = unescape(&p.strings[3]);
+        let summary = notification_text(&unescape(&p.strings[2]));
+        let body = notification_text(&unescape(&p.strings[3]));
         if summary.trim().is_empty() && body.trim().is_empty() {
             return;
         }
@@ -502,10 +507,215 @@ fn quoted(line: &str) -> Option<String> {
 }
 
 fn unescape(s: &str) -> String {
-    s.replace("\\n", "\n")
-        .replace("\\t", "\t")
-        .replace("\\\"", "\"")
-        .replace("\\\\", "\\")
+    let mut out: Vec<u8> = Vec::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match chars.next() {
+            Some('n') => out.push(b'\n'),
+            Some('t') => out.push(b'\t'),
+            Some('r') => out.push(b'\r'),
+            Some('"') => out.push(b'"'),
+            Some('\'') => out.push(b'\''),
+            Some('\\') => out.push(b'\\'),
+            // dbus-monitor escapes individual bytes as octal; a UTF-8
+            // character can therefore arrive as several escapes.
+            Some(first @ '0'..='7') => {
+                let mut code = first.to_digit(8).unwrap_or(0);
+                for _ in 0..2 {
+                    match chars.peek() {
+                        Some(&next @ '0'..='7') => {
+                            chars.next();
+                            code = code * 8 + next.to_digit(8).unwrap_or(0);
+                        }
+                        _ => break,
+                    }
+                }
+                out.push(code as u8);
+            }
+            Some(other) => {
+                let mut buf = [0u8; 4];
+                out.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => out.push(b'\\'),
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Pango markup, which libnotify sends once the server advertises
+/// `body-markup`, must not reach the Deck as literal tags. Apps also write
+/// emoji as `&#x1F600;`; decode those so the whole notification reads.
+fn notification_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '<' => {
+                let mut tag = String::new();
+                let mut closed = false;
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next == '>' {
+                        closed = true;
+                        break;
+                    }
+                    tag.push(next);
+                }
+                if !closed {
+                    // No `>` anywhere: this is a comparison, not markup.
+                    out.push('<');
+                    out.push_str(&tag);
+                    break;
+                }
+                let name = tag
+                    .trim()
+                    .trim_start_matches('/')
+                    .split(|c: char| c.is_whitespace() || c == '/')
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if name == "img" {
+                    if let Some(alt) = attribute(&tag, "alt") {
+                        out.push_str(&decode_entities(&alt));
+                    }
+                    continue;
+                }
+                if name == "br" {
+                    out.push('\n');
+                    continue;
+                }
+                if matches!(
+                    name.as_str(),
+                    "b" | "i" | "u" | "a" | "span" | "em" | "strong" | "small" | "big" | "tt" | "p"
+                ) {
+                    continue;
+                }
+                // A lone `<` in plain text is not markup; keep it.
+                out.push('<');
+                out.push_str(&tag);
+                out.push('>');
+            }
+            '&' => {
+                let mut entity = String::new();
+                let mut closed = false;
+                while let Some(&next) = chars.peek() {
+                    if next == ';' {
+                        chars.next();
+                        closed = true;
+                        break;
+                    }
+                    if entity.len() >= 16 || next.is_whitespace() {
+                        break;
+                    }
+                    entity.push(next);
+                    chars.next();
+                }
+                if closed {
+                    match entity_char(&entity) {
+                        Some(s) => out.push_str(&s),
+                        None => {
+                            out.push('&');
+                            out.push_str(&entity);
+                            out.push(';');
+                        }
+                    }
+                } else {
+                    out.push('&');
+                    out.push_str(&entity);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '&' {
+            out.push(c);
+            continue;
+        }
+        let mut entity = String::new();
+        let mut closed = false;
+        while let Some(&next) = chars.peek() {
+            if next == ';' {
+                chars.next();
+                closed = true;
+                break;
+            }
+            if entity.len() >= 16 || next.is_whitespace() {
+                break;
+            }
+            entity.push(next);
+            chars.next();
+        }
+        if closed {
+            match entity_char(&entity) {
+                Some(s) => out.push_str(&s),
+                None => {
+                    out.push('&');
+                    out.push_str(&entity);
+                    out.push(';');
+                }
+            }
+        } else {
+            out.push('&');
+            out.push_str(&entity);
+        }
+    }
+    out
+}
+
+fn entity_char(entity: &str) -> Option<String> {
+    let named = match entity {
+        "amp" => Some('&'),
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "quot" => Some('"'),
+        "apos" => Some('\''),
+        "nbsp" => Some('\u{a0}'),
+        _ => None,
+    };
+    if let Some(c) = named {
+        return Some(c.to_string());
+    }
+    let code = entity.strip_prefix('#')?;
+    let value = if let Some(hex) = code.strip_prefix('x').or_else(|| code.strip_prefix('X')) {
+        u32::from_str_radix(hex, 16).ok()?
+    } else {
+        code.parse::<u32>().ok()?
+    };
+    char::from_u32(value).map(|c| c.to_string())
+}
+
+fn attribute(tag: &str, key: &str) -> Option<String> {
+    let mut rest = tag;
+    loop {
+        let at = rest.find(key)?;
+        let before_ok = at == 0
+            || rest[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_whitespace());
+        let after = rest[at + key.len()..].trim_start();
+        if before_ok && after.starts_with('=') {
+            let value = after[1..].trim_start();
+            let quote = value.chars().next()?;
+            if quote == '"' || quote == '\'' {
+                let end = value[1..].find(quote)? + 1;
+                return Some(value[1..end].to_string());
+            }
+        }
+        rest = &rest[at + key.len()..];
+    }
 }
 
 /// The `image-data` hint of a notification: width, height, row stride, alpha,
@@ -672,5 +882,33 @@ impl NotifServer {
 
     fn close_notification(&self, id: u32) {
         self.store.dismiss_local(id as u64);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{notification_text, unescape};
+
+    #[test]
+    fn markup_becomes_plain_text_with_emoji() {
+        let body = "<b>Готово</b> &amp; <i>сохранено</i> &#x1F600; <a href=\"x\">ссылка</a>";
+        assert_eq!(notification_text(body), "Готово & сохранено 😀 ссылка");
+    }
+
+    #[test]
+    fn unknown_tags_and_entities_survive() {
+        assert_eq!(notification_text("a < b & c"), "a < b & c");
+        assert_eq!(notification_text("&unknown; &#xZZ;"), "&unknown; &#xZZ;");
+        assert_eq!(
+            notification_text("<img src=\"x\" alt=\"картинка\"/>"),
+            "картинка"
+        );
+        assert_eq!(notification_text("первая<br>вторая"), "первая\nвторая");
+    }
+
+    #[test]
+    fn dbus_octal_escapes_decode() {
+        assert_eq!(unescape("\\320\\237\\321\\200\\320\\270"), "При");
+        assert_eq!(unescape("a\\nb\\\"c\\\\d"), "a\nb\"c\\d");
     }
 }
