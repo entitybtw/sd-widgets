@@ -2601,83 +2601,7 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.add_space(10.0);
     theme::card(ui, t, |ui| {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.label(theme::hud(t!(app.lang, "режим", "mode"), t.faint));
-                ui.horizontal(|ui| {
-                    for mode in [MonitorMode::Extend, MonitorMode::Mirror] {
-                        if ui
-                            .selectable_label(
-                                app.stream.mode == mode,
-                                match mode {
-                                    MonitorMode::Extend => t!(app.lang, "расширить", "extend"),
-                                    MonitorMode::Mirror => t!(app.lang, "зеркало", "mirror"),
-                                },
-                            )
-                            .clicked()
-                        {
-                            app.stream.mode = mode;
-                        }
-                    }
-                });
-            });
-            ui.add_space(16.0);
-            ui.vertical(|ui| {
-                ui.label(theme::hud(t!(app.lang, "бэкенд", "backend"), t.faint));
-                egui::ComboBox::from_id_salt("monitor-backend")
-                    .selected_text(app.stream.backend.label_lang(app.lang))
-                    .show_ui(ui, |ui| {
-                        for b in backend_list() {
-                            if ui
-                                .selectable_label(app.stream.backend == b, b.label_lang(app.lang))
-                                .clicked()
-                            {
-                                app.stream.backend = b;
-                            }
-                        }
-                    });
-            });
-            ui.add_space(16.0);
-            ui.vertical(|ui| {
-                ui.label(theme::hud(t!(app.lang, "позиция", "position"), t.faint));
-                ui.add_enabled_ui(app.stream.mode == MonitorMode::Extend, |ui| {
-                    egui::ComboBox::from_id_salt("monitor-position")
-                        .selected_text(app.stream.position.label_lang(app.lang))
-                        .width(130.0)
-                        .show_ui(ui, |ui| {
-                            for p in MonitorPosition::ALL {
-                                if ui
-                                    .selectable_label(
-                                        app.stream.position == p,
-                                        p.label_lang(app.lang),
-                                    )
-                                    .clicked()
-                                {
-                                    app.stream.position = p;
-                                }
-                            }
-                        });
-                });
-            });
-            ui.add_space(16.0);
-            ui.vertical(|ui| {
-                ui.label(theme::hud(t!(app.lang, "размер", "size"), t.faint));
-                ui.horizontal(|ui| {
-                    for (w, h) in [(1280, 800), (1920, 1080), (1280, 720)] {
-                        if ui
-                            .selectable_label(
-                                app.stream.width == w && app.stream.height == h,
-                                format!("{w}×{h}"),
-                            )
-                            .clicked()
-                        {
-                            app.stream.width = w;
-                            app.stream.height = h;
-                        }
-                    }
-                });
-            });
-        });
+        monitor_settings(ui, app, t);
         ui.add_space(6.0);
         let mut fps = app.stream.fps;
         if theme::slider_u32(ui, t, t!(app.lang, "fps", "fps"), &mut fps, 5..=60) {
@@ -2721,6 +2645,120 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
         if !monitor.last_error.is_empty() {
             ui.label(RichText::new(&monitor.last_error).size(12.5).color(t.bad));
         }
+    });
+}
+
+/// The four groups of streaming settings. At 100 % on a deck-sized window they
+/// share one row; at a bigger UI scale they no longer fit next to each other
+/// (the size buttons alone take a third of the width), and a plain row would
+/// push the last group past the card. The row is split in two instead.
+fn monitor_settings(ui: &mut Ui, app: &mut App, t: &Tokens) {
+    // Measured: the four groups need 905 points in Russian and 917 in
+    // Ukrainian, whatever the UI scale. Anything narrower gets two rows.
+    let one_row = ui.available_width() >= 950.0;
+    if one_row {
+        ui.horizontal(|ui| {
+            monitor_mode_ui(ui, app, t);
+            ui.add_space(16.0);
+            monitor_backend_ui(ui, app, t);
+            ui.add_space(16.0);
+            monitor_position_ui(ui, app, t);
+            ui.add_space(16.0);
+            monitor_size_ui(ui, app, t);
+        });
+    } else {
+        ui.horizontal(|ui| {
+            monitor_mode_ui(ui, app, t);
+            ui.add_space(16.0);
+            monitor_backend_ui(ui, app, t);
+        });
+        ui.add_space(2.0);
+        ui.horizontal(|ui| {
+            monitor_position_ui(ui, app, t);
+            ui.add_space(16.0);
+            monitor_size_ui(ui, app, t);
+        });
+    }
+}
+
+fn monitor_mode_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
+    ui.vertical(|ui| {
+        ui.label(theme::hud(t!(app.lang, "режим", "mode"), t.faint));
+        ui.horizontal(|ui| {
+            for mode in [MonitorMode::Extend, MonitorMode::Mirror] {
+                if ui
+                    .selectable_label(
+                        app.stream.mode == mode,
+                        match mode {
+                            MonitorMode::Extend => t!(app.lang, "расширить", "extend"),
+                            MonitorMode::Mirror => t!(app.lang, "зеркало", "mirror"),
+                        },
+                    )
+                    .clicked()
+                {
+                    app.stream.mode = mode;
+                }
+            }
+        });
+    });
+}
+
+fn monitor_backend_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
+    ui.vertical(|ui| {
+        ui.label(theme::hud(t!(app.lang, "бэкенд", "backend"), t.faint));
+        egui::ComboBox::from_id_salt("monitor-backend")
+            .selected_text(app.stream.backend.label_lang(app.lang))
+            .show_ui(ui, |ui| {
+                for b in backend_list() {
+                    if ui
+                        .selectable_label(app.stream.backend == b, b.label_lang(app.lang))
+                        .clicked()
+                    {
+                        app.stream.backend = b;
+                    }
+                }
+            });
+    });
+}
+
+fn monitor_position_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
+    ui.vertical(|ui| {
+        ui.label(theme::hud(t!(app.lang, "позиция", "position"), t.faint));
+        ui.add_enabled_ui(app.stream.mode == MonitorMode::Extend, |ui| {
+            egui::ComboBox::from_id_salt("monitor-position")
+                .selected_text(app.stream.position.label_lang(app.lang))
+                .width(130.0)
+                .show_ui(ui, |ui| {
+                    for p in MonitorPosition::ALL {
+                        if ui
+                            .selectable_label(app.stream.position == p, p.label_lang(app.lang))
+                            .clicked()
+                        {
+                            app.stream.position = p;
+                        }
+                    }
+                });
+        });
+    });
+}
+
+fn monitor_size_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
+    ui.vertical(|ui| {
+        ui.label(theme::hud(t!(app.lang, "размер", "size"), t.faint));
+        ui.horizontal(|ui| {
+            for (w, h) in [(1280, 800), (1920, 1080), (1280, 720)] {
+                if ui
+                    .selectable_label(
+                        app.stream.width == w && app.stream.height == h,
+                        format!("{w}×{h}"),
+                    )
+                    .clicked()
+                {
+                    app.stream.width = w;
+                    app.stream.height = h;
+                }
+            }
+        });
     });
 }
 
