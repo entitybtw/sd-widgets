@@ -52,8 +52,14 @@
 - `state.rs` — shared state, logger, job manager, Home Assistant runtime.
 - `viiper.rs` — VIIPER client, pad lifecycle, password handling.
 - `monitor.rs` — monitor creation per backend, layout, config patching, capture,
-  RFB client, frame buffer.
-- `notifications.rs` — desktop notification watcher.
+  RFB client, frame buffer. niri gets a native virtual output when the running
+  compositor offers `create-virtual-output` (biri), otherwise a VKMS connector.
+- `notifications.rs` — desktop notification watcher. It advertises `body-markup`,
+  so the markup is reduced to plain text here (entities, `<br>`, `<img alt>`,
+  D-Bus octal escapes) once, and the Deck only renders UTF-8.
+- `apps.rs` — installed applications, declared power actions and the usage file
+  that orders the Deck's application list by frecency.
+- `bluetooth.rs` — BlueZ status, declared device actions and battery lookup.
 - `audio.rs` — `parec` for the default monitor, one `pw-record` per picked
   application with a Rust mixer (PulseAudio falls back to a null sink), a
   bounded PCM ring buffer and the blocking `Read` used by the HTTP stream.

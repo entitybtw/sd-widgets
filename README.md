@@ -86,8 +86,11 @@ directional slide, and the tiles stagger in behind it.
   pads, hot-plugged over USBIP. VIIPER can be installed from the GUI.
 - **Extra monitor** — creates a real additional monitor and streams it to the Deck:
   - Hyprland: headless output (`hyprctl output create headless`).
-  - niri: VKMS output + `niri msg output` (niri has no native virtual outputs);
-    one button in the wizard loads VKMS and keeps it loaded after a reboot.
+  - niri: a native virtual output through **biri** (a niri fork with
+    `niri msg create-virtual-output`) — a real second screen drawn by the
+    compositor, no VKMS, and it works with NVIDIA. Stock niri falls back to
+    VKMS + `niri msg output`, with one button in the wizard that loads VKMS and
+    keeps it loaded after a reboot.
   - KDE: `krfb-virtualmonitor` with a built-in RFB client.
   - X11 and Windows: `ffmpeg` desktop capture.
   - virtual machines: the same VKMS path is picked automatically, with a
@@ -103,16 +106,18 @@ directional slide, and the tiles stagger in behind it.
   through BlueZ; headphone and earbud battery comes from BlueZ, or from UPower
   when the device does not report it.
 - **Home Assistant** — URL + long-lived token, entities proxied through the daemon
-  so the token never lives on the Deck.
+  so the token never lives on the Deck. Lamps get brightness, colour temperature
+  and a colour palette whose shades can be saved on the Deck and reused.
 - **PC audio** — records the default output or the applications you pick and
   serves raw PCM to the Deck, which plays it with `pw-play`/`paplay`. The daemon
   keeps it off until you allow audio, and the Deck can require any number of
   confirmations before a stream starts.
 - **Always in the background** — closing the window does not stop the daemon:
-  it hides (or minimizes on Wayland) while the API and the Deck connection keep
-  running. The tray icon, `sdw-daemon --show` or simply starting the daemon
-  again brings the window back, and `sdw-daemon --quit` (or the tray menu, or a
-  second close press) stops it for real.
+  the window goes away, even on a compositor without a minimize concept, while
+  the API and the Deck connection keep running. The tray icon,
+  `sdw-daemon --show` or simply starting the daemon again opens a fresh window.
+  `sdw-daemon --quit`, the tray menu or the daemon's own **stop the daemon**
+  button end it for real.
 - **Setup wizard** — password inputs, dependency detection, install buttons for
   VIIPER and friends, and an explicit line telling you what to add to your
   compositor config when auto-patching is not possible.
@@ -218,10 +223,13 @@ streams it to the Deck at 1280×800 by default.
 - Choose the backend, size, fps and JPEG quality.
 - The daemon applies the layout immediately and persists it into your compositor
   config.
-- On niri, sway, GNOME and inside a virtual machine it creates a VKMS output and
-  offers a single **prepare vkms** button that loads the module and writes the
-  `modules-load.d`/`modprobe.d` files. The wizard also shows a readiness row:
-  module in the kernel, module loaded, output found, config path.
+- On niri with **biri** the screen is a native virtual output
+  (`niri msg create-virtual-output`): a real second display drawn by the
+  compositor, no VKMS involved. On stock niri, sway, GNOME and inside a virtual
+  machine it creates a VKMS output and offers a single **prepare vkms** button
+  that loads the module and writes the `modules-load.d`/`modprobe.d` files. The
+  wizard also shows a readiness row: module in the kernel, module loaded, output
+  found, config path.
 - If a compositor cannot be patched automatically, the wizard prints the exact line
   to add.
 
@@ -363,7 +371,7 @@ docs                 architecture, API, themes, monitor notes, addons, audio
 ## License
 
 MIT for this repository. The vendored VIIPER **client** is MIT. Material Symbols
-icons and the Archivo / JetBrains Mono fonts keep their own licenses (Apache-2.0
-and OFL), shipped in `assets/`. The VIIPER
+icons and the Archivo / JetBrains Mono / Noto Emoji fonts keep their own licenses
+(Apache-2.0 and OFL), shipped in `assets/`. The VIIPER
 **server** is a separate GPL-3.0 project and is **not** bundled; the daemon can
 install it from its own release artifacts if you ask it to.
