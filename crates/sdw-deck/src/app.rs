@@ -300,8 +300,9 @@ pub enum Task {
 ///
 /// The compositor may deliver the touchscreen either as native touch events or
 /// as a plain mouse. This tracks the native case; the mouse fallback lives in
-/// [`App::swipe_tick`]. Single finger is deliberately left to egui (taps and
-/// scrolling), only two or more fingers become a gesture.
+/// [`App::swipe_tick`]. A single finger is still a tap or a vertical scroll for
+/// egui, but a clearly horizontal flick becomes "previous/next page"; two or
+/// more fingers keep their own gestures.
 #[derive(Default)]
 pub struct TouchTrack {
     points: HashMap<u64, egui::Pos2>,
@@ -385,12 +386,30 @@ impl TouchTrack {
     }
 
     fn finish(&mut self, rect: Rect, now: Instant) -> Option<GestureSpec> {
-        if self.max < 2 {
-            return None;
-        }
         let started = self.start?;
         let start = self.anchor?;
         let end = self.centroid(&self.last, rect);
+        if self.max < 2 {
+            // One finger: only a quick, clearly horizontal flick counts. A tap
+            // and a vertical scroll stay with egui.
+            let dx = end.0 - start.0;
+            let dy = end.1 - start.1;
+            if now.saturating_duration_since(started) < Duration::from_millis(700)
+                && dx.abs() > 0.14
+                && dx.abs() > dy.abs() * 1.6
+            {
+                return Some(GestureSpec {
+                    kind: GestureKind::Swipe,
+                    fingers: 1,
+                    dir: Some(if dx < 0.0 {
+                        SwipeDir::Left
+                    } else {
+                        SwipeDir::Right
+                    }),
+                });
+            }
+            return None;
+        }
         let pinch = self.pinch.and_then(|(a, b, d0)| {
             let pa = *self.last.get(&a)?;
             let pb = *self.last.get(&b)?;
@@ -484,6 +503,11 @@ pub struct App {
     /// The current pointer drag belongs to a widget (slider, splitter, …), so
     /// it must not also turn into a page swipe.
     pub swipe_blocked: bool,
+    /// Same for a native single-finger touch: a slider owns the finger.
+    pub touch_blocked: bool,
+    /// Id of the page ScrollArea in the last frame. It always claims drags to
+    /// scroll; that must not be mistaken for a control that owns the pointer.
+    pub page_scroll_id: Option<egui::Id>,
     /// Raw multi-touch gestures from egui's touch events.
     pub touch: TouchTrack,
 
@@ -611,6 +635,8 @@ impl App {
             pad_seen: false,
             edge_swipe: None,
             swipe_blocked: false,
+            touch_blocked: false,
+            page_scroll_id: None,
             touch: TouchTrack::default(),
             stream: StreamState {
                 feed: None,
@@ -881,7 +907,12 @@ impl App {
         for event in &raw.events {
             if let egui::Event::Touch { id, phase, pos, .. } = event {
                 match phase {
-                    egui::TouchPhase::Start => self.touch.begin(id.0, *pos, rect, now),
+                    egui::TouchPhase::Start => {
+                        if self.touch.points.is_empty() {
+                            self.touch_blocked = false;
+                        }
+                        self.touch.begin(id.0, *pos, rect, now)
+                    }
                     egui::TouchPhase::Move => self.touch.moved(id.0, *pos),
                     egui::TouchPhase::End | egui::TouchPhase::Cancel => {
                         if let Some(spec) = self.touch.end(id.0, *pos, rect, now) {
@@ -891,12 +922,22 @@ impl App {
                 }
             }
         }
+        // The scroll area itself claims every drag it can; a slider or a tile
+        // drag is a different id. Only the latter blocks the page gesture.
+        if !self.touch.points.is_empty() {
+            if let Some(id) = ctx.dragged_id() {
+                if Some(id) != self.page_scroll_id {
+                    self.touch_blocked = true;
+                }
+            }
+        }
         if finished.is_none()
             && theme::style().animations
             && !self.gamepad_on
             && !self.binds.capture
-            && self.touch.max >= 3
-            && self.touch.points.len() >= 3
+            && !self.touch_blocked
+            && self.touch.points.len() >= 1
+            && self.touch.max >= 1
         {
             if let Some(delta) = self.touch.drag_px(rect) {
                 if delta.x.abs() > delta.y.abs() {
@@ -907,7 +948,15 @@ impl App {
         }
         if let Some(spec) = finished {
             self.page_slide = 0.0;
-            self.on_input(DeckEvent::Gesture(spec));
+            if spec.fingers == 1 && spec.kind == GestureKind::Swipe && !self.touch_blocked {
+                self.nav_step(if spec.dir == Some(SwipeDir::Left) {
+                    1
+                } else {
+                    -1
+                });
+            } else {
+                self.on_input(DeckEvent::Gesture(spec));
+            }
         }
     }
 
@@ -940,9 +989,15 @@ impl App {
                 self.edge_swipe = Some((p, p, Instant::now()));
             }
         }
-        if down && ctx.dragged_id().is_some() {
-            // Sliders and other draggable widgets own this pointer.
-            self.swipe_blocked = true;
+        if down {
+            if let Some(id) = ctx.dragged_id() {
+                // The page ScrollArea claims every drag so it can scroll. That
+                // is not a widget owning the pointer; a slider or a tile drag
+                // is, and must keep the swipe away.
+                if Some(id) != self.page_scroll_id {
+                    self.swipe_blocked = true;
+                }
+            }
         }
         if let Some((start, _, at)) = self.edge_swipe {
             if down {
@@ -2716,7 +2771,12 @@ impl App {
                 theme::backdrop(ui, &t);
                 ui.set_opacity(ease * drag_fade);
                 ui.add_space((1.0 - ease) * 14.0);
+                self.page_scroll_id = Some(
+                    ui.make_persistent_id(egui::IdSalt::new("deck-page"))
+                        .with("area"),
+                );
                 ScrollArea::vertical()
+                    .id_salt("deck-page")
                     .auto_shrink([false, false])
                     .scroll_source(egui::scroll_area::ScrollSource {
                         scroll_bar: false,
@@ -3691,5 +3751,67 @@ fn deadzone(v: f32, dz: f32) -> f32 {
         0.0
     } else {
         (v - dz.copysign(v)) / (1.0 - dz)
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+
+    fn rect() -> Rect {
+        Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 500.0))
+    }
+
+    #[test]
+    fn one_finger_horizontal_flick_is_a_swipe() {
+        let mut track = TouchTrack::default();
+        let now = Instant::now();
+        let r = rect();
+        track.begin(1, egui::pos2(700.0, 250.0), r, now);
+        track.moved(1, egui::pos2(300.0, 260.0));
+        let spec = track
+            .end(
+                1,
+                egui::pos2(300.0, 260.0),
+                r,
+                now + Duration::from_millis(200),
+            )
+            .expect("a flick across the screen is a swipe");
+        assert_eq!(spec.kind, GestureKind::Swipe);
+        assert_eq!(spec.fingers, 1);
+        assert_eq!(spec.dir, Some(SwipeDir::Left));
+    }
+
+    #[test]
+    fn one_finger_vertical_drag_is_not_a_swipe() {
+        let mut track = TouchTrack::default();
+        let now = Instant::now();
+        let r = rect();
+        track.begin(1, egui::pos2(400.0, 400.0), r, now);
+        track.moved(1, egui::pos2(430.0, 100.0));
+        assert!(track
+            .end(
+                1,
+                egui::pos2(430.0, 100.0),
+                r,
+                now + Duration::from_millis(300)
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn one_finger_tap_is_not_a_swipe() {
+        let mut track = TouchTrack::default();
+        let now = Instant::now();
+        let r = rect();
+        track.begin(1, egui::pos2(400.0, 200.0), r, now);
+        assert!(track
+            .end(
+                1,
+                egui::pos2(402.0, 201.0),
+                r,
+                now + Duration::from_millis(80)
+            )
+            .is_none());
     }
 }
