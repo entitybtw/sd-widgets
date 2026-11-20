@@ -1988,6 +1988,10 @@ pub struct DeckConfig {
     pub audio: AudioDeckCfg,
     #[serde(default)]
     pub addons: crate::addons::AddonsCfg,
+    /// Lamp colours the user saved on the Deck, whole RGB triples. They sit
+    /// next to the built-in palette and survive a restart.
+    #[serde(default)]
+    pub light_colors: Vec<[u8; 3]>,
 }
 
 fn default_lang() -> String {
@@ -2034,6 +2038,7 @@ impl Default for DeckConfig {
             clock: ClockCfg::default(),
             audio: AudioDeckCfg::default(),
             addons: crate::addons::AddonsCfg::default(),
+            light_colors: Vec::new(),
         }
     }
 }

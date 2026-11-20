@@ -190,6 +190,9 @@ pub struct HaState {
     /// Brightness right after a slider release, until the next real state is
     /// different from it. Without this the slider snaps back for a second.
     pub optimistic_pct: HashMap<String, (u8, Instant)>,
+    /// Colour right after a swatch tap, so the tick lands on the pressed
+    /// swatch immediately instead of after a Home Assistant round-trip.
+    pub optimistic_rgb: HashMap<String, ([u8; 3], Instant)>,
     pub room: usize,
     /// Page of the current room; a room can hold hundreds of entities.
     pub page: usize,
@@ -734,6 +737,7 @@ impl App {
                 presets: Vec::new(),
                 optimistic: HashMap::new(),
                 optimistic_pct: HashMap::new(),
+                optimistic_rgb: HashMap::new(),
                 room: 0,
                 page: 0,
                 page_room: 0,
@@ -2832,6 +2836,7 @@ impl App {
                     self.ha.views.clear();
                     self.ha.optimistic.clear();
                     self.ha.optimistic_pct.clear();
+                    self.ha.optimistic_rgb.clear();
                     self.ha.loaded = false;
                     self.ha.age_ms = 0;
                     self.ha.connected = false;
@@ -3099,6 +3104,20 @@ impl App {
                             .map(|real| real.abs_diff(*pct) > 2)
                             .unwrap_or(false)
                 });
+                // A tapped colour shows on the swatch right away. Keep it for
+                // a few seconds in case the lamp is slow to answer, then let
+                // the real value win again.
+                self.ha
+                    .optimistic_rgb
+                    .retain(|_, (_, at)| at.elapsed() < Duration::from_secs(8));
+                for e in &mut self.ha.entities {
+                    if let Some((rgb, _)) = self.ha.optimistic_rgb.get(&e.entity_id) {
+                        if let Some(map) = e.attributes.as_object_mut() {
+                            map.insert("rgb_color".into(), serde_json::json!(rgb));
+                            map.insert("color_mode".into(), serde_json::json!("hs"));
+                        }
+                    }
+                }
             }
             Task::Ha(Err(e)) => {
                 self.ha.pending = false;

@@ -3265,17 +3265,61 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
 // ---------------------------------------------------------------- home assistant
 
-/// Seven quick colours for RGB lamps: warm white, neutral, cool, then the
-/// usual saturated ones. `light.turn_on` takes the array as-is.
-const LIGHT_COLORS: &[(&str, [u8; 3])] = &[
-    ("тёплый", [255, 180, 110]),
-    ("нейтральный", [255, 235, 210]),
-    ("холодный", [205, 225, 255]),
-    ("красный", [255, 70, 60]),
-    ("зелёный", [80, 220, 120]),
-    ("синий", [70, 120, 255]),
-    ("фиолетовый", [170, 90, 255]),
+/// Built-in quick colours for RGB lamps: warm white through the usual
+/// saturated ones. Names are bilingual because the Deck is. `light.turn_on`
+/// takes the array as-is, and the very warm shade matches a cosy 2292 K lamp.
+const LIGHT_COLORS: &[(&str, &str, [u8; 3])] = &[
+    ("очень тёплый", "very warm", [255, 150, 49]),
+    ("тёплый", "warm", [255, 180, 110]),
+    ("нейтральный", "neutral", [255, 235, 210]),
+    ("холодный", "cool", [205, 225, 255]),
+    ("красный", "red", [255, 70, 60]),
+    ("зелёный", "green", [80, 220, 120]),
+    ("синий", "blue", [70, 120, 255]),
+    ("фиолетовый", "violet", [170, 90, 255]),
 ];
+
+/// One square colour button. A selected swatch gets a thicker ink border and a
+/// tick drawn in the contrasting shade, so a tap is visible at arm's length.
+fn light_swatch(
+    ui: &mut Ui,
+    t: &Tokens,
+    rgb: [u8; 3],
+    selected: bool,
+    tip: impl Into<egui::WidgetText>,
+) -> egui::Response {
+    let fill = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
+    let ink = if luma_of(rgb) > 145.0 {
+        Color32::from_rgb(24, 24, 26)
+    } else {
+        Color32::WHITE
+    };
+    let text = if selected {
+        theme::icon(theme::icon::CHECK, 20.0, ink)
+    } else {
+        RichText::new("").size(20.0)
+    };
+    ui.add(
+        egui::Button::new(text)
+            .fill(fill)
+            .stroke(Stroke::new(
+                if selected { 2.5 } else { 1.0 },
+                if selected { t.strong } else { t.line },
+            ))
+            .corner_radius(CornerRadius::ZERO)
+            .min_size(Vec2::splat(34.0)),
+    )
+    .on_hover_text(tip)
+}
+
+fn light_hex(rgb: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
+/// Perceived brightness of a colour, used to pick a tick that stays readable.
+fn luma_of(rgb: [u8; 3]) -> f32 {
+    0.2126 * f32::from(rgb[0]) + 0.7152 * f32::from(rgb[1]) + 0.0722 * f32::from(rgb[2])
+}
 
 fn ha_glyph(domain: &str) -> &'static str {
     match domain {
@@ -3437,9 +3481,11 @@ fn ha_power_button(ui: &mut Ui, t: &Tokens, on: bool, lang: Lang, width: f32) ->
     } else {
         t!(lang, "включить", "turn on")
     };
+    // A whole card is far too wide for one action: keep the control compact so
+    // a two-column page does not turn into a wall of 600 px buttons.
     ui.add_sized(
-        [width.max(120.0), 46.0],
-        egui::Button::new(RichText::new(label).size(15.5).strong().color(if on {
+        [width.clamp(120.0, 200.0), 38.0],
+        egui::Button::new(RichText::new(label).size(14.5).strong().color(if on {
             t.accent
         } else {
             t.ink
@@ -3528,6 +3574,10 @@ fn ha_card(
     star: &mut Option<String>,
     category_change: &mut Option<(String, Option<String>)>,
     move_entity: &mut Option<(usize, String, i32)>,
+    // Colours the user saved on the Deck, plus a flag that says the list was
+    // changed and has to be written to the config.
+    light_colors: &mut Vec<[u8; 3]>,
+    palette_dirty: &mut bool,
 ) {
     let on = e.is_on();
     let accent = if on { t.accent } else { t.faint };
@@ -3668,8 +3718,11 @@ fn ha_card(
                             });
                         }
                         if e.supports_brightness() {
-                            let reported = e.brightness_pct().unwrap_or(if on { 100 } else { 0 });
-                            let mut pct = i32::from(reported.max(if on { 1 } else { 0 }));
+                            // Only the value Home Assistant reported is the
+                            // truth: an unknown brightness is shown as "—",
+                            // never as an invented 100 %.
+                            let reported = e.brightness_pct();
+                            let mut pct = i32::from(reported.unwrap_or(0));
                             let slider_w = (width - 96.0).max(90.0);
                             ui.spacing_mut().interact_size.y = 34.0;
                             let r = ui.add_sized(
@@ -3695,11 +3748,18 @@ fn ha_card(
                                     state: Some("on".into()),
                                 });
                             }
+                            // While the finger moves, follow it; otherwise the
+                            // number is exactly what Home Assistant reports.
+                            let shown = if r.dragged() {
+                                Some(pct)
+                            } else {
+                                reported.map(i32::from)
+                            };
                             ui.label(
-                                RichText::new(format!(
-                                    "{}%",
-                                    if on || reported > 0 { pct } else { 0 }
-                                ))
+                                RichText::new(match shown {
+                                    Some(p) => format!("{p}%"),
+                                    None => "—".to_string(),
+                                })
                                 .family(FontFamily::Monospace)
                                 .size(12.0)
                                 .color(t.faint),
@@ -3753,22 +3813,22 @@ fn ha_card(
                         });
                     }
                     if e.supports_color() {
+                        let current = e.rgb_color();
                         ui.horizontal_wrapped(|ui| {
+                            // Roomier gaps: a fingertip is not a mouse cursor,
+                            // and neighbouring shades must not be hit by mistake.
+                            ui.spacing_mut().item_spacing.y = 8.0;
                             ui.label(theme::icon(theme::icon::LOOK, 17.0, t.faint));
-                            for (name, rgb) in LIGHT_COLORS {
-                                let c = Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-                                let selected = e.rgb_color() == Some(*rgb);
-                                let resp = ui.add(
-                                    egui::Button::new("")
-                                        .fill(c)
-                                        .stroke(Stroke::new(
-                                            if selected { 2.0 } else { 1.0 },
-                                            if selected { t.strong } else { t.line },
-                                        ))
-                                        .corner_radius(CornerRadius::ZERO)
-                                        .min_size(Vec2::splat(26.0)),
+                            // Built-in shades first.
+                            for (ru, en, rgb) in LIGHT_COLORS {
+                                let resp = light_swatch(
+                                    ui,
+                                    t,
+                                    *rgb,
+                                    current == Some(*rgb),
+                                    t!(lang, *ru, *en),
                                 );
-                                if resp.on_hover_text(*name).clicked() {
+                                if resp.clicked() {
                                     actions.push(HaAction {
                                         call: ha_service(e, "turn_on", json!({ "rgb_color": rgb })),
                                         entity: e.entity_id.clone(),
@@ -3776,16 +3836,95 @@ fn ha_card(
                                     });
                                 }
                             }
+                            // The lamp's own colour, when no preset or saved
+                            // swatch already shows it: the tick then means
+                            // "this is what the lamp is doing right now".
+                            if let Some(cur) = current {
+                                let known = LIGHT_COLORS.iter().any(|(_, _, p)| *p == cur)
+                                    || light_colors.contains(&cur);
+                                if !known {
+                                    // A plain button, not the palette helper:
+                                    // this shade must not be removable, it is
+                                    // the lamp's own state.
+                                    let resp = ui
+                                        .add(
+                                            egui::Button::new(theme::icon(
+                                                theme::icon::CHECK,
+                                                20.0,
+                                                if luma_of(cur) > 145.0 {
+                                                    Color32::from_rgb(24, 24, 26)
+                                                } else {
+                                                    Color32::WHITE
+                                                },
+                                            ))
+                                            .fill(Color32::from_rgb(cur[0], cur[1], cur[2]))
+                                            .stroke(Stroke::new(2.5, t.strong))
+                                            .corner_radius(CornerRadius::ZERO)
+                                            .min_size(Vec2::splat(34.0)),
+                                        )
+                                        .on_hover_text(format!(
+                                            "{} · {}",
+                                            light_hex(cur),
+                                            t!(lang, "текущий цвет", "current colour")
+                                        ));
+                                    if resp.clicked() {
+                                        actions.push(HaAction {
+                                            call: ha_service(
+                                                e,
+                                                "turn_on",
+                                                json!({ "rgb_color": cur }),
+                                            ),
+                                            entity: e.entity_id.clone(),
+                                            state: Some("on".into()),
+                                        });
+                                    }
+                                }
+                            }
+                            // Saved colours: a tap applies, a long touch (or
+                            // a right click) removes. Removal is checked first
+                            // because a long touch also reports a click.
+                            let mut remove: Option<usize> = None;
+                            for (i, rgb) in light_colors.iter().enumerate() {
+                                let resp = light_swatch(
+                                    ui,
+                                    t,
+                                    *rgb,
+                                    current == Some(*rgb),
+                                    format!(
+                                        "{} · {}",
+                                        light_hex(*rgb),
+                                        t!(lang, "удерживайте, чтобы убрать", "hold to remove")
+                                    ),
+                                );
+                                if resp.long_touched() || resp.secondary_clicked() {
+                                    remove = Some(i);
+                                } else if resp.clicked() {
+                                    actions.push(HaAction {
+                                        call: ha_service(e, "turn_on", json!({ "rgb_color": rgb })),
+                                        entity: e.entity_id.clone(),
+                                        state: Some("on".into()),
+                                    });
+                                }
+                            }
+                            if let Some(i) = remove {
+                                if i < light_colors.len() {
+                                    light_colors.remove(i);
+                                    *palette_dirty = true;
+                                }
+                            }
                         });
-                        // Any colour, not only the eight presets. The draft
-                        // lives in egui memory per entity, so opening the
-                        // picker and choosing a shade survives frames; nothing
-                        // is sent until "применить" is pressed.
+                        // Any colour, not only the palette. The draft lives in
+                        // egui memory per entity, so opening the picker and
+                        // choosing a shade survives frames; nothing is sent
+                        // until "применить" is pressed.
                         let id = ui.make_persistent_id(("ha-light-colour", e.entity_id.as_str()));
-                        let fallback = e.rgb_color().unwrap_or([255, 196, 120]);
+                        let fallback = current.unwrap_or([255, 196, 120]);
                         let mut draft =
                             ui.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || fallback));
                         ui.horizontal(|ui| {
+                            // The stock colour well is only 18 px tall, which
+                            // is hard to hit on glass.
+                            ui.spacing_mut().interact_size.y = 34.0;
                             ui.label(
                                 RichText::new(t!(lang, "свой цвет", "custom colour"))
                                     .size(12.0)
@@ -3794,13 +3933,10 @@ fn ha_card(
                             egui::color_picker::color_edit_button_srgb(ui, &mut draft);
                             ui.data_mut(|d| d.insert_temp(id, draft));
                             ui.label(
-                                RichText::new(format!(
-                                    "#{:02X}{:02X}{:02X}",
-                                    draft[0], draft[1], draft[2]
-                                ))
-                                .family(FontFamily::Monospace)
-                                .size(10.5)
-                                .color(t.faint),
+                                RichText::new(light_hex(draft))
+                                    .family(FontFamily::Monospace)
+                                    .size(10.5)
+                                    .color(t.faint),
                             );
                             if theme::ghost(ui, t!(lang, "применить", "apply"), t).clicked()
                             {
@@ -3810,14 +3946,54 @@ fn ha_card(
                                     state: Some("on".into()),
                                 });
                             }
+                            // Keep this shade next to the built-ins: the Deck
+                            // has no keyboard for a hex value later.
+                            let exists = light_colors.contains(&draft);
+                            let full = light_colors.len() >= 12;
+                            let add = ui.add_enabled(
+                                !exists && !full,
+                                egui::Button::new(theme::icon(
+                                    theme::icon::ADD,
+                                    18.0,
+                                    if exists || full { t.faint } else { t.ink },
+                                ))
+                                .fill(t.well)
+                                .stroke(Stroke::new(1.0, t.line))
+                                .corner_radius(CornerRadius::ZERO)
+                                .min_size(Vec2::splat(34.0)),
+                            );
+                            let tip = if exists {
+                                t!(
+                                    lang,
+                                    "этот цвет уже в палитре",
+                                    "this colour is already saved"
+                                )
+                            } else if full {
+                                t!(
+                                    lang,
+                                    "в палитре уже 12 цветов",
+                                    "the palette already holds 12 colours"
+                                )
+                            } else {
+                                t!(
+                                    lang,
+                                    "добавить цвет в палитру",
+                                    "add this colour to the palette"
+                                )
+                            };
+                            if add.on_hover_text(tip).clicked() {
+                                light_colors.push(draft);
+                                if light_colors.len() > 12 {
+                                    let extra = light_colors.len() - 12;
+                                    light_colors.drain(..extra);
+                                }
+                                *palette_dirty = true;
+                            }
                         });
                     }
                 }
                 "cover" => {
-                    let mut pos = e
-                        .cover_position()
-                        .unwrap_or(if e.is_open() { 100 } else { 0 })
-                        as i32;
+                    let position = e.cover_position();
                     ui.horizontal(|ui| {
                         if ha_icon_button(
                             ui,
@@ -3853,30 +4029,42 @@ fn ha_card(
                                 state: Some("closed".into()),
                             });
                         }
-                        ui.spacing_mut().interact_size.y = 30.0;
-                        let r = ui.add_sized(
-                            [(width - 220.0).max(90.0), 30.0],
-                            egui::Slider::new(&mut pos, 0..=100)
-                                .show_value(false)
-                                .trailing_fill(true),
-                        );
-                        if r.drag_stopped() {
-                            actions.push(HaAction {
-                                call: ha_service(
-                                    e,
-                                    "set_cover_position",
-                                    json!({ "position": pos }),
-                                ),
-                                entity: e.entity_id.clone(),
-                                state: Some(if pos > 0 { "open" } else { "closed" }.into()),
-                            });
+                        if let Some(current) = position {
+                            let mut pos = i32::from(current);
+                            ui.spacing_mut().interact_size.y = 30.0;
+                            let r = ui.add_sized(
+                                [(width - 220.0).max(90.0), 30.0],
+                                egui::Slider::new(&mut pos, 0..=100)
+                                    .show_value(false)
+                                    .trailing_fill(true),
+                            );
+                            if r.drag_stopped() {
+                                actions.push(HaAction {
+                                    call: ha_service(
+                                        e,
+                                        "set_cover_position",
+                                        json!({ "position": pos }),
+                                    ),
+                                    entity: e.entity_id.clone(),
+                                    state: Some(if pos > 0 { "open" } else { "closed" }.into()),
+                                });
+                            }
+                            ui.label(
+                                RichText::new(format!("{pos}%"))
+                                    .family(FontFamily::Monospace)
+                                    .size(11.0)
+                                    .color(t.faint),
+                            );
+                        } else {
+                            // A cover that reports no position is not "100 %
+                            // open": show what it actually says.
+                            ui.label(
+                                RichText::new(ha_state_text(e, lang))
+                                    .family(FontFamily::Monospace)
+                                    .size(11.5)
+                                    .color(t.faint),
+                            );
                         }
-                        ui.label(
-                            RichText::new(format!("{pos}%"))
-                                .family(FontFamily::Monospace)
-                                .size(11.0)
-                                .color(t.faint),
-                        );
                     });
                 }
                 "climate" => {
@@ -4060,25 +4248,33 @@ fn ha_card(
                 }
                 "lock" => {
                     let locked = e.state == "locked";
-                    if ha_power_button(ui, t, locked, lang, width) {
-                        actions.push(HaAction {
-                            call: ha_service(
-                                e,
-                                if locked { "unlock" } else { "lock" },
-                                serde_json::Value::Null,
-                            ),
-                            entity: e.entity_id.clone(),
-                            state: Some(if locked { "unlocked" } else { "locked" }.into()),
-                        });
-                    }
+                    ui.horizontal(|ui| {
+                        if ha_power_button(ui, t, locked, lang, width) {
+                            actions.push(HaAction {
+                                call: ha_service(
+                                    e,
+                                    if locked { "unlock" } else { "lock" },
+                                    serde_json::Value::Null,
+                                ),
+                                entity: e.entity_id.clone(),
+                                state: Some(if locked { "unlocked" } else { "locked" }.into()),
+                            });
+                        }
+                        ui.label(
+                            RichText::new(ha_state_text(e, lang))
+                                .family(FontFamily::Monospace)
+                                .size(11.5)
+                                .color(t.faint),
+                        );
+                    });
                 }
                 "scene" | "script" | "button" => {
                     if ui
                         .add_sized(
-                            [width, 44.0],
+                            [width.min(180.0).max(120.0), 38.0],
                             egui::Button::new(
                                 RichText::new(t!(lang, "запустить", "run"))
-                                    .size(14.5)
+                                    .size(14.0)
                                     .color(accent),
                             )
                             .fill(accent.gamma_multiply(0.12))
@@ -4355,13 +4551,21 @@ fn ha_card(
                 }
                 _ => {
                     if sdw_core::ha::is_controllable(e) {
-                        if ha_power_button(ui, t, on, lang, width) {
-                            actions.push(HaAction {
-                                call: ha_toggle(e, !on),
-                                entity: e.entity_id.clone(),
-                                state: Some(if on { "off" } else { "on" }.into()),
-                            });
-                        }
+                        ui.horizontal(|ui| {
+                            if ha_power_button(ui, t, on, lang, width) {
+                                actions.push(HaAction {
+                                    call: ha_toggle(e, !on),
+                                    entity: e.entity_id.clone(),
+                                    state: Some(if on { "off" } else { "on" }.into()),
+                                });
+                            }
+                            ui.label(
+                                RichText::new(ha_state_text(e, lang))
+                                    .family(FontFamily::Monospace)
+                                    .size(11.5)
+                                    .color(t.faint),
+                            );
+                        });
                     } else {
                         ui.label(
                             RichText::new(ha_state_text(e, lang))
@@ -4408,8 +4612,20 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .strong()
                 .color(if ha.connected { t.good } else { t.strong }),
             );
-            if ha.configured {
-                ui.label(
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ha.configured
+                    && theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked()
+                {
+                    app.ha.last_fetch =
+                        std::time::Instant::now() - std::time::Duration::from_secs(60);
+                }
+            });
+        });
+        if ha.configured {
+            // The summary gets its own line: squeezing it beside the status
+            // and the refresh button is what made the header overlap.
+            ui.add(
+                egui::Label::new(
                     RichText::new(format!(
                         "{} · {} {} · {} {}",
                         util::truncate(&ha.url, 40),
@@ -4421,17 +4637,10 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .family(FontFamily::Monospace)
                     .size(10.5)
                     .color(t.muted),
-                );
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ha.configured
-                    && theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked()
-                {
-                    app.ha.last_fetch =
-                        std::time::Instant::now() - std::time::Duration::from_secs(60);
-                }
-            });
-        });
+                )
+                .truncate(),
+            );
+        }
         if ha.configured && !ha.error.is_empty() && !ha.connected {
             ui.label(
                 RichText::new(util::truncate(&ha.error, 90))
@@ -4952,67 +5161,60 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(10.5)
                     .color(t.faint),
             );
-        } else {
-            ui.label(
-                RichText::new(format!(
-                    "{}: {}",
-                    t!(app.lang, "поиск", "search"),
-                    util::truncate(&app.ha.search, 40)
-                ))
-                .size(14.0)
-                .color(t.muted),
-            );
-            if theme::ghost(ui, t!(app.lang, "сбросить", "clear"), t).clicked() {
-                app.ha.search.clear();
-            }
+            ui.add_space(8.0);
         }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add(
-                TextEdit::singleline(&mut app.ha.search)
-                    .hint_text(t!(app.lang, "поиск по имени", "search by name"))
-                    .desired_width(220.0),
-            );
-            if theme::ghost(
-                ui,
-                if app.ha.presets_open {
-                    t!(app.lang, "скрыть пресеты", "hide presets")
-                } else {
-                    t!(app.lang, "пресеты", "presets")
-                },
-                t,
-            )
-            .clicked()
-            {
-                app.ha.presets_open = !app.ha.presets_open;
-            }
-            if theme::ghost(
-                ui,
-                if app.ha.manage {
-                    t!(app.lang, "скрыть категории", "hide categories")
-                } else {
-                    t!(app.lang, "категории", "categories")
-                },
-                t,
-            )
-            .clicked()
-            {
-                app.ha.manage = !app.ha.manage;
-            }
-            if theme::ghost(
-                ui,
-                if app.ha.show_offline {
-                    t!(app.lang, "скрыть недоступные", "hide unavailable")
-                } else {
-                    t!(app.lang, "недоступные", "unavailable")
-                },
-                t,
-            )
-            .clicked()
-            {
-                app.ha.show_offline = !app.ha.show_offline;
-                app.ha.page = 0;
-            }
-        });
+        ui.add(
+            TextEdit::singleline(&mut app.ha.search)
+                .hint_text(t!(app.lang, "поиск по имени", "search by name"))
+                .desired_width(220.0),
+        );
+        if searching && theme::ghost(ui, t!(app.lang, "сбросить", "clear"), t).clicked() {
+            app.ha.search.clear();
+        }
+    });
+    // The action row is separate: the search field and three labels do not fit
+    // beside the room switcher on the Deck and used to overlap it.
+    ui.horizontal_wrapped(|ui| {
+        if theme::ghost(
+            ui,
+            if app.ha.presets_open {
+                t!(app.lang, "скрыть пресеты", "hide presets")
+            } else {
+                t!(app.lang, "пресеты", "presets")
+            },
+            t,
+        )
+        .clicked()
+        {
+            app.ha.presets_open = !app.ha.presets_open;
+        }
+        if theme::ghost(
+            ui,
+            if app.ha.manage {
+                t!(app.lang, "скрыть категории", "hide categories")
+            } else {
+                t!(app.lang, "категории", "categories")
+            },
+            t,
+        )
+        .clicked()
+        {
+            app.ha.manage = !app.ha.manage;
+        }
+        if theme::ghost(
+            ui,
+            if app.ha.show_offline {
+                t!(app.lang, "скрыть недоступные", "hide unavailable")
+            } else {
+                t!(app.lang, "недоступные", "unavailable")
+            },
+            t,
+        )
+        .clicked()
+        {
+            app.ha.show_offline = !app.ha.show_offline;
+            app.ha.page = 0;
+        }
     });
     ui.add_space(6.0);
 
@@ -5150,6 +5352,14 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 }
             }
         }
+        // A just-pressed swatch keeps its tick until the lamp answers.
+        if let Some((rgb, at)) = app.ha.optimistic_rgb.get(&e.entity_id) {
+            if at.elapsed() < std::time::Duration::from_secs(8) {
+                if let Some(map) = e.attributes.as_object_mut() {
+                    map.insert("rgb_color".into(), serde_json::json!(rgb));
+                }
+            }
+        }
     }
     let priority = |d: &str| match d {
         "light" => 0,
@@ -5212,6 +5422,10 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut star: Option<String> = None;
     let mut category_change: Option<(String, Option<String>)> = None;
     let mut move_entity: Option<(usize, String, i32)> = None;
+    let lang = app.lang;
+    // The palette is written back once the whole page has been laid out.
+    let light_colors = &mut app.cfg.light_colors;
+    let mut palette_dirty = false;
 
     ha_pager(ui, t, &mut app.ha.page, pages, total_found, app.lang);
 
@@ -5227,9 +5441,9 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
     groups.sort_by_key(|(d, _)| priority(d));
     let width = ui.available_width();
-    // Two columns only where a card is still wide enough to be usable. On the
-    // Deck everything stays in one full-width column so nothing can spill out.
-    let cols = if width >= 1180.0 { 2 } else { 1 };
+    // As many columns as fit without squeezing a card below a comfortable
+    // reading width; the Deck lands on two, a small window on one.
+    let cols = (((width + 14.0) / 520.0).floor() as usize).clamp(1, 3);
 
     for (domain, list) in groups {
         ui.add_space(4.0);
@@ -5259,7 +5473,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         ha_card(
                             ui,
                             t,
-                            app.lang,
+                            lang,
                             e,
                             inner,
                             &favorites,
@@ -5270,10 +5484,13 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             &mut star,
                             &mut category_change,
                             &mut move_entity,
+                            light_colors,
+                            &mut palette_dirty,
                         );
                     });
                 }
             });
+            ui.add_space(8.0);
         }
     }
 
@@ -5282,12 +5499,38 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             .optimistic_pct
             .insert(id, (pct, std::time::Instant::now()));
     }
+    if palette_dirty {
+        // The palette is small, so a deferred save is enough; `save_soon`
+        // coalesces a whole session of swatch edits into one write.
+        app.save_soon();
+    }
     let acted = !actions.is_empty();
     for a in actions {
         if let Some(state) = a.state {
             app.ha
                 .optimistic
-                .insert(a.entity, (state, std::time::Instant::now()));
+                .insert(a.entity.clone(), (state, std::time::Instant::now()));
+        }
+        // Remember a pressed colour so its swatch shows the tick at once, and
+        // forget an older one when the lamp is switched back to white.
+        let rgb = a
+            .call
+            .data
+            .get("rgb_color")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| {
+                if arr.len() < 3 {
+                    return None;
+                }
+                let c = |i: usize| arr[i].as_u64().map(|n| n.min(255) as u8).unwrap_or(0);
+                Some([c(0), c(1), c(2)])
+            });
+        if let Some(rgb) = rgb {
+            app.ha
+                .optimistic_rgb
+                .insert(a.entity.clone(), (rgb, std::time::Instant::now()));
+        } else if a.call.data.get("color_temp_kelvin").is_some() {
+            app.ha.optimistic_rgb.remove(&a.entity);
         }
         app.ha_call(a.call);
     }
