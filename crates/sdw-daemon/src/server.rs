@@ -128,6 +128,8 @@ fn handle(state: Arc<AppState>, mut req: Request) {
 
         (Method::Post, "/api/v1/remote") => remote_command(state, req),
         (Method::Post, "/api/v1/power") => power_command(state, req),
+        (Method::Get, "/api/v1/bluetooth") => respond_json(req, 200, &crate::bluetooth::status()),
+        (Method::Post, "/api/v1/bluetooth/action") => bluetooth_action(state, req),
         (Method::Get, "/api/v1/apps") => apps_list(req),
         (Method::Post, "/api/v1/apps/launch") => app_launch(state, req),
         (Method::Get, "/api/v1/media") => respond_json(req, 200, &state.media.snapshot()),
@@ -605,6 +607,30 @@ fn power_command(state: Arc<AppState>, mut req: Request) {
             state
                 .logger
                 .info(format!("Питание: {} ({message})", action.key()));
+            respond_json(req, 200, &json!({"ok": true, "message": message}))
+        }
+        Err(e) => error(req, 400, &e),
+    }
+}
+
+/// Bluetooth actions: scan, connect, pair, trust, remove. The address is
+/// validated in the Bluetooth module before it reaches `bluetoothctl`.
+fn bluetooth_action(state: Arc<AppState>, mut req: Request) {
+    let body: Value = match read_json(&mut req) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &e),
+    };
+    let action = body.get("action").and_then(Value::as_str).unwrap_or("");
+    let address = body
+        .get("address")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    match crate::bluetooth::action(action, address) {
+        Ok(message) => {
+            state
+                .logger
+                .info(format!("Bluetooth {action} {address}: {message}"));
             respond_json(req, 200, &json!({"ok": true, "message": message}))
         }
         Err(e) => error(req, 400, &e),

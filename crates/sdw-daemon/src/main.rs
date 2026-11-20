@@ -3,6 +3,7 @@
 mod apps;
 mod audio;
 mod autostart;
+mod bluetooth;
 mod config;
 #[cfg(feature = "gui")]
 mod gui;

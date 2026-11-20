@@ -27,6 +27,7 @@ pub enum Page {
     Clock,
     Computers,
     Control,
+    Bluetooth,
     Gamepad,
     Media,
     Screen,
@@ -51,11 +52,12 @@ impl Page {
         Page::Binds,
     ];
     /// Every page, in the order the arrows and the floating dock walk through them.
-    pub const ORDER: [Page; 14] = [
+    pub const ORDER: [Page; 15] = [
         Page::Home,
         Page::Clock,
         Page::Computers,
         Page::Control,
+        Page::Bluetooth,
         Page::Gamepad,
         Page::Media,
         Page::Screen,
@@ -73,6 +75,7 @@ impl Page {
             Page::Clock => "clock",
             Page::Computers => "computers",
             Page::Control => "control",
+            Page::Bluetooth => "bluetooth",
             Page::Gamepad => "gamepad",
             Page::Media => "media",
             Page::Screen => "screen",
@@ -90,6 +93,7 @@ impl Page {
             "clock" | "watch" | "time" => Page::Clock,
             "computers" | "pc" => Page::Computers,
             "control" | "pult" | "power" => Page::Control,
+            "bluetooth" | "bt" | "headphones" => Page::Bluetooth,
             "gamepad" => Page::Gamepad,
             "media" | "music" => Page::Media,
             "screen" | "stream" => Page::Screen,
@@ -109,6 +113,7 @@ impl Page {
             Page::Clock => t!(l, "часы", "clock"),
             Page::Computers => t!(l, "компьютеры", "computers"),
             Page::Control => t!(l, "пульт", "control"),
+            Page::Bluetooth => t!(l, "bluetooth", "bluetooth"),
             Page::Gamepad => t!(l, "геймпад", "gamepad"),
             Page::Media => t!(l, "медиа", "media"),
             Page::Screen => t!(l, "экран", "screen"),
@@ -127,6 +132,7 @@ impl Page {
             Page::Clock => theme::icon::CLOCK,
             Page::Computers => theme::icon::COMPUTERS,
             Page::Control => theme::icon::POWER,
+            Page::Bluetooth => theme::icon::BLUETOOTH,
             Page::Gamepad => theme::icon::GAMEPAD,
             Page::Media => theme::icon::MUSIC,
             Page::Screen => theme::icon::SCREEN,
@@ -307,6 +313,10 @@ pub enum Task {
     AddonInstalled(Result<(sdw_core::addons::Addon, String), String>),
     /// Applications listed by the active computer.
     Apps(Result<Vec<sdw_core::model::AppEntry>, String>),
+    /// Bluetooth adapter and devices.
+    Bluetooth(Result<sdw_core::model::BluetoothStatus, String>),
+    /// Result of a Bluetooth action; the page reloads afterwards.
+    BtAction(Result<String, String>),
 }
 
 /// Multi-finger touch state from `egui::Event::Touch`.
@@ -557,6 +567,13 @@ pub struct App {
     /// Power action waiting for the second press.
     pub power_confirm: Option<sdw_core::model::PowerAction>,
 
+    pub bluetooth: Option<sdw_core::model::BluetoothStatus>,
+    pub bluetooth_pending: bool,
+    pub bluetooth_at: Option<Instant>,
+    pub bluetooth_err: String,
+    /// Address waiting for a second press before it is removed.
+    pub bluetooth_remove: Option<String>,
+
     pub osk_open: bool,
     pub osk_shift: bool,
     pub osk_symbols: bool,
@@ -780,6 +797,11 @@ impl App {
             control_apps_at: None,
             control_filter: String::new(),
             power_confirm: None,
+            bluetooth: None,
+            bluetooth_pending: false,
+            bluetooth_at: None,
+            bluetooth_err: String::new(),
+            bluetooth_remove: None,
             audio_player: None,
             audio_confirm_left: 0,
             audio_error: String::new(),
@@ -1798,6 +1820,49 @@ impl App {
                 (addon, note)
             });
             Task::AddonInstalled(result)
+        });
+    }
+
+    /// Read the Bluetooth adapter and devices from the active computer.
+    pub fn load_bluetooth(&mut self) {
+        if self.bluetooth_pending {
+            return;
+        }
+        let Some(client) = self.client() else {
+            self.bluetooth_err = t!(
+                self.lang,
+                "сначала выберите компьютер",
+                "choose a computer first"
+            )
+            .to_string();
+            return;
+        };
+        self.bluetooth_pending = true;
+        self.bluetooth_at = Some(Instant::now());
+        self.spawn(move || Task::Bluetooth(client.bluetooth().map_err(|e| e.to_string())));
+    }
+
+    pub fn bluetooth_action(&mut self, action: &str, address: &str) {
+        let Some(client) = self.client() else {
+            self.toast(
+                t!(self.lang, "нет активного компьютера", "no active computer"),
+                false,
+            );
+            return;
+        };
+        let (action, address) = (action.to_string(), address.to_string());
+        self.spawn(move || {
+            Task::BtAction(
+                client
+                    .bluetooth_action(&action, &address)
+                    .map(|v| {
+                        v.get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("готово")
+                            .to_string()
+                    })
+                    .map_err(|e| e.to_string()),
+            )
         });
     }
 
@@ -2955,6 +3020,20 @@ impl App {
                 self.control_apps_pending = false;
                 self.control_apps_err = e;
             }
+            Task::Bluetooth(Ok(status)) => {
+                self.bluetooth_pending = false;
+                self.bluetooth_err = status.error.clone();
+                self.bluetooth = Some(status);
+            }
+            Task::Bluetooth(Err(e)) => {
+                self.bluetooth_pending = false;
+                self.bluetooth_err = e;
+            }
+            Task::BtAction(Ok(message)) => {
+                self.toast(message, true);
+                self.bluetooth_at = None;
+            }
+            Task::BtAction(Err(e)) => self.toast(e, false),
         }
     }
 
@@ -3284,6 +3363,7 @@ impl App {
             Page::Clock => crate::pages::clock(self, ui, t),
             Page::Computers => crate::pages::computers(self, ui, t),
             Page::Control => crate::pages::control(self, ui, t),
+            Page::Bluetooth => crate::pages::bluetooth(self, ui, t),
             Page::Gamepad => crate::pages::gamepad(self, ui, t),
             Page::Media => crate::pages::media(self, ui, t),
             Page::Screen => crate::pages::screen(self, ui, t),

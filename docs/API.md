@@ -85,6 +85,23 @@ Position values: `auto`, `right`, `left`, `above`, `below`.
 
 Details and requirements: [`AUDIO.md`](AUDIO.md).
 
+## Bluetooth
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| `GET` | `/api/v1/bluetooth` | `BluetoothStatus`: available, powered, discovering, adapter, devices, error. |
+| `POST` | `/api/v1/bluetooth/action` | `{ "action": "connect", "address": "…" }`. |
+
+Each device carries `address`, `name`, `icon`, `paired`, `connected`, `trusted`,
+`blocked`, `battery` (percent, when known) and `rssi`.
+
+Declared actions: `scan`, `scan_off`, `power_on`, `power_off`, `connect`,
+`disconnect`, `pair`, `trust`, `untrust`, `remove`, `info`. The daemon talks to
+BlueZ through `bluetoothctl`; the battery comes from BlueZ's own report and, when
+the device stays silent, from UPower. Addresses are validated (`AA:BB:CC:DD:EE:FF`)
+before they reach the CLI, so the deck cannot pass anything else; a bad address or
+an unknown action returns `400`.
+
 ## Notifications
 
 | Method | Path | Body / result |

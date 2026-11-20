@@ -147,6 +147,42 @@ fn app_kind_default() -> AppKind {
     AppKind::Gui
 }
 
+/// Bluetooth adapter and the devices known to the computer.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BluetoothStatus {
+    pub available: bool,
+    pub powered: bool,
+    pub discovering: bool,
+    /// Adapter address, or an empty string when there is no adapter.
+    pub adapter: String,
+    pub devices: Vec<BluetoothDevice>,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BluetoothDevice {
+    pub address: String,
+    pub name: String,
+    /// BlueZ icon name, e.g. `audio-headphones` or `input-keyboard`.
+    pub icon: String,
+    pub paired: bool,
+    pub connected: bool,
+    pub trusted: bool,
+    pub blocked: bool,
+    /// Percent, when BlueZ or UPower knows it.
+    pub battery: Option<u8>,
+    pub rssi: Option<i32>,
+}
+
+impl BluetoothDevice {
+    /// Headphones, a headset or earbuds: the devices whose battery matters.
+    pub fn is_audio(&self) -> bool {
+        self.icon.starts_with("audio-")
+    }
+}
+
 /// One running window or process the computer can focus.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WindowEntry {

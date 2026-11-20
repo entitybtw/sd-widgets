@@ -633,6 +633,7 @@ pub mod icon {
     pub const RESTART_ALT: &str = "\u{f053}";
     pub const BEDTIME: &str = "\u{eef0}";
     pub const TERMINAL: &str = "\u{eb8e}";
+    pub const BLUETOOTH: &str = "\u{e1a7}";
 }
 
 /// The window / taskbar icon, decoded once from the packaged PNG.

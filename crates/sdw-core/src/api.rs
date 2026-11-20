@@ -210,6 +210,17 @@ impl Client {
         self.request("PATCH", "/api/v1/config", Some(&patch))
     }
 
+    /// Bluetooth adapter and known devices.
+    pub fn bluetooth(&self) -> ApiResult<BluetoothStatus> {
+        self.request("GET", "/api/v1/bluetooth", None)
+    }
+
+    /// Scan, connect, pair, trust or remove a Bluetooth device.
+    pub fn bluetooth_action(&self, action: &str, address: &str) -> ApiResult<Value> {
+        let body = serde_json::json!({ "action": action, "address": address });
+        self.request("POST", "/api/v1/bluetooth/action", Some(&body))
+    }
+
     /// Applications installed on the computer.
     pub fn apps(&self) -> ApiResult<Vec<AppEntry>> {
         self.request("GET", "/api/v1/apps", None)

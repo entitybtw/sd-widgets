@@ -91,6 +91,7 @@ fn quick_action(
         Page::Binds => "binds",
         Page::Computers => "computers",
         Page::Control => "control",
+        Page::Bluetooth => "bluetooth",
         _ => "",
     };
     if !key.is_empty() && !app.tile_shown(key) {
@@ -523,6 +524,27 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
             },
             Page::Control,
             4.5,
+        ));
+    }
+    if app.tile_shown("bluetooth") {
+        items.push(HomeItem::Page(
+            Tile {
+                title: t!(app.lang, "bluetooth", "bluetooth").into(),
+                subtitle: t!(
+                    app.lang,
+                    "наушники и устройства пк",
+                    "headphones and pc devices"
+                )
+                .into(),
+                glyph: theme::icon::BLUETOOTH.into(),
+                accent: Color32::from_rgb(0x53, 0x8b, 0xff),
+                badge: None,
+                badge_color: t.accent,
+                dim: app.bluetooth.as_ref().map(|b| !b.available).unwrap_or(true),
+                reveal: 1.0,
+            },
+            Page::Bluetooth,
+            4.7,
         ));
     }
     if app.tile_shown("computers") {
@@ -1275,6 +1297,239 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
     if let Some((id, name)) = launched {
         app.launch_app(id, name);
+    }
+}
+
+/// Bluetooth devices on the computer, with headphone battery.
+///
+/// Pairing, connecting and forgetting are declared actions; the daemon checks
+/// the address before it reaches `bluetoothctl`.
+pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    let lang = app.lang;
+    page_title(
+        ui,
+        t,
+        t!(lang, "bluetooth", "bluetooth"),
+        t!(
+            lang,
+            "наушники, клавиатуры и другие устройства компьютера.",
+            "headphones, keyboards and other devices of the computer."
+        ),
+    );
+
+    let online = app.status.is_some();
+    let stale = app
+        .bluetooth_at
+        .map(|at| at.elapsed() > Duration::from_secs(20))
+        .unwrap_or(true);
+    if online && stale {
+        app.load_bluetooth();
+    }
+
+    let status = app.bluetooth.clone();
+    let mut action: Option<(&'static str, String)> = None;
+    let mut remove_ask: Option<String> = None;
+
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(theme::hud(t!(lang, "адаптер", "adapter"), t.faint));
+            if app.bluetooth_pending {
+                ui.spinner();
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::ghost(ui, t!(lang, "обновить", "refresh"), t).clicked() {
+                    app.bluetooth_at = None;
+                    app.load_bluetooth();
+                }
+            });
+        });
+        match &status {
+            Some(bt) if bt.available => {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(&bt.adapter)
+                            .family(FontFamily::Monospace)
+                            .size(12.0)
+                            .color(t.muted),
+                    );
+                    theme::chip(
+                        ui,
+                        if bt.powered {
+                            t!(lang, "включён", "on")
+                        } else {
+                            t!(lang, "выключен", "off")
+                        },
+                        if bt.powered { t.good } else { t.faint },
+                    );
+                    if bt.discovering {
+                        theme::chip(ui, t!(lang, "идёт поиск", "scanning"), t.accent);
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    if theme::primary(ui, t!(lang, "искать устройства", "scan for devices"), t)
+                        .clicked()
+                    {
+                        action = Some(("scan", String::new()));
+                    }
+                    let power = if bt.powered {
+                        (
+                            t!(lang, "выключить bluetooth", "bluetooth off"),
+                            "power_off",
+                        )
+                    } else {
+                        (t!(lang, "включить bluetooth", "bluetooth on"), "power_on")
+                    };
+                    if theme::ghost(ui, power.0, t).clicked() {
+                        action = Some((power.1, String::new()));
+                    }
+                });
+            }
+            _ => {
+                theme::small(
+                    ui,
+                    t!(
+                        lang,
+                        "bluetooth на компьютере недоступен; проверьте bluez и адаптер.",
+                        "bluetooth is unavailable on the computer; check bluez and the adapter."
+                    ),
+                    t.muted,
+                );
+            }
+        }
+        if !app.bluetooth_err.is_empty() {
+            ui.label(
+                RichText::new(util::truncate(&app.bluetooth_err, 220))
+                    .size(12.0)
+                    .color(t.warn),
+            );
+        }
+    });
+
+    let devices = status.map(|b| b.devices).unwrap_or_default();
+    if devices.is_empty() {
+        ui.add_space(8.0);
+        theme::card(ui, t, |ui| {
+            theme::small(
+                ui,
+                t!(
+                    lang,
+                    "устройств пока нет. включите bluetooth и нажмите «искать устройства».",
+                    "no devices yet. turn bluetooth on and press “scan for devices”."
+                ),
+                t.muted,
+            );
+        });
+    }
+
+    for d in devices {
+        ui.add_space(8.0);
+        let remove_armed = app.bluetooth_remove.as_deref() == Some(d.address.as_str());
+        egui::Frame::new()
+            .fill(t.card)
+            .stroke(Stroke::new(1.0, t.line))
+            .corner_radius(CornerRadius::ZERO)
+            .inner_margin(Margin::same(14))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let glyph = if d.is_audio() {
+                        theme::icon::HEADPHONES
+                    } else {
+                        theme::icon::BLUETOOTH
+                    };
+                    ui.label(theme::icon(
+                        glyph,
+                        22.0,
+                        if d.connected { t.good } else { t.faint },
+                    ));
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(if d.name.is_empty() {
+                                &d.address
+                            } else {
+                                &d.name
+                            })
+                            .size(16.0)
+                            .strong()
+                            .color(t.strong),
+                        );
+                        ui.label(
+                            RichText::new(&d.address)
+                                .family(FontFamily::Monospace)
+                                .size(11.0)
+                                .color(t.faint),
+                        );
+                    });
+                    ui.horizontal(|ui| {
+                        if d.connected {
+                            theme::chip(ui, t!(lang, "подключено", "connected"), t.good);
+                        }
+                        if d.paired {
+                            theme::chip(ui, t!(lang, "спарено", "paired"), t.accent);
+                        }
+                        if let Some(pct) = d.battery {
+                            let color = if pct >= 30 { t.good } else { t.warn };
+                            theme::chip(ui, &format!("{pct}%"), color);
+                        }
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if remove_armed {
+                            if theme::primary(ui, t!(lang, "точно удалить", "remove it"), t)
+                                .clicked()
+                            {
+                                action = Some(("remove", d.address.clone()));
+                            }
+                            if theme::ghost(ui, t!(lang, "отмена", "cancel"), t).clicked() {
+                                remove_ask = Some(String::new());
+                            }
+                        } else {
+                            if theme::ghost(ui, t!(lang, "удалить", "remove"), t).clicked() {
+                                remove_ask = Some(d.address.clone());
+                            }
+                            if !d.trusted && !d.connected {
+                                if theme::ghost(ui, t!(lang, "доверять", "trust"), t).clicked()
+                                {
+                                    action = Some(("trust", d.address.clone()));
+                                }
+                            }
+                            if !d.paired {
+                                if theme::ghost(ui, t!(lang, "спарить", "pair"), t).clicked()
+                                {
+                                    action = Some(("pair", d.address.clone()));
+                                }
+                            } else if d.connected {
+                                if theme::ghost(ui, t!(lang, "отключить", "disconnect"), t)
+                                    .clicked()
+                                {
+                                    action = Some(("disconnect", d.address.clone()));
+                                }
+                            } else if theme::primary(ui, t!(lang, "подключить", "connect"), t)
+                                .clicked()
+                            {
+                                action = Some(("connect", d.address.clone()));
+                            }
+                        }
+                    });
+                });
+                if d.blocked {
+                    theme::small(
+                        ui,
+                        t!(lang, "устройство заблокировано", "device is blocked"),
+                        t.warn,
+                    );
+                }
+            });
+    }
+
+    if let Some(address) = remove_ask {
+        app.bluetooth_remove = if address.is_empty() {
+            None
+        } else {
+            Some(address)
+        };
+    }
+    if let Some((action, address)) = action {
+        app.bluetooth_remove = None;
+        app.bluetooth_action(action, &address);
     }
 }
 
@@ -5623,6 +5878,7 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ("ha", "home assistant", "home assistant"),
             ("binds", "бинды", "binds"),
             ("control", "пульт", "control"),
+            ("bluetooth", "bluetooth", "bluetooth"),
             ("computers", "компьютеры", "computers"),
         ];
         ui.horizontal_wrapped(|ui| {

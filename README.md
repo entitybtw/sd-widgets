@@ -34,6 +34,8 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 - **Remote control**: a fixed set of power actions (lock, sleep, restart, shut
   down, screen off) and a list of installed applications to start — the daemon
   launches only apps it discovered itself, never a command line from the deck.
+- **Bluetooth**: pair, connect, trust and forget devices on the computer, with
+  headphone battery from BlueZ and UPower.
 - **PC audio on the Deck**: stream the whole computer or picked applications to
   the Deck speakers, with a configurable number of “are you sure?” steps.
 - **Self-updates**: both applications check the newest release on
@@ -48,9 +50,10 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 
 | Page | What it is |
 | --- | --- |
-| **Home** | A grid of large touch tiles: gamepad, screen, notifications, Home Assistant, binds, computers. |
+| **Home** | A grid of large touch tiles: gamepad, screen, notifications, Home Assistant, binds, control, Bluetooth, computers. |
 | **Computers** | LAN discovery, pairing by password, switching between several computers. |
 | **Control** | Lock, sleep, restart, shut down or blank the computer's screen, and start any installed application. |
+| **Bluetooth** | Devices known to the computer: connect, disconnect, pair, trust, forget, and the headphone battery. |
 | **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control or gesture. |
 | **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality, input forwarding. |
 | **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. |
@@ -90,6 +93,9 @@ directional slide, and the tiles stagger in behind it.
   `~/.config/sway/config`, KDE screen config, X11 `xrandr`).
 - **Notification mirroring** — watches the desktop notification bus and serves the
   stream to the Deck.
+- **Bluetooth manager** — scans, pairs, connects, trusts and forgets devices
+  through BlueZ; headphone and earbud battery comes from BlueZ, or from UPower
+  when the device does not report it.
 - **Home Assistant** — URL + long-lived token, entities proxied through the daemon
   so the token never lives on the Deck.
 - **PC audio** — records the default output or the applications you pick and

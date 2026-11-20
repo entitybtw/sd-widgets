@@ -30,6 +30,7 @@ enum Page {
     Notifications,
     HomeAssistant,
     Control,
+    Bluetooth,
     Addons,
     Security,
     Install,
@@ -38,7 +39,7 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 12] = [
+    const ALL: [Page; 13] = [
         Page::Overview,
         Page::Gamepads,
         Page::Screen,
@@ -46,6 +47,7 @@ impl Page {
         Page::Notifications,
         Page::HomeAssistant,
         Page::Control,
+        Page::Bluetooth,
         Page::Addons,
         Page::Security,
         Page::Install,
@@ -61,6 +63,7 @@ impl Page {
             Page::Notifications => t!(l, "уведомления", "notifications"),
             Page::HomeAssistant => t!(l, "home assistant", "home assistant"),
             Page::Control => t!(l, "пульт", "control"),
+            Page::Bluetooth => t!(l, "bluetooth", "bluetooth"),
             Page::Addons => t!(l, "аддоны", "addons"),
             Page::Security => t!(l, "безопасность", "security"),
             Page::Install => t!(l, "установка", "install"),
@@ -77,6 +80,7 @@ impl Page {
             Page::Notifications => theme::icon::NOTIFICATIONS,
             Page::HomeAssistant => theme::icon::HOME_ASSISTANT,
             Page::Control => theme::icon::POWER,
+            Page::Bluetooth => theme::icon::BLUETOOTH,
             Page::Addons => theme::icon::ADDON,
             Page::Security => theme::icon::SECURITY,
             Page::Install => theme::icon::INSTALL,
@@ -96,6 +100,8 @@ enum TaskResult {
     Catalog(Vec<sdw_core::addons::CatalogEntry>, String),
     AddonInstalled(Result<sdw_core::addons::Addon, String>),
     Apps(Vec<AppEntry>),
+    Bluetooth(Result<sdw_core::model::BluetoothStatus, String>),
+    BtAction(Result<String, String>),
 }
 
 #[derive(Clone)]
@@ -219,6 +225,11 @@ pub struct App {
     control_filter: String,
     control_pending: bool,
     control_scanned: bool,
+    bluetooth: Option<sdw_core::model::BluetoothStatus>,
+    bluetooth_pending: bool,
+    bluetooth_loaded: bool,
+    bluetooth_err: String,
+    bluetooth_remove: Option<String>,
 
     // updates
     update_info: Option<UpdateInfo>,
@@ -382,6 +393,11 @@ impl App {
             control_filter: String::new(),
             control_pending: false,
             control_scanned: false,
+            bluetooth: None,
+            bluetooth_pending: false,
+            bluetooth_loaded: false,
+            bluetooth_err: String::new(),
+            bluetooth_remove: None,
             update_info: None,
             update_error: String::new(),
             update_checking: false,
@@ -560,6 +576,23 @@ impl App {
                     self.control_pending = false;
                     self.control_apps = list;
                 }
+                TaskResult::Bluetooth(Ok(status)) => {
+                    self.bluetooth_pending = false;
+                    self.bluetooth_loaded = true;
+                    self.bluetooth_err = status.error.clone();
+                    self.bluetooth = Some(status);
+                }
+                TaskResult::Bluetooth(Err(e)) => {
+                    self.bluetooth_pending = false;
+                    self.bluetooth_loaded = true;
+                    self.bluetooth_err = e;
+                }
+                TaskResult::BtAction(Ok(message)) => {
+                    self.toast(message, true);
+                    self.bluetooth_loaded = false;
+                    self.bluetooth_remove = None;
+                }
+                TaskResult::BtAction(Err(e)) => self.toast(e, false),
                 TaskResult::Installed(Ok(msg)) => self.toast(msg, true),
                 TaskResult::Installed(Err(e)) => self.toast(format!("установка: {e}"), false),
             }
@@ -1098,6 +1131,7 @@ impl App {
             Page::Notifications => self.notifications_ui(ui, t),
             Page::HomeAssistant => self.ha_ui(ui, t),
             Page::Control => self.control_ui(ui, t),
+            Page::Bluetooth => self.bluetooth_ui(ui, t),
             Page::Addons => self.addons_ui(ui, t),
             Page::Security => self.security_ui(ui, t),
             Page::Install => self.install_ui(ui, t),
@@ -4047,6 +4081,210 @@ impl App {
             }
         });
         ui.add_space(10.0);
+    }
+
+    /// Bluetooth devices and their battery, with pairing on the computer.
+    fn bluetooth_ui(&mut self, ui: &mut Ui, t: &Tokens) {
+        self.page_header(
+            ui,
+            t,
+            t!(self.lang, "bluetooth", "bluetooth"),
+            t!(
+                self.lang,
+                "наушники, клавиатуры и другие устройства; заряд виден сразу.",
+                "headphones, keyboards and other devices, with battery where reported."
+            ),
+        );
+        if !self.bluetooth_loaded && !self.bluetooth_pending {
+            self.bluetooth_pending = true;
+            self.spawn(|| TaskResult::Bluetooth(Ok(crate::bluetooth::status())));
+        }
+
+        let status = self.bluetooth.clone();
+        let mut action: Option<(&'static str, String)> = None;
+        let mut remove_ask: Option<String> = None;
+        let mut refresh = false;
+
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(hud(t!(self.lang, "адаптер", "adapter"), t.faint));
+                if self.bluetooth_pending {
+                    ui.spinner();
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ghost(ui, t!(self.lang, "обновить", "refresh"), t).clicked() {
+                        refresh = true;
+                    }
+                });
+            });
+            match &status {
+                Some(bt) if bt.available => {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(
+                            RichText::new(&bt.adapter)
+                                .family(FontFamily::Monospace)
+                                .size(11.5)
+                                .color(t.muted),
+                        );
+                        small(
+                            ui,
+                            if bt.powered {
+                                t!(self.lang, "включён", "on")
+                            } else {
+                                t!(self.lang, "выключен", "off")
+                            },
+                            if bt.powered { t.good } else { t.faint },
+                        );
+                        if bt.discovering {
+                            small(ui, t!(self.lang, "идёт поиск", "scanning"), t.accent);
+                        }
+                    });
+                    ui.horizontal_wrapped(|ui| {
+                        if primary(ui, t!(self.lang, "искать устройства", "scan"), t).clicked()
+                        {
+                            action = Some(("scan", String::new()));
+                        }
+                        if bt.powered {
+                            if ghost(ui, t!(self.lang, "выключить bluetooth", "bluetooth off"), t)
+                                .clicked()
+                            {
+                                action = Some(("power_off", String::new()));
+                            }
+                        } else if ghost(ui, t!(self.lang, "включить bluetooth", "bluetooth on"), t)
+                            .clicked()
+                        {
+                            action = Some(("power_on", String::new()));
+                        }
+                    });
+                }
+                _ => small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "bluetooth недоступен; проверьте bluez и адаптер.",
+                        "bluetooth is unavailable; check bluez and the adapter."
+                    ),
+                    t.muted,
+                ),
+            }
+            if !self.bluetooth_err.is_empty() {
+                small(
+                    ui,
+                    &sdw_core::util::truncate(&self.bluetooth_err, 200),
+                    t.warn,
+                );
+            }
+        });
+        ui.add_space(8.0);
+
+        let devices = status.map(|b| b.devices).unwrap_or_default();
+        if devices.is_empty() {
+            card(ui, t, |ui| {
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "устройств пока нет. включите bluetooth и запустите поиск.",
+                        "no devices yet. turn bluetooth on and scan."
+                    ),
+                    t.muted,
+                );
+            });
+        }
+        for d in devices {
+            let armed = self.bluetooth_remove.as_deref() == Some(d.address.as_str());
+            card(ui, t, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(
+                        if d.is_audio() {
+                            theme::icon::HEADPHONES
+                        } else {
+                            theme::icon::BLUETOOTH
+                        },
+                        20.0,
+                        if d.connected { t.good } else { t.faint },
+                    ));
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new(if d.name.is_empty() {
+                                &d.address
+                            } else {
+                                &d.name
+                            })
+                            .size(14.5)
+                            .strong()
+                            .color(t.strong),
+                        );
+                        ui.label(
+                            RichText::new(&d.address)
+                                .family(FontFamily::Monospace)
+                                .size(10.5)
+                                .color(t.faint),
+                        );
+                    });
+                    if d.connected {
+                        small(ui, t!(self.lang, "подключено", "connected"), t.good);
+                    }
+                    if d.paired {
+                        small(ui, t!(self.lang, "спарено", "paired"), t.accent);
+                    }
+                    if let Some(pct) = d.battery {
+                        small(
+                            ui,
+                            &format!("{pct}%"),
+                            if pct >= 30 { t.good } else { t.warn },
+                        );
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if armed {
+                            if primary(ui, t!(self.lang, "точно удалить", "remove it"), t).clicked()
+                            {
+                                action = Some(("remove", d.address.clone()));
+                            }
+                            if ghost(ui, t!(self.lang, "отмена", "cancel"), t).clicked() {
+                                remove_ask = Some(String::new());
+                            }
+                        } else {
+                            if ghost(ui, t!(self.lang, "удалить", "remove"), t).clicked() {
+                                remove_ask = Some(d.address.clone());
+                            }
+                            if !d.trusted
+                                && !d.connected
+                                && ghost(ui, t!(self.lang, "доверять", "trust"), t).clicked()
+                            {
+                                action = Some(("trust", d.address.clone()));
+                            }
+                            if !d.paired {
+                                if ghost(ui, t!(self.lang, "спарить", "pair"), t).clicked() {
+                                    action = Some(("pair", d.address.clone()));
+                                }
+                            } else if d.connected {
+                                if ghost(ui, t!(self.lang, "отключить", "disconnect"), t).clicked()
+                                {
+                                    action = Some(("disconnect", d.address.clone()));
+                                }
+                            } else if primary(ui, t!(self.lang, "подключить", "connect"), t)
+                                .clicked()
+                            {
+                                action = Some(("connect", d.address.clone()));
+                            }
+                        }
+                    });
+                });
+            });
+            ui.add_space(6.0);
+        }
+
+        if refresh {
+            self.bluetooth_loaded = false;
+        }
+        if let Some(address) = remove_ask {
+            self.bluetooth_remove = (!address.is_empty()).then_some(address);
+        }
+        if let Some((action, address)) = action {
+            self.bluetooth_remove = None;
+            self.spawn(move || TaskResult::BtAction(crate::bluetooth::action(action, &address)));
+        }
     }
 
     /// Power and application launchers: the same list the deck sees, with
