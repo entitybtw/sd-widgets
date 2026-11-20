@@ -622,16 +622,15 @@ pub mod icon {
     pub const CLOCK: &str = "\u{e8b5}";
     pub const TIMER: &str = "\u{e425}";
     pub const BATTERY: &str = "\u{e1a5}";
-    pub const MOON: &str = "\u{e51c}";
-    pub const SUN: &str = "\u{e518}";
-    pub const PALETTE: &str = "\u{e40a}";
+    pub const MOON: &str = "\u{ef5e}";
+    pub const SUN: &str = "\u{e81a}";
     pub const TUNE: &str = "\u{e429}";
     pub const FULLSCREEN: &str = "\u{e5d0}";
     pub const HEADPHONES: &str = "\u{e310}";
     pub const ADDON: &str = "\u{e87b}";
     pub const STORE: &str = "\u{e8d1}";
     pub const RESTART_ALT: &str = "\u{f053}";
-    pub const BEDTIME: &str = "\u{eef0}";
+    pub const BEDTIME: &str = "\u{ef44}";
     pub const TERMINAL: &str = "\u{eb8e}";
     pub const BLUETOOTH: &str = "\u{e1a7}";
 }
