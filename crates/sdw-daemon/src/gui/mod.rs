@@ -17,7 +17,7 @@ use sdw_core::{t, Lang};
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use theme::{card, divider, ghost, hud, mono, primary, row, small, switch, tag, Tokens};
 
@@ -252,73 +252,142 @@ pub struct App {
     logs_follow: bool,
     /// The "it keeps running in the background" notice is written once.
     hidden_notice: bool,
-    /// When the close button was last pressed; a second press quits.
-    close_at: Option<Instant>,
-    /// Started by the session (`--hidden`): hide on the first frame.
-    start_hidden: bool,
+    /// The request watcher's state: it must know when the window goes away.
+    requests: Arc<Requests>,
 }
 
 /// Set once the user really wants the process to end (the tray, `--quit` or the
-/// quit button). Until then closing the window only hides it.
+/// quit button). Until then closing the window only ends that window.
 static ALLOW_CLOSE: AtomicBool = AtomicBool::new(false);
 
+/// Shared between the request watcher and the window loop. A desktop cannot
+/// hide a Wayland toplevel on request (niri does not even support minimize), so
+/// closing the window destroys it and the daemon opens a fresh one when asked.
+#[derive(Default)]
+struct Requests {
+    /// The context of the window that exists right now, if any.
+    ctx: Mutex<Option<egui::Context>>,
+    /// A window exists and is not being closed.
+    open: AtomicBool,
+    /// Someone asked for the window while none existed.
+    show: AtomicBool,
+}
+
 pub fn run(state: Arc<AppState>, hidden: bool) -> eframe::Result<()> {
+    // The marker lives for the whole GUI session, including the time when no
+    // window exists, so a second launch knows that asking for one is useful.
     let marker = config::window_marker();
     let _ = std::fs::write(&marker, b"1");
-    let options = eframe::NativeOptions {
-        viewport: {
-            let mut vp = egui::ViewportBuilder::default()
-                .with_inner_size([1180.0, 790.0])
-                .with_min_inner_size([920.0, 620.0])
-                .with_title("sd-widgets");
-            if let Some(icon) = theme::window_icon() {
-                vp = vp.with_icon(std::sync::Arc::new(icon));
+    let requests = Arc::new(Requests::default());
+    watch_requests(state.clone(), requests.clone());
+
+    let mut waiting = hidden;
+    if waiting {
+        state.logger.info(t!(
+            Lang::from_code(&state.cfg().lang),
+            "демон запущен в фоне: окно откроется из трея, по --show или при повторном запуске",
+            "daemon started in the background: the window opens from the tray, with --show or on a second launch"
+        ));
+    }
+    let result = loop {
+        if waiting {
+            // No window exists, so there is nothing to draw: wait for a show
+            // request (tray, --show, a second launch) or for a quit.
+            while !requests.show.swap(false, Ordering::Relaxed) {
+                if ALLOW_CLOSE.load(Ordering::Relaxed) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(120));
             }
-            vp
-        },
-        ..Default::default()
+            if ALLOW_CLOSE.load(Ordering::Relaxed) {
+                break Ok(());
+            }
+        }
+        let options = eframe::NativeOptions {
+            viewport: {
+                let mut vp = egui::ViewportBuilder::default()
+                    .with_inner_size([1180.0, 790.0])
+                    .with_min_inner_size([920.0, 620.0])
+                    .with_title("sd-widgets");
+                if let Some(icon) = theme::window_icon() {
+                    vp = vp.with_icon(std::sync::Arc::new(icon));
+                }
+                vp
+            },
+            ..Default::default()
+        };
+        let run_state = state.clone();
+        let run_requests = requests.clone();
+        let result = eframe::run_native(
+            "sd-widgets",
+            options,
+            Box::new(move |cc| {
+                theme::install_fonts(&cc.egui_ctx);
+                let app = App::new(run_state, run_requests.clone());
+                theme::apply(&cc.egui_ctx, app.dark);
+                if let Ok(mut ctx) = run_requests.ctx.lock() {
+                    *ctx = Some(cc.egui_ctx.clone());
+                }
+                run_requests.open.store(true, Ordering::Relaxed);
+                Ok(Box::new(app))
+            }),
+        );
+        requests.open.store(false, Ordering::Relaxed);
+        if let Ok(mut ctx) = requests.ctx.lock() {
+            *ctx = None;
+        }
+        if result.is_err() || ALLOW_CLOSE.load(Ordering::Relaxed) {
+            break result;
+        }
+        // The window was closed by the user. The HTTP server and the Deck
+        // connections keep running; the next show request opens a new window.
+        waiting = true;
     };
-    let result = eframe::run_native(
-        "sd-widgets",
-        options,
-        Box::new(move |cc| {
-            theme::install_fonts(&cc.egui_ctx);
-            let app = App::new(state.clone(), hidden);
-            theme::apply(&cc.egui_ctx, app.dark);
-            watch_requests(state.clone(), cc.egui_ctx.clone());
-            Ok(Box::new(app))
-        }),
-    );
     let _ = std::fs::remove_file(&marker);
     result
 }
 
-/// The window is hidden, not gone: the tray, `--show` and a second launch all
-/// drop a small request file that this thread turns back into a visible window.
-/// The HTTP server and the Deck connections never stop meanwhile.
-fn watch_requests(state: Arc<AppState>, ctx: egui::Context) {
+/// The window is closed, not gone: the tray, `--show` and a second launch all
+/// drop a small request file that this thread turns into a visible window. The
+/// HTTP server and the Deck connections never stop meanwhile.
+fn watch_requests(state: Arc<AppState>, requests: Arc<Requests>) {
     std::thread::Builder::new()
         .name("sdw-daemon-watch".into())
         .spawn(move || loop {
             if config::take_request("quit") {
                 ALLOW_CLOSE.store(true, Ordering::Relaxed);
                 state.shutdown();
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                // A visible window must go too: main returns once the GUI
+                // loop ends.
+                let ctx = requests.ctx.lock().ok().and_then(|c| c.clone());
+                if let Some(ctx) = ctx {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
                 return;
             }
             if config::take_request("show") {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-                ctx.request_repaint();
+                let ctx = requests.ctx.lock().ok().and_then(|c| c.clone());
+                if requests.open.load(Ordering::Relaxed) {
+                    if let Some(ctx) = ctx {
+                        // No toplevel is minimizable on every compositor, so
+                        // un-minimize and raise what is there.
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        ctx.request_repaint();
+                    }
+                } else {
+                    // No window: the loop will open one.
+                    requests.show.store(true, Ordering::Relaxed);
+                }
             }
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(250));
         })
         .ok();
 }
 
 impl App {
-    fn new(state: Arc<AppState>, hidden: bool) -> Self {
+    fn new(state: Arc<AppState>, requests: Arc<Requests>) -> Self {
         let cfg = state.cfg();
         let (task_tx, task_rx) = channel();
         let components = install::component_status();
@@ -413,8 +482,7 @@ impl App {
             last_job: 0,
             logs_follow: true,
             hidden_notice: false,
-            start_hidden: hidden,
-            close_at: None,
+            requests,
             state,
         }
     }
@@ -806,46 +874,21 @@ impl eframe::App for App {
     fn ui(&mut self, root: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
         let ctx = &ctx;
-        // Closing the window puts the daemon in the background instead of
-        // ending it: the Deck keeps its connection. A second press within a
-        // second and a half, the tray or `--quit` end it for real.
+        // Closing the window never ends the daemon, whichever way the close
+        // arrives (button, WM shortcut, session menu): the window really closes
+        // and the loop in `run` keeps serving until someone asks for a new one.
+        // The tray, the stop button and `--quit` are the ways to stop it.
         if ctx.input(|i| i.viewport().close_requested()) && !ALLOW_CLOSE.load(Ordering::Relaxed) {
-            let again = self
-                .close_at
-                .is_some_and(|at| at.elapsed() < Duration::from_millis(1500));
-            if again {
-                ALLOW_CLOSE.store(true, Ordering::Relaxed);
-                self.state.shutdown();
-            } else {
-                self.close_at = Some(Instant::now());
-                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                // Wayland has no "hide this toplevel" request, so the window is
-                // minimized there; X11 and the rest really hide it.
-                if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-                } else {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-                }
-                if !self.hidden_notice {
-                    self.hidden_notice = true;
-                    self.state.logger.info(t!(
-                        self.lang,
-                        "окно свёрнуто: демон работает в фоне; трей, --show или повторный \
-                         запуск вернут окно, --quit остановит",
-                        "window hidden: the daemon keeps running; the tray, --show or a \
-                         second launch brings it back, --quit stops it"
-                    ));
-                }
-            }
-        }
-        if self.start_hidden {
-            // At login the daemon belongs in the tray, not over the desktop.
-            // Wayland has no hide request, so minimize; elsewhere hide.
-            self.start_hidden = false;
-            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            } else {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.requests.open.store(false, Ordering::Relaxed);
+            if !self.hidden_notice {
+                self.hidden_notice = true;
+                self.state.logger.info(t!(
+                    self.lang,
+                    "окно закрыто: демон работает в фоне; трей, --show или повторный \
+                     запуск откроют окно, кнопка «остановить демон» и --quit его завершат",
+                    "window closed: the daemon keeps running; the tray, --show or a \
+                     second launch opens it again, the stop button and --quit end it"
+                ));
             }
         }
         self.poll();
@@ -5339,8 +5382,8 @@ impl App {
                 ),
                 t!(
                     self.lang,
-                    "запись в автозапуске и строка в конфиге niri/hyprland; окно при входе скрыто",
-                    "an autostart entry and a line in the niri/hyprland config; the window starts hidden"
+                    "запись в автозапуске и строка в конфиге niri/hyprland; при входе демон стартует без окна",
+                    "an autostart entry and a line in the niri/hyprland config; at login the daemon starts without a window"
                 ),
                 |ui| {
                     let mut on = cfg.autostart;
@@ -5370,15 +5413,18 @@ impl App {
             row(
                 ui,
                 t,
-                t!(self.lang, "работать в фоне", "keep running in the background"),
                 t!(
                     self.lang,
-                    "окно скрывается: демон, API и дека продолжают работать; второе нажатие на крестик остановит",
-                    "the window hides: daemon, API and Deck keep working; a second close press stops it"
+                    "работать в фоне",
+                    "keep running in the background"
+                ),
+                t!(
+                    self.lang,
+                    "окно закрывается: демон, API и дека работают; открыть снова — иконка в трее или --show",
+                    "closing the window keeps the daemon, the API and the Deck running; the tray or --show reopens it"
                 ),
                 |ui| {
-                    if ghost(ui, t!(self.lang, "остановить демон", "stop the daemon"), t)
-                        .clicked()
+                    if ghost(ui, t!(self.lang, "остановить демон", "stop the daemon"), t).clicked()
                     {
                         config::request("quit");
                         self.toast(

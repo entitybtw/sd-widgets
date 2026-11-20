@@ -156,7 +156,7 @@ fn main() {
             if config::window_marker().exists() {
                 config::request("show");
                 eprintln!(
-                    "sdw-daemon уже запущен (pid {pid}); окно открыто снова. \
+                    "sdw-daemon уже запущен (pid {pid}); окно открывается снова. \
                      остановить: sdw-daemon --quit"
                 );
             } else {

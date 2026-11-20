@@ -259,8 +259,9 @@ pub fn request(kind: &str) {
     let _ = std::fs::write(dir.join(format!("daemon.{kind}")), b"1");
 }
 
-/// Present while a window is open, so a second launch knows whether it can ask
-/// the running daemon to show one or whether it is headless.
+/// Present while the daemon runs a GUI thread, so a second launch knows whether
+/// asking the running daemon for a window is useful or whether it is headless.
+/// It exists even while no window is open: the daemon opens one on request.
 pub fn window_marker() -> PathBuf {
     sdw_core::util::config_dir().join("daemon.window")
 }
