@@ -95,12 +95,14 @@ Details and requirements: [`AUDIO.md`](AUDIO.md).
 Each device carries `address`, `name`, `icon`, `paired`, `connected`, `trusted`,
 `blocked`, `battery` (percent, when known) and `rssi`.
 
-Declared actions: `scan`, `scan_off`, `power_on`, `power_off`, `connect`,
-`disconnect`, `pair`, `trust`, `untrust`, `remove`, `info`. The daemon talks to
-BlueZ through `bluetoothctl`; the battery comes from BlueZ's own report and, when
-the device stays silent, from UPower. Addresses are validated (`AA:BB:CC:DD:EE:FF`)
-before they reach the CLI, so the deck cannot pass anything else; a bad address or
-an unknown action returns `400`.
+Declared actions: `scan`, `scan_off`, `power_on`, `power_off`, `pair_connect`,
+`connect`, `disconnect`, `pair`, `trust`, `untrust`, `remove`, `info`. The daemon
+talks to BlueZ through `bluetoothctl`; the battery comes from BlueZ's own report
+and, when the device stays silent, from UPower. `pair_connect` pairs a new device
+and connects it in one call, which is what the Deck's single **connect** button
+sends. Addresses are validated (`AA:BB:CC:DD:EE:FF`) before they reach the CLI, so
+the deck cannot pass anything else; a bad address or an unknown action returns
+`400`.
 
 ## Notifications
 

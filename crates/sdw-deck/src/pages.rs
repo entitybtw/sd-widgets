@@ -1570,9 +1570,16 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
     );
 
     let online = app.status.is_some();
+    // While BlueZ is scanning, new devices appear all the time: poll quickly so
+    // the list grows under the finger instead of after a twenty-second wait.
+    let discovering = app
+        .bluetooth
+        .as_ref()
+        .map(|b| b.discovering)
+        .unwrap_or(false);
     let stale = app
         .bluetooth_at
-        .map(|at| at.elapsed() > Duration::from_secs(20))
+        .map(|at| at.elapsed() > Duration::from_secs(if discovering { 3 } else { 20 }))
         .unwrap_or(true);
     if online && stale {
         app.load_bluetooth();
@@ -1618,10 +1625,24 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     }
                 });
                 ui.horizontal_wrapped(|ui| {
-                    if theme::primary(ui, t!(lang, "искать устройства", "scan for devices"), t)
-                        .clicked()
-                    {
-                        action = Some(("scan", String::new()));
+                    // One scan button that knows whether it starts or stops:
+                    // a second press must not pile up another twelve-second
+                    // scan on top of the running one.
+                    let scan_label = if bt.discovering {
+                        t!(lang, "остановить поиск", "stop scanning")
+                    } else {
+                        t!(lang, "искать устройства", "scan for devices")
+                    };
+                    let scan = if bt.discovering {
+                        theme::ghost(ui, scan_label, t)
+                    } else {
+                        theme::primary(ui, scan_label, t)
+                    };
+                    if scan.clicked() {
+                        action = Some((
+                            if bt.discovering { "scan_off" } else { "scan" },
+                            String::new(),
+                        ));
                     }
                     let power = if bt.powered {
                         (
@@ -1635,6 +1656,17 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         action = Some((power.1, String::new()));
                     }
                 });
+                if bt.discovering {
+                    theme::small(
+                        ui,
+                        t!(
+                            lang,
+                            "держите устройство рядом и включите на нём режим сопряжения — оно появится в списке само.",
+                            "hold the device nearby and put it in pairing mode — it will appear in the list by itself."
+                        ),
+                        t.faint,
+                    );
+                }
             }
             _ => {
                 theme::small(
@@ -1676,52 +1708,76 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
     for d in devices {
         ui.add_space(8.0);
         let remove_armed = app.bluetooth_remove.as_deref() == Some(d.address.as_str());
+        let name = if d.name.is_empty() {
+            d.address.clone()
+        } else {
+            d.name.clone()
+        };
+        // The BlueZ icon names the kind of device; the fallback is the plain
+        // Bluetooth mark so an unknown device still looks like a device.
+        let glyph = if d.icon.starts_with("audio-") {
+            theme::icon::HEADPHONES
+        } else if d.icon.contains("keyboard") {
+            theme::icon::KEYBOARD
+        } else if d.icon.contains("mouse") || d.icon.contains("pointing") {
+            theme::icon::MOUSE
+        } else {
+            theme::icon::BLUETOOTH
+        };
         egui::Frame::new()
             .fill(t.card)
-            .stroke(Stroke::new(1.0, t.line))
+            .stroke(Stroke::new(
+                1.0,
+                if d.connected {
+                    t.good.gamma_multiply(0.45)
+                } else {
+                    t.line
+                },
+            ))
             .corner_radius(CornerRadius::ZERO)
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let glyph = if d.is_audio() {
-                        theme::icon::HEADPHONES
-                    } else {
-                        theme::icon::BLUETOOTH
-                    };
                     ui.label(theme::icon(
                         glyph,
-                        22.0,
+                        24.0,
                         if d.connected { t.good } else { t.faint },
                     ));
                     ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new(if d.name.is_empty() {
-                                &d.address
-                            } else {
-                                &d.name
-                            })
-                            .size(16.0)
-                            .strong()
-                            .color(t.strong),
-                        );
-                        ui.label(
-                            RichText::new(&d.address)
-                                .family(FontFamily::Monospace)
-                                .size(11.0)
-                                .color(t.faint),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        if d.connected {
-                            theme::chip(ui, t!(lang, "подключено", "connected"), t.good);
-                        }
-                        if d.paired {
-                            theme::chip(ui, t!(lang, "спарено", "paired"), t.accent);
-                        }
-                        if let Some(pct) = d.battery {
-                            let color = if pct >= 30 { t.good } else { t.warn };
-                            theme::chip(ui, &format!("{pct}%"), color);
-                        }
+                        ui.label(RichText::new(&name).size(16.0).strong().color(t.strong));
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(&d.address)
+                                    .family(FontFamily::Monospace)
+                                    .size(10.5)
+                                    .color(t.faint),
+                            );
+                            if d.connected {
+                                theme::chip(ui, t!(lang, "подключено", "connected"), t.good);
+                            } else if d.paired {
+                                theme::chip(ui, t!(lang, "спарено", "paired"), t.accent);
+                            }
+                            if let Some(pct) = d.battery {
+                                let color = if pct >= 30 { t.good } else { t.warn };
+                                theme::chip(ui, &format!("{pct}%"), color);
+                            }
+                            // A nearby device that is not paired yet lives by
+                            // its signal: showing it tells "there it is, move
+                            // closer" without a second screen.
+                            if let Some(rssi) = d.rssi.filter(|_| !d.connected) {
+                                ui.label(theme::icon(
+                                    theme::icon::SIGNAL,
+                                    13.0,
+                                    if rssi >= -70 { t.muted } else { t.faint },
+                                ));
+                                ui.label(
+                                    RichText::new(format!("{rssi} dBm"))
+                                        .family(FontFamily::Monospace)
+                                        .size(10.5)
+                                        .color(t.faint),
+                                );
+                            }
+                        });
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if remove_armed {
@@ -1733,31 +1789,38 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             if theme::ghost(ui, t!(lang, "отмена", "cancel"), t).clicked() {
                                 remove_ask = Some(String::new());
                             }
-                        } else {
+                        } else if d.connected {
+                            if theme::ghost(ui, t!(lang, "отключить", "disconnect"), t)
+                                .clicked()
+                            {
+                                action = Some(("disconnect", d.address.clone()));
+                            }
                             if theme::ghost(ui, t!(lang, "удалить", "remove"), t).clicked() {
                                 remove_ask = Some(d.address.clone());
                             }
-                            if !d.trusted && !d.connected {
-                                if theme::ghost(ui, t!(lang, "доверять", "trust"), t).clicked()
-                                {
-                                    action = Some(("trust", d.address.clone()));
-                                }
+                        } else if d.blocked {
+                            if theme::ghost(ui, t!(lang, "удалить", "remove"), t).clicked() {
+                                remove_ask = Some(d.address.clone());
                             }
-                            if !d.paired {
-                                if theme::ghost(ui, t!(lang, "спарить", "pair"), t).clicked()
-                                {
-                                    action = Some(("pair", d.address.clone()));
-                                }
-                            } else if d.connected {
-                                if theme::ghost(ui, t!(lang, "отключить", "disconnect"), t)
-                                    .clicked()
-                                {
-                                    action = Some(("disconnect", d.address.clone()));
-                                }
-                            } else if theme::primary(ui, t!(lang, "подключить", "connect"), t)
+                        } else {
+                            // The action a person actually wants sits on the
+                            // right edge, and one press is enough: an unpaired
+                            // device is paired and connected in one go.
+                            if theme::primary(ui, t!(lang, "подключить", "connect"), t)
                                 .clicked()
                             {
-                                action = Some(("connect", d.address.clone()));
+                                action = Some((
+                                    if d.paired { "connect" } else { "pair_connect" },
+                                    d.address.clone(),
+                                ));
+                            }
+                            if theme::ghost(ui, t!(lang, "удалить", "remove"), t).clicked() {
+                                remove_ask = Some(d.address.clone());
+                            }
+                            if !d.trusted
+                                && theme::ghost(ui, t!(lang, "доверять", "trust"), t).clicked()
+                            {
+                                action = Some(("trust", d.address.clone()));
                             }
                         }
                     });
@@ -1765,7 +1828,11 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 if d.blocked {
                     theme::small(
                         ui,
-                        t!(lang, "устройство заблокировано", "device is blocked"),
+                        t!(
+                            lang,
+                            "устройство заблокировано в bluez — сначала разблокируйте его в системе.",
+                            "the device is blocked in bluez — unblock it in the system first."
+                        ),
                         t.warn,
                     );
                 }

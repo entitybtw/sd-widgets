@@ -140,6 +140,28 @@ pub fn action(action: &str, address: &str) -> Result<String, String> {
         "scan_off" => run(&["scan", "off"]).map(|_| "поиск остановлен".into()),
         "power_on" => run(&["power", "on"]).map(|_| "Bluetooth включён".into()),
         "power_off" => run(&["power", "off"]).map(|_| "Bluetooth выключен".into()),
+        // One press from the deck has to be enough: BlueZ keeps pairing and
+        // connecting as two separate steps, so the daemon runs both and only
+        // reports success when the device is actually connected.
+        "pair_connect" => {
+            if !valid_address(address) {
+                return Err("Неверный адрес устройства".into());
+            }
+            let pair = run(&["--timeout", "25", "pair", address]);
+            if let Err(e) = &pair {
+                // A device may already be paired; only a failed connect after
+                // that is worth reporting as an error.
+                let info = run(&["info", address]).unwrap_or_default();
+                if !info.lines().any(|l| {
+                    l.trim()
+                        .strip_prefix("Paired:")
+                        .is_some_and(|v| v.trim().eq_ignore_ascii_case("yes"))
+                }) {
+                    return Err(e.clone());
+                }
+            }
+            run(&["--timeout", "25", "connect", address]).map(|_| message("connect", address))
+        }
         "connect" | "disconnect" | "pair" | "trust" | "untrust" | "remove" | "info" => {
             if !valid_address(address) {
                 return Err("Неверный адрес устройства".into());
