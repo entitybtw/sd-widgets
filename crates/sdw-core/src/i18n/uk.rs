@@ -876,8 +876,7 @@ static BY_RU: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
 
 /// Keys already reported by [`lookup`], so a label drawn every frame is
 /// printed once.
-static REPORTED: LazyLock<Mutex<HashSet<String>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+static REPORTED: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 pub(crate) fn lookup(ru: &str) -> Option<&'static str> {
     let found = BY_RU.get(ru).copied();
