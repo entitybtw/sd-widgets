@@ -36,8 +36,11 @@ pub fn ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
         pos2(rect.right() - 42.0, rect.top() + 8.0),
         vec2(34.0, 34.0),
     );
-    let resp = ui.put(
-        button,
+    // `Ui::put` advances the cursor to the end of the child rect (egui 0.37),
+    // so it would move the whole page up above the clock canvas. A painter
+    // plus an explicit interaction leaves the cursor alone.
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(button));
+    let resp = child.add(
         egui::Button::new(theme::icon(theme::icon::FULLSCREEN, 20.0, t.strong))
             .fill(t.bg2)
             .stroke(Stroke::new(1.0, t.line))
@@ -276,9 +279,17 @@ fn grid(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     }
 
     let scale = cfg.font_scale.clamp(0.5, 2.0);
-    let size = rect.height() * 0.44 * scale;
-    let font = FontId::new(size, face(cfg, "wide"));
     let text = time_text(cfg, &now);
+    let family = face(cfg, "wide");
+    let size = fit_size(
+        &painter,
+        &text,
+        rect.height() * 0.44 * scale,
+        family.clone(),
+        t.strong,
+        rect.width() - 52.0,
+    );
+    let font = FontId::new(size, family);
     let probe = painter.layout_no_wrap(text.clone(), font.clone(), t.strong);
     let tw = probe.size().x;
     let (x, align) = match cfg.position.as_str() {
@@ -395,7 +406,16 @@ fn digital(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
         );
     }
     let scale = cfg.font_scale.clamp(0.5, 2.0);
-    let size = rect.height() * 0.24 * scale;
+    let text = time_text(cfg, &now);
+    let family = face(cfg, "mono");
+    let size = fit_size(
+        &painter,
+        &text,
+        rect.height() * 0.24 * scale,
+        family.clone(),
+        t.strong,
+        rect.width() - 48.0,
+    );
     let (align, x) = match cfg.position.as_str() {
         "center" => (Align2::CENTER_CENTER, rect.center().x),
         "right" => (Align2::RIGHT_CENTER, rect.right() - 24.0),
@@ -404,8 +424,8 @@ fn digital(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     painter.text(
         pos2(x, center.y - rect.height() * 0.04),
         align,
-        time_text(cfg, &now),
-        FontId::new(size, face(cfg, "mono")),
+        text,
+        FontId::new(size, family),
         t.strong,
     );
     let line = date_line(cfg, &now, f);
@@ -528,7 +548,16 @@ fn minimal(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     let accent = pal.accent;
     painter.rect_filled(rect, 0.0, pal.bg_bottom);
     let scale = cfg.font_scale.clamp(0.5, 2.0);
-    let size = rect.height() * 0.34 * scale;
+    let text = time_text(cfg, &now);
+    let family = face(cfg, "wide");
+    let size = fit_size(
+        &painter,
+        &text,
+        rect.height() * 0.34 * scale,
+        family.clone(),
+        t.strong,
+        rect.width() - 48.0,
+    );
     let (align, x) = match cfg.position.as_str() {
         "center" => (Align2::CENTER_CENTER, rect.center().x),
         "right" => (Align2::RIGHT_CENTER, rect.right() - 24.0),
@@ -537,8 +566,8 @@ fn minimal(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     painter.text(
         pos2(x, rect.center().y),
         align,
-        time_text(cfg, &now),
-        FontId::new(size, face(cfg, "wide")),
+        text,
+        FontId::new(size, family),
         t.strong,
     );
     if cfg.date {
@@ -982,6 +1011,29 @@ fn face(cfg: &ClockCfg, natural: &str) -> FontFamily {
             }
         }
     }
+}
+
+/// The size at which `text` fits `max_width`. The faces are designed for a big
+/// canvas, and the fullscreen clock must not cut the minutes off the edge.
+fn fit_size(
+    painter: &egui::Painter,
+    text: &str,
+    size: f32,
+    family: FontFamily,
+    color: Color32,
+    max_width: f32,
+) -> f32 {
+    let mut size = size.max(10.0);
+    for _ in 0..16 {
+        let galley =
+            painter.layout_no_wrap(text.to_owned(), FontId::new(size, family.clone()), color);
+        let width = galley.size().x;
+        if width <= max_width || size <= 10.0 {
+            break;
+        }
+        size = (size * (max_width / width) * 0.98).max(10.0);
+    }
+    size
 }
 
 fn brightness(c: Color32) -> f32 {
