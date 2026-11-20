@@ -7,7 +7,7 @@
 
 use crate::state::Logger;
 use sdw_core::model::{now_ms, Notification, NotificationStatus};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,12 +19,21 @@ struct Inner {
     next_id: u64,
     status: NotificationStatus,
     enabled: bool,
+    /// Action keys declared by the app, by notification id: tapping the
+    /// notification on the deck runs the first one on the computer.
+    actions: HashMap<u64, Vec<String>>,
+    /// The app that sent the notification, so its action signal goes to it.
+    senders: HashMap<u64, String>,
 }
 
 pub struct NotificationStore {
     inner: Mutex<Inner>,
     logger: Logger,
     owns_service: AtomicBool,
+    /// The session bus connection we serve notifications on, kept so an
+    /// activation can signal the app from another thread.
+    #[cfg(target_os = "linux")]
+    service: Mutex<Option<zbus::blocking::Connection>>,
 }
 
 impl NotificationStore {
@@ -52,9 +61,13 @@ impl NotificationStore {
                     recent: Vec::new(),
                 },
                 enabled,
+                actions: HashMap::new(),
+                senders: HashMap::new(),
             }),
             logger,
             owns_service: AtomicBool::new(false),
+            #[cfg(target_os = "linux")]
+            service: Mutex::new(None),
         }
     }
 
@@ -112,6 +125,8 @@ impl NotificationStore {
         has_actions: bool,
         replaces: u64,
         image: &[u8],
+        actions: &[String],
+        sender: Option<&str>,
     ) -> u64 {
         let mut inner = match self.inner.lock() {
             Ok(i) => i,
@@ -168,16 +183,96 @@ impl NotificationStore {
                 }
             }
         }
+        // Remember what a tap on the deck should run on the computer: the
+        // action keys the app declared and the app itself. `default` is kept
+        // apart — it is the key the app uses for "open me".
+        let keys: Vec<String> = actions
+            .chunks(2)
+            .filter_map(|pair| pair.first())
+            .filter(|k| !k.is_empty() && k.as_str() != "default")
+            .map(|k| k.to_string())
+            .collect();
+        if !keys.is_empty() {
+            inner.actions.insert(id, keys);
+        } else {
+            inner.actions.remove(&id);
+        }
+        if let Some(sender) = sender.filter(|s| !s.is_empty()) {
+            inner.senders.insert(id, sender.to_string());
+        } else {
+            inner.senders.remove(&id);
+        }
         inner.items.push_back(n);
         while inner.items.len() > 120 {
-            inner.items.pop_front();
+            if let Some(dropped) = inner.items.pop_front() {
+                inner.actions.remove(&dropped.id);
+                inner.senders.remove(&dropped.id);
+            }
         }
         id
+    }
+
+    /// Run the notification's own action on the computer, the way clicking it
+    /// on the desktop would. Only possible while this daemon owns
+    /// `org.freedesktop.Notifications`: the signal goes from the server to the
+    /// app that sent the notification.
+    pub fn activate(&self, id: u64) -> Result<(), String> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = id;
+            return Err("уведомления на этой системе только читаются".into());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let (key, sender, known) = {
+                let inner = self
+                    .inner
+                    .lock()
+                    .map_err(|_| "уведомления недоступны".to_string())?;
+                (
+                    inner
+                        .actions
+                        .get(&id)
+                        .and_then(|keys| keys.first().cloned())
+                        .unwrap_or_else(|| "default".to_string()),
+                    inner.senders.get(&id).cloned(),
+                    inner.items.iter().any(|n| n.id == id),
+                )
+            };
+            if !known {
+                return Err("уведомление уже закрыто".into());
+            }
+            if !self.owns_service.load(Ordering::Relaxed) {
+                return Err(
+                    "встроенный сервер уведомлений выключен: нажатия работают только с ним".into(),
+                );
+            }
+            let conn = self
+                .service
+                .lock()
+                .ok()
+                .and_then(|c| c.as_ref().cloned())
+                .ok_or_else(|| "нет связи с сессионной шиной".to_string())?;
+            conn.emit_signal(
+                sender.as_deref(),
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "ActionInvoked",
+                &(id as u32, key.as_str()),
+            )
+            .map_err(|e| format!("действие не отправлено: {e}"))?;
+            self.logger
+                .info(format!("уведомление {id}: приложению отправлено {key}"));
+            self.dismiss_local(id);
+            Ok(())
+        }
     }
 
     pub fn clear(&self) {
         if let Ok(mut i) = self.inner.lock() {
             i.items.clear();
+            i.actions.clear();
+            i.senders.clear();
         }
     }
 
@@ -185,6 +280,8 @@ impl NotificationStore {
     pub fn dismiss_local(&self, id: u64) {
         if let Ok(mut inner) = self.inner.lock() {
             inner.items.retain(|n| n.id != id);
+            inner.actions.remove(&id);
+            inner.senders.remove(&id);
         }
     }
 
@@ -195,6 +292,8 @@ impl NotificationStore {
                 Err(_) => return,
             };
             inner.items.retain(|n| n.id != id);
+            inner.actions.remove(&id);
+            inner.senders.remove(&id);
             id
         };
         #[cfg(target_os = "linux")]
@@ -336,6 +435,9 @@ impl NotificationStore {
                 return false;
             }
         };
+        if let Ok(mut slot) = self.service.lock() {
+            *slot = Some(conn.clone());
+        }
         self.owns_service.store(true, Ordering::Relaxed);
         if let Ok(mut inner) = self.inner.lock() {
             inner.status.listening = true;
@@ -348,6 +450,9 @@ impl NotificationStore {
             std::thread::sleep(Duration::from_millis(400));
         }
         self.owns_service.store(false, Ordering::Relaxed);
+        if let Ok(mut slot) = self.service.lock() {
+            *slot = None;
+        }
         drop(conn);
         true
     }
@@ -850,6 +955,7 @@ impl NotifServer {
         actions: Vec<String>,
         hints: std::collections::HashMap<String, zbus::zvariant::OwnedValue>,
         _expire_timeout: i32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
     ) -> u32 {
         let urgency = hints
             .get("urgency")
@@ -876,6 +982,8 @@ impl NotifServer {
             !actions.is_empty(),
             replaces_id as u64,
             picture.as_deref().unwrap_or(&[]),
+            &actions,
+            header.sender().map(|s| s.to_string()).as_deref(),
         );
         id as u32
     }

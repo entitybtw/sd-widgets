@@ -19,13 +19,16 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use theme::{card, divider, ghost, hud, mono, primary, row, small, switch, tag, Tokens};
+use theme::{
+    card, divider, ghost, hud, icon, mono, primary, progress, row, small, switch, tag, Tokens,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Page {
     Overview,
     Gamepads,
     Screen,
+    Deck,
     Audio,
     Notifications,
     HomeAssistant,
@@ -39,10 +42,11 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 13] = [
+    const ALL: [Page; 14] = [
         Page::Overview,
         Page::Gamepads,
         Page::Screen,
+        Page::Deck,
         Page::Audio,
         Page::Notifications,
         Page::HomeAssistant,
@@ -59,6 +63,7 @@ impl Page {
             Page::Overview => t!(l, "обзор", "overview"),
             Page::Gamepads => t!(l, "геймпады", "gamepads"),
             Page::Screen => t!(l, "экран", "screen"),
+            Page::Deck => t!(l, "стим дек", "steam deck"),
             Page::Audio => t!(l, "звук", "audio"),
             Page::Notifications => t!(l, "уведомления", "notifications"),
             Page::HomeAssistant => t!(l, "home assistant", "home assistant"),
@@ -76,6 +81,7 @@ impl Page {
             Page::Overview => theme::icon::OVERVIEW,
             Page::Gamepads => theme::icon::GAMEPADS,
             Page::Screen => theme::icon::SCREEN,
+            Page::Deck => theme::icon::GAMEPADS,
             Page::Audio => theme::icon::AUDIO,
             Page::Notifications => theme::icon::NOTIFICATIONS,
             Page::HomeAssistant => theme::icon::HOME_ASSISTANT,
@@ -182,6 +188,9 @@ pub struct App {
     screen_loaded: bool,
     frame_tex: Option<egui::TextureHandle>,
     last_frames: u64,
+    // the deck's own screen
+    deck_tex: Option<egui::TextureHandle>,
+    deck_seq: u64,
     show_hint: bool,
 
     // audio
@@ -241,6 +250,8 @@ pub struct App {
     update_error: String,
     update_checking: bool,
     update_downloading: bool,
+    update_view: theme::ProgressView,
+    update_sampled: Option<(u64, Instant)>,
     update_progress: Arc<AtomicU64>,
     update_total: u64,
     update_path: String,
@@ -434,6 +445,8 @@ impl App {
             screen_loaded: false,
             frame_tex: None,
             last_frames: 0,
+            deck_tex: None,
+            deck_seq: 0,
             show_hint: false,
             audio_source: "system".into(),
             audio_apps: Vec::new(),
@@ -478,6 +491,8 @@ impl App {
             update_error: String::new(),
             update_checking: false,
             update_downloading: false,
+            update_view: theme::ProgressView::default(),
+            update_sampled: None,
             update_progress: Arc::new(AtomicU64::new(0)),
             update_total: 0,
             update_path: String::new(),
@@ -609,6 +624,8 @@ impl App {
                 }
                 TaskResult::Updated(Ok((path, size))) => {
                     self.update_downloading = false;
+                    self.update_view = theme::ProgressView::default();
+                    self.update_sampled = None;
                     self.update_path = path.clone();
                     self.update_total = size;
                     self.toast(
@@ -719,6 +736,8 @@ impl App {
         }
         self.update_downloading = true;
         self.update_total = asset.size;
+        self.update_view = theme::ProgressView::default();
+        self.update_sampled = None;
         self.update_progress = Arc::new(AtomicU64::new(0));
         let progress = self.update_progress.clone();
         self.spawn(move || {
@@ -833,6 +852,37 @@ impl App {
         }
     }
 
+    /// The picture of the deck's own screen, decoded once per frame it sends.
+    fn update_deck_preview(&mut self, ctx: &egui::Context) {
+        if self.page != Page::Deck {
+            return;
+        }
+        // Being on this page is what makes the deck share: it asks the daemon
+        // whether anyone is watching and sends frames only then.
+        self.state.mirror.watching();
+        let seq = self.state.mirror.seq();
+        if seq == 0 || seq == self.deck_seq {
+            return;
+        }
+        let Some((bytes, _)) = self.state.mirror.frame() else {
+            return;
+        };
+        let Ok(img) = image::load_from_memory(&bytes) else {
+            return;
+        };
+        self.deck_seq = seq;
+        let size = [img.width() as usize, img.height() as usize];
+        let rgba = img.to_rgba8();
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        match &mut self.deck_tex {
+            Some(tex) => tex.set(color, egui::TextureOptions::LINEAR),
+            None => {
+                self.deck_tex =
+                    Some(ctx.load_texture("deck-preview", color, egui::TextureOptions::LINEAR))
+            }
+        }
+    }
+
     fn refresh_ha(&mut self) {
         if let Ok(mut ha) = self.state.ha.lock() {
             if ha.last_sync.elapsed() > Duration::from_secs(8) {
@@ -914,8 +964,9 @@ impl eframe::App for App {
         }
         let t = Tokens::get(ctx);
         self.update_preview(ctx);
+        self.update_deck_preview(ctx);
 
-        if self.status.monitor.running {
+        if self.status.monitor.running || self.page == Page::Deck {
             ctx.request_repaint_after(Duration::from_millis(120));
         } else {
             ctx.request_repaint_after(Duration::from_millis(700));
@@ -1207,6 +1258,7 @@ impl App {
             Page::Overview => self.overview_ui(ui, t),
             Page::Gamepads => self.gamepads_ui(ui, t),
             Page::Screen => self.screen_ui(ui, t),
+            Page::Deck => self.deck_ui(ui, t),
             Page::Audio => self.audio_ui(ui, t),
             Page::Notifications => self.notifications_ui(ui, t),
             Page::HomeAssistant => self.ha_ui(ui, t),
@@ -4191,37 +4243,67 @@ impl App {
                                 .color(t.muted),
                         );
                     }
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        if self.update_downloading {
-                            let done = self.update_progress.load(Ordering::Relaxed);
-                            let total = self.update_total.max(1);
-                            ui.add(
-                                egui::ProgressBar::new(
-                                    (done as f32 / total as f32).clamp(0.0, 1.0),
-                                )
-                                .desired_width(260.0)
-                                .text(format!("{}%", done * 100 / total)),
+                    ui.add_space(6.0);
+                    if self.update_downloading {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new(t!(self.lang, "иду за обновлением", "downloading"))
+                                    .size(13.0)
+                                    .strong()
+                                    .color(t.ink),
                             );
-                        } else if primary(
-                            ui,
-                            t!(self.lang, "скачать обновление", "download update"),
-                            t,
-                        )
-                        .clicked()
-                        {
-                            self.download_update();
-                        }
-                        if ghost(ui, t!(self.lang, "страница релиза", "release page"), t).clicked()
-                        {
-                            let _ = sdw_core::util::open_url(&info.page);
-                        }
-                    });
+                        });
+                        let done = self.update_progress.load(Ordering::Relaxed);
+                        let total = self.update_total;
+                        self.update_view.sample(
+                            done,
+                            total,
+                            Instant::now(),
+                            &mut self.update_sampled,
+                        );
+                        let label = theme::progress_label(self.lang, &self.update_view);
+                        progress(ui, t, done, total, &label);
+                        // The bar moves only when the window draws.
+                        ui.ctx().request_repaint_after(Duration::from_millis(180));
+                    } else {
+                        ui.horizontal(|ui| {
+                            if primary(
+                                ui,
+                                t!(self.lang, "скачать обновление", "download update"),
+                                t,
+                            )
+                            .clicked()
+                            {
+                                self.download_update();
+                            }
+                            if ghost(ui, t!(self.lang, "страница релиза", "release page"), t)
+                                .clicked()
+                            {
+                                let _ = sdw_core::util::open_url(&info.page);
+                            }
+                        });
+                    }
                 }
+
                 if !self.update_path.is_empty() {
-                    mono(ui, &self.update_path, t.muted);
+                    ui.add_space(4.0);
+                    divider(ui);
                     ui.horizontal(|ui| {
-                        if ghost(ui, t!(self.lang, "установить", "install"), t).clicked()
+                        ui.label(icon(theme::icon::CHECK, 15.0, t.good));
+                        small(
+                            ui,
+                            t!(
+                                self.lang,
+                                "обновление скачано и готово к установке",
+                                "the update is downloaded and ready to install"
+                            ),
+                            t.muted,
+                        );
+                    });
+                    mono(ui, &self.update_path, t.faint);
+                    ui.horizontal(|ui| {
+                        if primary(ui, t!(self.lang, "установить", "install"), t).clicked()
                         {
                             let path = self.update_path.clone();
                             self.spawn(move || {
@@ -5195,6 +5277,149 @@ impl App {
                 self.status = self.state.status();
             }
         }
+    }
+
+    fn deck_ui(&mut self, ui: &mut Ui, t: &Tokens) {
+        let m = self.state.mirror.state();
+        self.page_header(
+            ui,
+            t,
+            t!(self.lang, "стим дек", "steam deck"),
+            t!(
+                self.lang,
+                "что сейчас на экране деки и какие деку подключены",
+                "what is on the deck's screen and which decks are connected"
+            ),
+        );
+
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                theme::dot(ui, if m.live { t.good } else { t.faint }, m.live);
+                ui.label(
+                    RichText::new(if m.live {
+                        t!(self.lang, "в эфире", "live")
+                    } else {
+                        t!(self.lang, "нет кадров", "no picture")
+                    })
+                    .size(16.0)
+                    .strong()
+                    .color(if m.live { t.strong } else { t.muted }),
+                );
+                if m.width > 0 && m.height > 0 {
+                    tag(ui, &format!("{}×{}", m.width, m.height), t.muted);
+                }
+                if !m.page.is_empty() {
+                    tag(ui, &m.page, t.muted);
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if m.live {
+                        small(ui, &ago(m.frame_ms), t.faint);
+                    }
+                    if ghost(ui, t!(self.lang, "обновить", "refresh"), t).clicked() {
+                        self.deck_seq = 0;
+                    }
+                });
+            });
+            ui.add_space(8.0);
+            let avail = ui.available_width().min(760.0);
+            let aspect = if m.width > 0 && m.height > 0 {
+                m.width as f32 / m.height as f32
+            } else {
+                1.6
+            };
+            let size = egui::vec2(avail, avail / aspect.max(0.4));
+            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, 0.0, t.well);
+            match &self.deck_tex {
+                Some(tex) => {
+                    ui.painter().image(
+                        tex.id(),
+                        rect,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                None => {
+                    ui.painter().text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        t!(
+                            self.lang,
+                            "дека ещё не присылала кадров",
+                            "the deck has not sent a frame yet"
+                        ),
+                        egui::FontId::proportional(14.0),
+                        t.faint,
+                    );
+                }
+            }
+            ui.painter()
+                .rect_stroke(rect, 0.0, t.hairline(), egui::StrokeKind::Inside);
+            ui.add_space(6.0);
+            small(
+                ui,
+                t!(
+                    self.lang,
+                    "кадры идут, только пока открыта эта страница: дека спрашивает и не тратит сеть зря.",
+                    "frames arrive only while this page is open: the deck asks first and does not waste the network."
+                ),
+                t.faint,
+            );
+        });
+
+        ui.add_space(10.0);
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(t!(self.lang, "подключённые деку", "connected decks"))
+                        .size(15.0)
+                        .strong(),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    tag(ui, &m.clients.len().to_string(), t.muted);
+                });
+            });
+            if m.clients.is_empty() {
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "пока никто. откройте sd-widgets на деке и включите трансляцию в настройках.",
+                        "nobody yet. open sd-widgets on the deck and turn sharing on in the settings."
+                    ),
+                    t.muted,
+                );
+                return;
+            }
+            for c in &m.clients {
+                ui.horizontal(|ui| {
+                    theme::dot(ui, if c.online { t.good } else { t.faint }, c.online);
+                    ui.label(RichText::new(&c.name).size(13.0).color(t.ink));
+                    if !c.version.is_empty() {
+                        tag(ui, &c.version, t.faint);
+                    }
+                    if c.width > 0 && c.height > 0 {
+                        small(ui, &format!("{}×{}", c.width, c.height), t.faint);
+                    }
+                    if !c.page.is_empty() {
+                        small(ui, &c.page, t.muted);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        small(ui, &ago(c.last_ms), t.faint);
+                        small(
+                            ui,
+                            &format!(
+                                "{} {} · {}",
+                                c.frames,
+                                t!(self.lang, "кадров", "frames"),
+                                sdw_core::util::human_bytes(c.bytes)
+                            ),
+                            t.faint,
+                        );
+                    });
+                });
+            }
+        });
     }
 
     fn audio_ui(&mut self, ui: &mut Ui, t: &Tokens) {

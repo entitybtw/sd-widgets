@@ -992,6 +992,146 @@ pub fn separator(ui: &mut Ui, t: &Tokens) {
     ui.add_space(6.0);
 }
 
+/// What a running download says about itself, read on the frame that draws it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProgressView {
+    pub done: u64,
+    /// 0 when the size is unknown: no honest percentage then.
+    pub total: u64,
+    /// Bytes per second, 0 until two readings are far enough apart.
+    pub rate: f64,
+    /// Seconds left, `None` while either number is unknown.
+    pub eta: Option<f64>,
+}
+
+impl ProgressView {
+    /// Fold in the newest reading of the byte counter.
+    ///
+    /// The speed is measured over the reading span rather than per frame: a
+    /// download reports in bursts of 64 KB, and a per-frame rate would jump
+    /// between 0 and hundreds of MB/s.
+    pub fn sample(
+        &mut self,
+        done: u64,
+        total: u64,
+        at: std::time::Instant,
+        last: &mut Option<(u64, std::time::Instant)>,
+    ) {
+        self.done = done;
+        self.total = total;
+        let Some((was, when)) = *last else {
+            *last = Some((done, at));
+            return;
+        };
+        let secs = at.duration_since(when).as_secs_f64();
+        if done < was {
+            // A new download started: forget the old curve.
+            self.rate = 0.0;
+            self.eta = None;
+            *last = Some((done, at));
+            return;
+        }
+        if secs < 0.4 {
+            return;
+        }
+        let step = (done - was) as f64 / secs;
+        // Smoothed so the number does not flicker; the first span counts as is.
+        self.rate = if self.rate > 0.0 {
+            self.rate * 0.6 + step * 0.4
+        } else {
+            step
+        };
+        self.eta = (total > done && self.rate > 1024.0).then(|| (total - done) as f64 / self.rate);
+        *last = Some((done, at));
+    }
+}
+
+/// A hairline progress bar in the Grid language: hard edges, a well, a filled
+/// accent run on top and a label that always says the real state.
+///
+/// `total == 0` means the server did not say the size (no `Content-Length`),
+/// so there is no honest percentage: a short runner crosses the well instead,
+/// and the label counts what arrived. A full bar is drawn as full.
+pub fn progress(ui: &mut Ui, t: &Tokens, done: u64, total: u64, label: &str) -> Response {
+    let width = ui.available_width().clamp(140.0, 460.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 10.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, t.r(0.0), t.well);
+    if total == 0 {
+        // Indeterminate: the runner is timed by the frame clock, so it moves
+        // without keeping any extra state.
+        let phase = (ui.input(|i| i.time) * 0.55).fract() as f32;
+        let run = rect.width() * 0.28;
+        let x = egui::lerp((rect.left() - run)..=(rect.right()), phase);
+        let left = x.max(rect.left());
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(left, rect.top()),
+            Vec2::new(run.min(rect.right() - left), rect.height()),
+        );
+        p.rect_filled(bar, t.r(0.0), t.accent.gamma_multiply(0.7));
+        ui.ctx().request_repaint();
+    } else {
+        let k = (done as f64 / total as f64).clamp(0.0, 1.0) as f32;
+        let bar = egui::Rect::from_min_size(rect.min, Vec2::new(rect.width() * k, rect.height()));
+        p.rect_filled(bar, t.r(0.0), t.accent);
+    }
+    p.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, t.line_strong),
+        egui::StrokeKind::Inside,
+    );
+    if !label.is_empty() {
+        ui.add_space(6.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(label)
+                    .family(FontFamily::Monospace)
+                    .size(10.5)
+                    .color(t.muted),
+            )
+            .wrap(),
+        );
+    }
+    resp
+}
+
+/// The line under a download bar: `34% · 12.4 MB из 36.8 MB · 8.2 MB/s · 1:20`,
+/// and only the parts that are known.
+pub fn progress_label(lang: sdw_core::i18n::Lang, v: &ProgressView) -> String {
+    let bytes = |n: u64| sdw_core::util::human_bytes(n);
+    let mut out = String::new();
+    if v.total > 0 {
+        let done = v.done.min(v.total);
+        out.push_str(&format!("{}% · ", done * 100 / v.total.max(1)));
+        out.push_str(&format!(
+            "{} {} {}",
+            bytes(done),
+            sdw_core::t!(lang, "из", "of"),
+            bytes(v.total)
+        ));
+    } else {
+        out.push_str(&bytes(v.done));
+    }
+    if v.rate >= 1024.0 {
+        out.push_str(&format!(" · {}/s", bytes(v.rate as u64)));
+    }
+    if let Some(eta) = v.eta {
+        out.push_str(&format!(
+            " · {} {}",
+            sdw_core::t!(lang, "ещё", "about"),
+            format_eta(eta)
+        ));
+    }
+    out
+}
+
+/// Seconds left as `0:07` / `1:20`, so a long download does not read `80 с`.
+fn format_eta(secs: f64) -> String {
+    let s = secs.ceil().max(0.0) as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
 /// Big touch tile with a soft gradient and a hover lift.
 #[derive(Clone)]
 pub struct Tile {
@@ -1420,4 +1560,38 @@ pub fn icon_button(ui: &mut Ui, glyph: &str, t: &Tokens, size: f32, active: bool
         if active { t.accent } else { t.muted },
     );
     resp
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn speed_and_eta_come_from_reading_spans() {
+        let mut v = ProgressView::default();
+        let mut last = None;
+        let t0 = Instant::now();
+        v.sample(0, 1_000_000, t0, &mut last);
+        v.sample(100_000, 1_000_000, t0 + Duration::from_secs(1), &mut last);
+        assert!(v.rate > 90_000.0 && v.rate < 110_000.0, "rate {}", v.rate);
+        assert!(v.eta.unwrap() > 8.0 && v.eta.unwrap() < 10.0);
+        // The label always carries the state a person can check.
+        let line = progress_label(sdw_core::i18n::Lang::Ru, &v);
+        assert!(line.starts_with("10% · "), "{line}");
+        assert!(line.contains('/'), "{line}");
+    }
+
+    #[test]
+    fn unknown_size_has_no_percentage_and_no_eta() {
+        let mut v = ProgressView::default();
+        let mut last = None;
+        let t0 = Instant::now();
+        v.sample(0, 0, t0, &mut last);
+        v.sample(400_000, 0, t0 + Duration::from_secs(2), &mut last);
+        assert!(v.eta.is_none());
+        let line = progress_label(sdw_core::i18n::Lang::En, &v);
+        assert!(!line.contains('%'), "{line}");
+        assert!(line.starts_with("390.6 KB"), "{line}");
+    }
 }

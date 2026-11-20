@@ -192,6 +192,7 @@ pub mod icon {
     pub const BLUETOOTH: &str = "\u{e1a7}";
     pub const HEADPHONES: &str = "\u{e310}";
     pub const AUDIO: &str = "\u{e32d}";
+    pub const DOWNLOAD: &str = "\u{f090}";
 }
 
 /// One Material symbol, sized and coloured like body text.
@@ -395,6 +396,137 @@ pub fn mono(ui: &mut Ui, text: &str, color: Color32) {
         )
         .wrap(),
     );
+}
+
+/// What a running download says about itself, read on the frame that draws it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProgressView {
+    pub done: u64,
+    /// 0 when the size is unknown: no honest percentage then.
+    pub total: u64,
+    /// Bytes per second, 0 until two readings are far enough apart.
+    pub rate: f64,
+    /// Seconds left, `None` while either number is unknown.
+    pub eta: Option<f64>,
+}
+
+impl ProgressView {
+    /// Fold in the newest reading of the byte counter. The speed is measured
+    /// over the reading span, not per frame: the download reports 64 KB
+    /// bursts, and a per-frame rate would swing wildly.
+    pub fn sample(
+        &mut self,
+        done: u64,
+        total: u64,
+        at: std::time::Instant,
+        last: &mut Option<(u64, std::time::Instant)>,
+    ) {
+        self.done = done;
+        self.total = total;
+        let Some((was, when)) = *last else {
+            *last = Some((done, at));
+            return;
+        };
+        let secs = at.duration_since(when).as_secs_f64();
+        if done < was {
+            // A new download started: forget the old curve.
+            self.rate = 0.0;
+            self.eta = None;
+            *last = Some((done, at));
+            return;
+        }
+        if secs < 0.4 {
+            return;
+        }
+        let step = (done - was) as f64 / secs;
+        self.rate = if self.rate > 0.0 {
+            self.rate * 0.6 + step * 0.4
+        } else {
+            step
+        };
+        self.eta = (total > done && self.rate > 1024.0).then(|| (total - done) as f64 / self.rate);
+        *last = Some((done, at));
+    }
+}
+
+/// The line under a download bar: `34% · 12.4 MB из 36.8 MB · 8.2 MB/s · 1:20`,
+/// and only the parts that are known.
+pub fn progress_label(lang: Lang, v: &ProgressView) -> String {
+    let bytes = sdw_core::util::human_bytes;
+    let mut out = String::new();
+    if v.total > 0 {
+        let done = v.done.min(v.total);
+        out.push_str(&format!("{}% · ", done * 100 / v.total.max(1)));
+        out.push_str(&format!(
+            "{} {} {}",
+            bytes(done),
+            t!(lang, "из", "of"),
+            bytes(v.total)
+        ));
+    } else {
+        out.push_str(&bytes(v.done));
+    }
+    if v.rate >= 1024.0 {
+        out.push_str(&format!(" · {}/s", bytes(v.rate as u64)));
+    }
+    if let Some(eta) = v.eta {
+        let secs = eta.ceil().max(0.0) as u64;
+        out.push_str(&format!(
+            " · {} {}:{:02}",
+            t!(lang, "ещё", "about"),
+            secs / 60,
+            secs % 60
+        ));
+    }
+    out
+}
+
+/// A hairline progress bar in the Grid language: hard edges, a well, a filled
+/// accent run on top and a monospace label that always says the real state.
+///
+/// `total == 0` means the size is unknown (a server without
+/// `Content-Length`): an honest percentage cannot be drawn, so a short runner
+/// crosses the well and the label counts what arrived.
+pub fn progress(ui: &mut Ui, t: &Tokens, done: u64, total: u64, label: &str) -> Response {
+    let width = ui.available_width().clamp(140.0, 460.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 8.0), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 0, t.well);
+    if total == 0 {
+        let phase = (ui.input(|i| i.time) * 0.55).fract() as f32;
+        let run = rect.width() * 0.28;
+        let x = egui::lerp((rect.left() - run)..=(rect.right()), phase);
+        let left = x.max(rect.left());
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(left, rect.top()),
+            Vec2::new(run.min(rect.right() - left), rect.height()),
+        );
+        p.rect_filled(bar, 0, t.accent.gamma_multiply(0.7));
+        ui.ctx().request_repaint();
+    } else {
+        let k = (done as f64 / total as f64).clamp(0.0, 1.0) as f32;
+        let bar = egui::Rect::from_min_size(rect.min, Vec2::new(rect.width() * k, rect.height()));
+        p.rect_filled(bar, 0, t.accent);
+    }
+    p.rect_stroke(
+        rect,
+        0,
+        Stroke::new(1.0, t.line_strong),
+        egui::StrokeKind::Inside,
+    );
+    if !label.is_empty() {
+        ui.add_space(5.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(label)
+                    .family(FontFamily::Monospace)
+                    .size(11.0)
+                    .color(t.muted),
+            )
+            .wrap(),
+        );
+    }
+    resp
 }
 
 pub fn divider(ui: &mut Ui) {

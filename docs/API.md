@@ -112,6 +112,32 @@ the deck cannot pass anything else; a bad address or an unknown action returns
 | `DELETE` | `/api/v1/notifications/{id}` | Dismiss one notification. |
 | `POST` | `/api/v1/notifications/clear` | Clear all. |
 | `POST` | `/api/v1/notifications/test` | Send a test notification. |
+| `POST` | `/api/v1/notifications/{id}/activate` | Run the app's action for that notification on the computer. |
+
+The daemon owns `org.freedesktop.Notifications` while it mirrors notifications,
+so it keeps the id, the sender's bus name and the action keys that came with
+each notification. `activate` sends `ActionInvoked(id, key)` back to the app
+that posted it and returns `404` for an unknown id: tapping a notification on
+the Deck opens it where it belongs, and the Deck drops the row only after the
+computer confirmed.
+
+## Deck screen
+
+The deck pushes its own screen here while its settings say so, and only while
+someone watches it. Frames are halved JPEGs; the daemon keeps the newest one plus
+a list of the decks that keep sending.
+
+| Method | Path | Body / result |
+| --- | --- | --- |
+| `GET` | `/api/v1/deck/want` | `{ "want": bool, "fps": 3 }` — is somebody showing this deck right now. |
+| `POST` | `/api/v1/deck/frame?device=&name=&page=&version=&width=&height=` | Raw JPEG body (≤ 4 MB, starts with `FF D8`). Marks the deck as watched. |
+| `GET` | `/api/v1/deck` | `DeckMirrorState`: live flag, frame age, page, size, seq, watched flag and the client list. |
+| `GET` | `/api/v1/deck/frame` | Newest JPEG, `404` before the first frame. |
+
+`want` is what keeps an idle deck quiet: the deck asks about every 1.5 s and only
+captures frames while the answer is yes. Both `GET /api/v1/deck` and the daemon's
+own **steam deck** page hold the watch open for a few seconds, so a viewer on the
+computer is not fighting the deck's poll.
 
 ## Home Assistant
 

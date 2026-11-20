@@ -171,6 +171,23 @@ pub struct StreamFeed {
     rx: Receiver<Vec<u8>>,
 }
 
+/// The deck's own screen going to the computer. One frame is in the air at a
+/// time; the last result names what the computer is showing.
+pub struct ShareState {
+    pub in_flight: bool,
+    /// What the computer said last time it was asked; a viewer on the PC
+    /// makes the deck share.
+    pub want: bool,
+    pub want_at: Instant,
+    /// Nobody is watching or the link is down: back off to one frame a while.
+    pub quiet: Instant,
+    pub last_request: Instant,
+    pub sent: u64,
+    pub error: String,
+    /// Size of the frame the computer last accepted, for the settings page.
+    pub size: (u32, u32),
+}
+
 impl Drop for StreamFeed {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -255,6 +272,12 @@ pub struct UpdateState {
     pub path: String,
     pub last_check: Instant,
     pub notified: bool,
+    /// Speed and time left, worked out while the bar is drawn. The byte
+    /// counter alone cannot say either, and the page needs both to look
+    /// alive.
+    pub view: crate::theme::ProgressView,
+    /// The previous byte reading and when it was taken, for the speed.
+    pub sampled: Option<(u64, Instant)>,
 }
 
 pub struct BindsState {
@@ -332,6 +355,20 @@ pub enum Task {
     BtAction(Result<String, String>),
     /// The Deck sink was muted or unmuted.
     QuickMute(Result<bool, String>),
+    /// The Deck's own volume (level, muted) and panel brightness.
+    QuickValues(Option<(u8, bool)>, Option<u8>),
+    /// A notification was activated on the computer (or refused).
+    NotifActivated {
+        id: u64,
+        result: Result<(), String>,
+    },
+    /// One frame of this screen went to the computer: its size, or the reason
+    /// it did not.
+    Shared(Result<(u32, u32), String>),
+    /// Whether the computer is watching this deck's screen right now.
+    DeckWant(Result<bool, String>),
+    /// The computer's own sound level just now (0..=100).
+    PcVolume(u8),
 }
 
 /// Multi-finger touch state from `egui::Event::Touch`.
@@ -486,6 +523,13 @@ pub struct App {
     /// Live horizontal offset while a finger swipe is in progress, in points.
     /// It makes the page follow the finger instead of jumping on release.
     pub page_slide: f32,
+    /// Where the page was when the finger left, and the moment it did: the
+    /// offset eases from there to zero instead of snapping.
+    pub page_settle_from: f32,
+    pub page_settle_at: Instant,
+    /// The page was turned by a swipe, so it needs no fade-in of its own: the
+    /// finger already showed where it comes from.
+    pub page_instant: bool,
     pub page_at: Instant,
     pub status: Option<DaemonStatus>,
     pub status_err: String,
@@ -554,6 +598,7 @@ pub struct App {
     pub touch: TouchTrack,
 
     pub stream: StreamState,
+    pub share: ShareState,
     pub ha: HaState,
     pub media: MediaUiState,
     pub binds: BindsState,
@@ -602,6 +647,14 @@ pub struct App {
     pub quick_volume: Option<u8>,
     pub quick_muted: bool,
     pub quick_brightness: Option<u8>,
+    /// The panel was opened by a tap on the handle, not by a pull: it is on
+    /// screen at once and needs no slide.
+    pub quick_instant: bool,
+    /// A read of volume and brightness is on its way; the panel skips the
+    /// second one until it lands.
+    pub quick_pending: bool,
+    /// The panel opened on its own and still owes the state a read.
+    pub quick_values_deferred: bool,
     pub quick_at: Option<Instant>,
     /// Finger offset while a top-edge pull-down is in progress.
     pub quick_pull: f32,
@@ -638,6 +691,10 @@ pub struct App {
     pub style_draft: String,
     /// The player process receiving the PC audio stream.
     pub audio_player: Option<std::process::Child>,
+    /// The computer's system volume, as last read, and when. The deck's own
+    /// slider follows it while the PC sound is playing, so the two never
+    /// disagree.
+    pub pc_volume: Option<(u8, Instant)>,
     /// How many more "yes" presses are needed before audio starts.
     pub audio_confirm_left: u8,
     pub audio_error: String,
@@ -681,6 +738,9 @@ impl App {
             page_epoch: 1,
             page_dir: 1.0,
             page_slide: 0.0,
+            page_settle_from: 0.0,
+            page_settle_at: Instant::now(),
+            page_instant: false,
             page_at: Instant::now(),
             status: None,
             status_err: String::new(),
@@ -747,6 +807,16 @@ impl App {
                 last_pointer: Instant::now() - Duration::from_secs(1),
                 pointer_down: false,
             },
+            share: ShareState {
+                in_flight: false,
+                want: false,
+                want_at: Instant::now() - Duration::from_secs(10),
+                quiet: Instant::now() - Duration::from_secs(10),
+                last_request: Instant::now() - Duration::from_secs(10),
+                sent: 0,
+                error: String::new(),
+                size: (0, 0),
+            },
             ha: HaState {
                 entities: Vec::new(),
                 areas: Vec::new(),
@@ -805,6 +875,8 @@ impl App {
                 path: String::new(),
                 last_check: Instant::now() - Duration::from_secs(86_400),
                 notified: false,
+                view: crate::theme::ProgressView::default(),
+                sampled: None,
             },
             settings_name: cfg.device_name.clone(),
             theme_import: String::new(),
@@ -851,10 +923,14 @@ impl App {
             quick_volume: None,
             quick_muted: false,
             quick_brightness: None,
+            quick_instant: false,
+            quick_pending: false,
+            quick_values_deferred: false,
             quick_at: None,
             quick_pull: 0.0,
             quick_clicked: false,
             audio_player: None,
+            pc_volume: None,
             audio_confirm_left: 0,
             audio_error: String::new(),
             audio_apps: Vec::new(),
@@ -1205,8 +1281,8 @@ impl App {
                             });
                         }
                         let pull = self.quick_pull;
-                        self.quick_pull = 0.0;
                         if self.quick_open {
+                            self.quick_pull = 0.0;
                             // An open panel is dismissed by a pull up, never
                             // by turning the page underneath it.
                             self.page_slide = 0.0;
@@ -1220,8 +1296,10 @@ impl App {
                             && dy > dx.abs() * 2.0
                         {
                             self.page_slide = 0.0;
+                            self.quick_pull = pull;
                             self.set_quick(true);
                         } else {
+                            self.quick_pull = 0.0;
                             let edge =
                                 start.x <= rect.left() + 64.0 || start.x >= rect.right() - 64.0;
                             let min = if edge { 110.0 } else { 160.0 };
@@ -1907,6 +1985,33 @@ impl App {
         }
     }
 
+    /// Ask the computer whether it is showing this deck, so an idle deck does
+    /// not pay for screenshots nobody asked for.
+    pub fn poll_deck_want(&mut self) {
+        if !self.cfg.mirror_deck || self.share.want_at.elapsed() < Duration::from_millis(1500) {
+            return;
+        }
+        let Some(c) = self.client() else {
+            self.share.want = false;
+            return;
+        };
+        self.share.want_at = Instant::now();
+        self.spawn(move || Task::DeckWant(c.deck_want().map_err(|e| e.to_string())));
+        // The same tick reads the computer's own level: while its sound plays
+        // on the deck, this is the only volume there is.
+        if self.audio_player.is_some() {
+            if let Some(c) = self.client() {
+                self.spawn(move || {
+                    Task::PcVolume(
+                        c.media()
+                            .map(|m| m.volume.min(100) as u8)
+                            .unwrap_or_else(|_| 0),
+                    )
+                });
+            }
+        }
+    }
+
     pub fn poll_notifications(&mut self) {
         if self.notif_pending || self.client().is_none() {
             return;
@@ -2091,26 +2196,139 @@ impl App {
         }
     }
 
+    /// Run the notification's action on the computer: what a click on the
+    /// desktop notification would do. The row leaves the deck only when the
+    /// computer confirms, so a failed tap does not eat the notification.
+    pub fn activate_notif(&mut self, id: u64) {
+        let Some(c) = self.client() else {
+            self.toast(
+                t!(self.lang, "нет активного компьютера", "no active computer"),
+                false,
+            );
+            return;
+        };
+        self.spawn(move || Task::NotifActivated {
+            id,
+            result: c
+                .activate_notification(id)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+        });
+    }
+
+    // ------------------------------------------------------- screen sharing
+
+    /// Name of the page a share frame shows, in the daemon's language.
+    fn share_page(&self) -> &'static str {
+        if self.clock_full {
+            return "clock";
+        }
+        if self.stream.fullscreen {
+            return "screen";
+        }
+        if self.binds.editor.is_some() {
+            return "binds";
+        }
+        self.page.key()
+    }
+
+    /// Send one frame of this screen to the computer.
+    ///
+    /// The picture comes from egui itself (`request_screenshot`), is halved
+    /// and packed as JPEG on a worker, and goes to the daemon as a plain POST.
+    /// Only one request is in the air at a time: a slow link slows the
+    /// picture down instead of piling frames up.
+    pub fn pump_share(&mut self, ctx: &egui::Context) {
+        if !self.cfg.mirror_deck {
+            return;
+        }
+        let Some(c) = self.client() else {
+            return;
+        };
+        if self.share.in_flight {
+            if self.share.last_request.elapsed() < Duration::from_secs(6) {
+                return;
+            }
+            // A viewport that cannot produce a screenshot never calls back;
+            // the lane must not stay blocked forever.
+            self.share.in_flight = false;
+        }
+        // Nobody is looking: one frame every few seconds keeps the computer's
+        // client list honest without spending the Wi-Fi on a picture nobody
+        // sees. A viewer flips `want` within the poll interval.
+        if !self.share.want && self.share.quiet.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        let fps = if self.share.want {
+            sdw_core::model::DECK_SHARE_FPS
+        } else {
+            1
+        } as u64;
+        if self.share.last_request.elapsed() < Duration::from_millis(1000 / fps) {
+            return;
+        }
+        self.share.last_request = Instant::now();
+        self.share.in_flight = true;
+        if !self.share.want {
+            self.share.quiet = Instant::now();
+        }
+        let quality = self.cfg.mirror_quality.clamp(30, 95);
+        let tx = self.task_tx.clone();
+        let id = self.cfg.client_id.clone();
+        let name = self.cfg.device_name.clone();
+        let page = self.share_page().to_string();
+        ctx.request_screenshot(move |image| {
+            std::thread::Builder::new()
+                .name("sdw-share".into())
+                .spawn(move || {
+                    let (w, h) = (image.size[0], image.size[1]);
+                    let jpeg = jpeg_half(&image, quality);
+                    let result = if jpeg.is_empty() || w < 4 || h < 4 {
+                        Err("не удалось снять кадр".to_string())
+                    } else {
+                        let (dw, dh) = ((w / 2) as u32, (h / 2) as u32);
+                        c.push_deck_frame(&id, &name, &page, dw, dh, jpeg)
+                            .map(|_| (dw, dh))
+                            .map_err(|e| e.to_string())
+                    };
+                    let _ = tx.send(Task::Shared(result));
+                })
+                .ok();
+        });
+    }
+
     /// Open or close the pull-down panel. Opening reads the current values at
     /// once, so the sliders never show a stale number.
     pub fn set_quick(&mut self, open: bool) {
+        let pulled = self.quick_pull > 1.0;
         self.quick_open = open;
         self.quick_pull = 0.0;
         if open {
+            // The panel must be on screen on the very frame the pull or the
+            // tap lands, without waiting for animation or a read. A pull
+            // slides in with the finger already on its way; a tap on the
+            // handle shows the panel at once. The Deck's sound and light are
+            // read on a thread, so the panel appears with what it knew last
+            // time and fills the numbers in a frame later.
+            self.quick_instant = !pulled;
+            self.quick_values_deferred = true;
             self.quick_at = None;
-            self.quick_values();
+        } else {
+            self.quick_instant = false;
+            self.quick_values_deferred = false;
         }
     }
 
-    /// Read the Deck's own volume and brightness. Called when the panel opens
-    /// and every couple of seconds while it is visible.
-    pub fn quick_values(&mut self) {
-        if let Some((level, muted)) = crate::sys::volume() {
-            self.quick_volume = Some(level);
-            self.quick_muted = muted;
+    /// Read the Deck's own volume and brightness. The read reaches the sound
+    /// server and sysfs, so it runs on a thread and the panel is drawn from
+    /// what it already knew; the answer arrives as [`Task::QuickValues`].
+    fn quick_values(&mut self) {
+        if self.quick_pending {
+            return;
         }
-        self.quick_brightness = crate::sys::brightness();
+        self.quick_pending = true;
         self.quick_at = Some(Instant::now());
+        self.spawn(|| Task::QuickValues(crate::sys::volume(), crate::sys::brightness()));
     }
 
     /// Set the Deck volume from the panel. The value is applied when the finger
@@ -2541,6 +2759,8 @@ impl App {
         };
         self.update.downloading = true;
         self.update.total = asset.size;
+        self.update.view = crate::theme::ProgressView::default();
+        self.update.sampled = None;
         self.update.progress = Arc::new(AtomicU64::new(0));
         let progress = self.update.progress.clone();
         self.spawn(move || {
@@ -2822,15 +3042,18 @@ impl App {
             self.applied_dark = self.dark;
         }
         self.apply_scale(ctx);
-        // A swipe that did not commit eases back to zero instead of snapping.
+        // A swipe that committed (or did not) eases from where the finger left
+        // the page to where the page belongs. Time based, so the turn takes
+        // the same 0.24 s whatever the frame rate is.
         let dragging = self.edge_swipe.is_some() || !self.touch.points.is_empty();
-        if !dragging && self.page_slide != 0.0 {
-            self.page_slide = if self.page_slide.abs() < 1.0 {
-                0.0
-            } else {
-                self.page_slide * 0.72
-            };
-            ctx.request_repaint();
+        if !dragging {
+            self.page_slide = 0.0;
+            if self.page_settle_from != 0.0 {
+                if self.page_settle_at.elapsed() >= Duration::from_millis(240) {
+                    self.page_settle_from = 0.0;
+                }
+                ctx.request_repaint();
+            }
         }
         if self.last_clock.elapsed() >= Duration::from_secs(1) {
             self.last_clock = Instant::now();
@@ -2860,6 +3083,7 @@ impl App {
         }
 
         self.poll_status();
+        self.poll_deck_want();
         self.poll_notifications();
         if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(4)
         {
@@ -3099,6 +3323,8 @@ impl App {
             Task::Updated(Ok((path, size))) => {
                 self.update.downloading = false;
                 self.update.total = size;
+                self.update.view = crate::theme::ProgressView::default();
+                self.update.sampled = None;
                 self.update.path = path;
                 self.toast(
                     t!(self.lang, "обновление скачано", "update downloaded"),
@@ -3352,30 +3578,131 @@ impl App {
                 }
             }
             Task::QuickMute(Err(e)) => self.toast(e, false),
+            Task::DeckWant(result) => {
+                self.share.want_at = Instant::now();
+                match result {
+                    Ok(want) => {
+                        self.share.want = want;
+                        // Someone opened the deck on the computer: send a
+                        // frame right away instead of waiting for the poll.
+                        if want {
+                            self.share.quiet = Instant::now() - Duration::from_secs(10);
+                        }
+                    }
+                    Err(_) => self.share.want = false,
+                }
+            }
+            Task::PcVolume(v) => self.pc_volume = Some((v, Instant::now())),
+            Task::Shared(result) => {
+                self.share.in_flight = false;
+                match result {
+                    Ok(size) => {
+                        self.share.sent = self.share.sent.saturating_add(1);
+                        self.share.size = size;
+                        self.share.error.clear();
+                    }
+                    // A closed deck or a sleeping pc is the normal state, not
+                    // an error worth showing raw: the page says it softly.
+                    Err(e) => self.share.error = share_reason(self.lang, &e),
+                }
+            }
+            Task::NotifActivated { id, result } => match result {
+                Ok(()) => {
+                    self.notifications.retain(|n| n.id != id);
+                    self.popups.retain(|p| p.id != id);
+                }
+                Err(e) => self.toast(e, false),
+            },
+            Task::QuickValues(volume, brightness) => {
+                self.quick_pending = false;
+                if let Some((level, muted)) = volume {
+                    self.quick_volume = Some(level);
+                    self.quick_muted = muted;
+                }
+                self.quick_brightness = brightness;
+            }
         }
     }
 
     // ------------------------------------------------------------ chrome
 
+    /// The distance a released page still has to travel, eased over 0.24 s.
+    fn settle_offset(&self) -> f32 {
+        if self.page_settle_from == 0.0 {
+            return 0.0;
+        }
+        let k = (self.page_settle_at.elapsed().as_secs_f32() / 0.24).min(1.0);
+        let ease = 1.0 - (1.0 - k).powi(3);
+        self.page_settle_from * (1.0 - ease)
+    }
+
+    /// Draw one page into `ui`, scrolled on its own. `track` keeps the live
+    /// scroll offset of the page under the finger; the neighbour in a drag is
+    /// drawn without touching it.
+    fn page_scroll(&mut self, ui: &mut Ui, t: &Tokens, salt: egui::Id, track: bool) {
+        // The ScrollArea claims its background drags under `id.with("area")`;
+        // that is the one drag which must not block the page swipe, so the
+        // exact id is remembered rather than a similar-looking one.
+        // `ScrollArea::id_salt` wraps what it is given in an `IdSalt`, so the
+        // same wrapping is needed here to name the drag it claims.
+        let area_id = ui.make_persistent_id(egui::IdSalt::new(salt)).with("area");
+        if track {
+            self.page_scroll_id = Some(area_id);
+        }
+        let area = ScrollArea::vertical()
+            .id_salt(salt)
+            .auto_shrink([false, false])
+            .scroll_source(egui::scroll_area::ScrollSource {
+                scroll_bar: false,
+                // gamescope often reports the deck touchscreen as a mouse, so
+                // egui's OnTouch default never turns on.
+                drag: egui::scroll_area::DragScroll::Always,
+                mouse_wheel: true,
+            })
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                if self.binds.editor.is_some() {
+                    binds::editor_ui(self, ui, t);
+                } else {
+                    self.page_ui(ui, t);
+                }
+                ui.add_space(104.0);
+            });
+        if track {
+            self.page_scroll_offset = area.state.offset().y;
+        }
+    }
+
     fn chrome_ui(&mut self, root: &mut Ui, ctx: &egui::Context) {
         let t = Tokens::get(ctx);
-        // One cubic ease for the whole page swap: it fades, rises a touch and
-        // slides in from the side you came from. Margins move with it so the
-        // content never spills outside the panel.
-        let anim = if theme::style().animations {
-            ctx.animate_bool_with_time(Id::new(("page", self.page_epoch)), true, 0.28)
-        } else {
+        // A page turned by a swipe was already dragged into view, so it gets no
+        // fade-in of its own: the settle below finishes the movement the finger
+        // started. Taps and arrows keep the fade and the slight rise.
+        let anim = if !theme::style().animations || self.page_instant {
             1.0
+        } else {
+            ctx.animate_bool_with_time(Id::new(("page", self.page_epoch)), true, 0.28)
         };
         let ease = 1.0 - (1.0 - anim).powi(3);
         let width = ctx.content_rect().width().max(1.0);
-        // A wider travel than before: the new space clearly comes from the
-        // side the swipe went, while the live finger offset is added on top.
         let travel = (width * 0.12).clamp(36.0, 220.0);
-        let slide = (1.0 - ease) * travel * self.page_dir + self.page_slide;
-        let left = (34.0 + slide).max(4.0) as i8;
-        let right = (34.0 - slide).max(4.0) as i8;
-        let drag_fade = 1.0 - (self.page_slide.abs() / width * 0.5).min(0.35);
+        let slide = self.page_slide + self.settle_offset() + (1.0 - ease) * travel * self.page_dir;
+
+        // While the finger drags the page aside, the neighbour is drawn where
+        // it will land: the page turn follows the finger instead of being a
+        // fade that happens after the release.
+        let pages = self.dock_pages();
+        let neighbour =
+            if self.page_slide.abs() > 1.0 && pages.len() > 1 && self.binds.editor.is_none() {
+                let dir = if self.page_slide < 0.0 { 1.0 } else { -1.0 };
+                let idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as i32;
+                let next = (idx + dir as i32).rem_euclid(pages.len() as i32) as usize;
+                Some((pages[next], dir))
+            } else {
+                None
+            };
+
         egui::Panel::top("deck-top")
             .exact_size(50.0)
             .frame(
@@ -3386,46 +3713,54 @@ impl App {
             .show(root, |ui| self.top_bar(ui, &t));
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(t.bg).inner_margin(Margin {
-                left,
-                right,
-                // The page rises a touch as it fades in. It is the panel
-                // margin, not a spacer inside the scroll area: a spacer would
-                // change the content height on every frame of the swap and
-                // make the list re-lay out under the finger.
-                top: (4.0 + (1.0 - ease) * 14.0) as i8,
+                left: 34,
+                right: 34,
+                // The page rises a touch as it fades in. It is a translation,
+                // not a spacer inside the scroll area: a spacer would change
+                // the content height on every frame of the swap and make the
+                // list re-lay out under the finger.
+                top: 4,
                 bottom: 4,
             }))
             .show(root, |ui| {
                 theme::backdrop(ui, &t);
-                ui.set_opacity(ease * drag_fade);
-                // The ScrollArea claims its background drags under
-                // `id.with("area")`; it is the one drag that must not block
-                // the page swipe, so remember the same id.
-                self.page_scroll_id = Some(
-                    ui.make_persistent_id(egui::IdSalt::new(("deck-page", self.page_epoch)))
-                        .with("area"),
+                let content = ui.max_rect();
+                let clip = ui.clip_rect();
+                if let Some((next, dir)) = neighbour {
+                    let mut peek = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt(("deck-peek-ui", next.key()))
+                            .max_rect(
+                                content.translate(Vec2::new(slide + dir * content.width(), 0.0)),
+                            )
+                            .layout(*ui.layout()),
+                    );
+                    peek.set_clip_rect(clip);
+                    let saved = std::mem::replace(&mut self.page, next);
+                    self.page_scroll(
+                        &mut peek,
+                        &t,
+                        egui::Id::new(("deck-peek", next.key())),
+                        false,
+                    );
+                    self.page = saved;
+                }
+                let mut page_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .id_salt(("deck-page-ui", self.page_epoch))
+                        .max_rect(content.translate(Vec2::new(slide, (1.0 - ease) * 14.0)))
+                        .layout(*ui.layout()),
                 );
-                let area = ScrollArea::vertical()
-                    .id_salt(("deck-page", self.page_epoch))
-                    .auto_shrink([false, false])
-                    .scroll_source(egui::scroll_area::ScrollSource {
-                        scroll_bar: false,
-                        // gamescope often reports the deck touchscreen as a
-                        // mouse, so egui's OnTouch default never turns on.
-                        drag: egui::scroll_area::DragScroll::Always,
-                        mouse_wheel: true,
-                    })
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        if self.binds.editor.is_some() {
-                            binds::editor_ui(self, ui, &t);
-                        } else {
-                            self.page_ui(ui, &t);
-                        }
-                        ui.add_space(104.0);
-                    });
-                self.page_scroll_offset = area.state.offset().y;
+                page_ui.set_clip_rect(clip);
+                // A page held by the finger stays solid: it is being turned,
+                // not fading.
+                page_ui.set_opacity(if self.page_slide != 0.0 { 1.0 } else { ease });
+                self.page_scroll(
+                    &mut page_ui,
+                    &t,
+                    egui::Id::new(("deck-page", self.page_epoch)),
+                    true,
+                );
                 if ease < 1.0 {
                     ctx.request_repaint();
                 }
@@ -4006,11 +4341,20 @@ impl App {
         if self.popups.is_empty() {
             return;
         }
+        // Over the fullscreen screen stream the cards stay, unless the user
+        // asked for a clean picture. They sit below the close button so a tap
+        // on the card never lands on it.
+        let full = self.stream.fullscreen;
+        if full && !self.cfg.notify_fullscreen {
+            return;
+        }
+        let top = if full { 76.0 } else { 64.0 };
         let t = Tokens::get(ctx);
         let now = Instant::now();
         self.popups
             .retain(|p| now.duration_since(p.at) < Duration::from_millis(5400));
         let mut dismiss: Option<u64> = None;
+        let mut open: Option<u64> = None;
         let items: Vec<NotifPopup> = self.popups.clone();
         for (i, p) in items.iter().enumerate() {
             let art = self.notif_texture(ctx, p.id, &p.image);
@@ -4024,7 +4368,7 @@ impl App {
                 1 => t.warn,
                 _ => t.bad,
             };
-            let offset = Vec2::new(-18.0, 64.0 + i as f32 * 108.0 - (1.0 - ease) * 14.0);
+            let offset = Vec2::new(-18.0, top + i as f32 * 108.0 - (1.0 - ease) * 14.0);
             egui::Area::new(Id::new(("notif-popup", p.id)))
                 .anchor(Align2::RIGHT_TOP, offset)
                 .order(egui::Order::Tooltip)
@@ -4056,7 +4400,7 @@ impl App {
                                     );
                                     ui.add_space(10.0);
                                 }
-                                ui.vertical(|ui| {
+                                let text = ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
                                         if art.is_none() {
                                             ui.label(theme::icon(
@@ -4090,6 +4434,22 @@ impl App {
                                         );
                                     }
                                 });
+                                let hit = ui.interact(
+                                    text.response.rect,
+                                    Id::new(("notif-open", p.id)),
+                                    Sense::click(),
+                                );
+                                if hit.clicked() {
+                                    open = Some(p.id);
+                                }
+                                if hit.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                hit.on_hover_text(t!(
+                                    self.lang,
+                                    "нажмите, чтобы открыть на компьютере",
+                                    "tap to open it on the computer"
+                                ));
                                 ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                                     if ui
                                         .add(
@@ -4109,6 +4469,10 @@ impl App {
         if let Some(id) = dismiss {
             self.popups.retain(|p| p.id != id);
         }
+        if let Some(id) = open {
+            self.popups.retain(|p| p.id != id);
+            self.activate_notif(id);
+        }
         // Keep the fade smooth while at least one popup is alive.
         ctx.request_repaint_after(Duration::from_millis(16));
     }
@@ -4126,11 +4490,13 @@ impl App {
             return;
         }
         if self.quick_open
-            && self
-                .quick_at
-                .map(|at| at.elapsed() > Duration::from_secs(2))
-                .unwrap_or(true)
+            && (self.quick_values_deferred
+                || self
+                    .quick_at
+                    .map(|at| at.elapsed() > Duration::from_secs(2))
+                    .unwrap_or(true))
         {
+            self.quick_values_deferred = false;
             self.quick_values();
         }
 
@@ -4212,9 +4578,6 @@ impl eframe::App for App {
             }
         }
         crate::audio_ui::tick(self);
-        // Draw the pull-down before the page: the clock's own exit check must
-        // see whether this click belonged to the panel.
-        self.quick_ui(&ctx);
         if self.clock_full {
             crate::clock::fullscreen(self, root, &ctx);
         } else if self.stream.fullscreen {
@@ -4244,7 +4607,67 @@ impl eframe::App for App {
             350
         };
         ctx.request_repaint_after(Duration::from_millis(ms));
+        self.pump_share(&ctx);
     }
+}
+
+/// A share failure as a sentence a person reads. The transport error stays
+/// out of the ui: `io: Connection refused (os error 111)` says nothing about
+/// what to do, and the answer is almost always "the pc is asleep".
+fn share_reason(lang: Lang, error: &str) -> String {
+    let low = error.to_ascii_lowercase();
+    if low.contains("refused")
+        || low.contains("timed out")
+        || low.contains("unreachable")
+        || low.contains("dns")
+        || low.contains("connect")
+    {
+        return t!(
+            lang,
+            "компьютер не отвечает",
+            "the computer is not answering"
+        )
+        .to_string();
+    }
+    t!(
+        lang,
+        "трансляция не идёт: {error}",
+        "sharing failed: {error}"
+    )
+    .replace("{error}", error)
+}
+
+/// Halve a screenshot and pack it as JPEG. Halving keeps the Grid text
+/// readable in the daemon window while cutting both the pixels and the bytes
+/// by four, which is what makes a few frames per second fine over Wi-Fi.
+fn jpeg_half(image: &egui::ColorImage, quality: u8) -> Vec<u8> {
+    let (w, h) = (image.size[0], image.size[1]);
+    if w < 2 || h < 2 {
+        return Vec::new();
+    }
+    let (dw, dh) = (w / 2, h / 2);
+    let mut rgb = Vec::with_capacity(dw * dh * 3);
+    for y in 0..dh {
+        let row = y * 2 * w;
+        for x in 0..dw {
+            let p = image.pixels[row + x * 2];
+            // The frame is opaque; the alpha is folded in so a future
+            // translucent chrome cannot turn into black boxes.
+            let a = p.a() as u16;
+            rgb.push((p.r() as u16 * a / 255) as u8);
+            rgb.push((p.g() as u16 * a / 255) as u8);
+            rgb.push((p.b() as u16 * a / 255) as u8);
+        }
+    }
+    let mut out = Vec::new();
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
+    if enc
+        .encode(&rgb, dw as u32, dh as u32, image::ExtendedColorType::Rgb8)
+        .is_err()
+    {
+        return Vec::new();
+    }
+    out
 }
 
 fn push_text(ctx: &egui::Context, text: &str) {

@@ -65,7 +65,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Clock** | A full-screen clock in four styles, each fully configurable and saved as a preset or an addon. |
 | **Addons** | Import, enable, configure and remove packages; save the current look or clock as one. |
 | **Look** | Presets, palette, CSS editor, grid, density, dock/arrows, page visibility, sounds. |
-| **Settings** | Device name, language, theme, UI scale, input devices, updates. |
+| **Settings** | Device name, language, theme, UI scale, input devices, screen sharing, updates. |
 
 A pull down from the top edge (or a tap on the handle) opens the **control
 center**: the newest notifications, the Deck's own volume and its brightness,
@@ -100,8 +100,13 @@ directional slide, and the tiles stagger in behind it.
   layout is applied live and written into the compositor config
   (`~/.config/niri/config.kdl`, `~/.config/hypr/hyprland.conf`,
   `~/.config/sway/config`, KDE screen config, X11 `xrandr`).
-- **Notification mirroring** — watches the desktop notification bus and serves the
-  stream to the Deck.
+- **Notification mirroring** — owns the desktop notification bus and serves the
+  stream to the Deck; tapping one there runs the app's own action on the
+  computer, so the chat, the browser or the file manager opens where it belongs.
+- **The Deck's screen** — the Deck shares its screen while the daemon's **steam
+  deck** page is open: the newest frame, the page it shows, and the list of decks
+  that are connected. Frames are halved JPEGs a few times a second, and only
+  while somebody is looking, so an idle deck spends nothing.
 - **Bluetooth manager** — scans, pairs, connects, trusts and forgets devices
   through BlueZ; headphone and earbud battery comes from BlueZ, or from UPower
   when the device does not report it.

@@ -43,6 +43,29 @@ fn handle(state: Arc<AppState>, mut req: Request) {
         .map(|a| a.ip())
         .unwrap_or(IpAddr::from([127, 0, 0, 1]));
 
+    // A deck asks before it shares: an idle deck stays quiet, and a deck
+    // that shares a few frames per second costs nothing while nobody looks.
+    if method == Method::Get && path == "/api/v1/deck/want" {
+        if !public_client_allowed(&state, ip) {
+            return error(
+                req,
+                403,
+                "Запросы из публичных сетей выключены в настройках",
+            );
+        }
+        if !authorized(&state, &req, query) {
+            return error(req, 401, "Неверный или отсутствующий токен");
+        }
+        return respond_json(
+            req,
+            200,
+            &json!({
+                "want": state.mirror.is_watched(),
+                "fps": sdw_core::model::DECK_SHARE_FPS,
+            }),
+        );
+    }
+
     // Public routes first.
     if method == Method::Get && (path == "/" || path == "/index.html") {
         return respond_html(req, landing_page(&state));
@@ -86,6 +109,19 @@ fn handle(state: Arc<AppState>, mut req: Request) {
 
     match (method.clone(), path) {
         (Method::Get, "/api/v1/status") => respond_json(req, 200, &state.status()),
+        // -------------------------------------------------------- deck mirror
+        (Method::Post, "/api/v1/deck/frame") => {
+            state.mirror.watching();
+            deck_frame(state, req, query)
+        }
+        (Method::Get, "/api/v1/deck") => {
+            state.mirror.watching();
+            respond_json(req, 200, &state.mirror.state())
+        }
+        (Method::Get, "/api/v1/deck/frame") => match state.mirror.frame() {
+            Some((bytes, _)) => respond_bytes(req, 200, "image/jpeg", bytes),
+            None => error(req, 404, "дека ещё не присылала кадров"),
+        },
         (Method::Get, "/api/v1/config") => respond_json(req, 200, &redacted_config(&state)),
         (Method::Patch, "/api/v1/config") => patch_config(state, req),
         (Method::Get, "/api/v1/logs") => {
@@ -227,10 +263,51 @@ fn handle(state: Arc<AppState>, mut req: Request) {
                         }
                     }
                 }
+                // A tap on the notification on the deck runs the app's own
+                // action on the computer, exactly like clicking it there.
+                if let Some(id) = id.strip_suffix("/activate") {
+                    if method == Method::Post {
+                        if let Ok(id) = id.parse::<u64>() {
+                            return match state.notifications.activate(id) {
+                                Ok(()) => respond_json(req, 200, &json!({"ok": true})),
+                                Err(e) => error(req, 409, &e),
+                            };
+                        }
+                    }
+                }
             }
             error(req, 404, "Неизвестный маршрут")
         }
     }
+}
+
+// ---------------------------------------------------------------- deck mirror
+
+/// One JPEG of the deck's screen, with what it shows in the query. The body
+/// is the picture itself, so nothing is base64-encoded twice on the way in.
+fn deck_frame(state: Arc<AppState>, mut req: Request, query: &str) {
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let mut body = Vec::new();
+    if let Err(e) = req.as_reader().take(LIMIT).read_to_end(&mut body) {
+        return error(req, 400, &format!("кадр не прочитан: {e}"));
+    }
+    if body.is_empty() {
+        return error(req, 400, "пустой кадр");
+    }
+    if !body.starts_with(&[0xFF, 0xD8]) {
+        return error(req, 415, "кадр должен быть jpeg");
+    }
+    let get = |key: &str| query_param(query, key).unwrap_or_default();
+    let id = get("device");
+    let name = get("name");
+    let page = get("page");
+    let version = get("version");
+    let width = query_u64(query, "width").unwrap_or(0).min(8192) as u32;
+    let height = query_u64(query, "height").unwrap_or(0).min(8192) as u32;
+    state
+        .mirror
+        .ingest(&id, &name, &page, &version, width, height, body);
+    respond_json(req, 200, &json!({"ok": true}))
 }
 
 // ---------------------------------------------------------------- auth

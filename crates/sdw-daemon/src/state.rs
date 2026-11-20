@@ -495,6 +495,8 @@ pub struct AppState {
     pub audio: Arc<crate::audio::Audio>,
     pub viiper: Arc<ViiperManager>,
     pub monitor: Arc<MonitorManager>,
+    /// The decks that send their screen here, and the newest picture.
+    pub mirror: Arc<crate::mirror::Mirror>,
     pub ha: Arc<Mutex<HaRuntime>>,
     pub jobs: Arc<JobManager>,
     pub clients: AtomicU32,
@@ -518,6 +520,7 @@ impl AppState {
             logger.clone(),
         ));
         let media = Arc::new(crate::media::MediaService::new());
+        let mirror = Arc::new(crate::mirror::Mirror::new());
         let audio = Arc::new(crate::audio::Audio::new());
         let viiper = Arc::new(ViiperManager::new(logger.clone()));
         let monitor = Arc::new(MonitorManager::new(logger.clone()));
@@ -532,6 +535,7 @@ impl AppState {
             audio,
             viiper,
             monitor,
+            mirror,
             ha,
             jobs,
             clients: AtomicU32::new(0),

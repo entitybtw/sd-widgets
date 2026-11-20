@@ -15,7 +15,7 @@ use sdw_core::model::*;
 use sdw_core::util;
 use sdw_core::{t, Lang};
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------- shared bits
 
@@ -1320,7 +1320,18 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
 /// the close button, a tap outside or B.
 pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
     let lang = app.lang;
-    let anim = ctx.animate_bool_with_time(egui::Id::new("deck-quick"), app.quick_open, 0.16);
+    // A tap on the handle opens the panel on the same frame, not 0.16 s
+    // later: the slide is for a pull, where the finger is already moving.
+    let instant = app.quick_instant;
+    let anim = if instant {
+        if app.quick_open {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        ctx.animate_bool_with_time(egui::Id::new("deck-quick"), app.quick_open, 0.16)
+    };
     if !app.quick_open && anim <= 0.001 {
         return;
     }
@@ -1361,6 +1372,7 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
 
     let mut jump_notif = false;
     let mut dismiss: Option<u64> = None;
+    let mut activate: Option<u64> = None;
     let panel = egui::Area::new(egui::Id::new("deck-quick-panel"))
         .fixed_pos(pos)
         .order(egui::Order::Foreground)
@@ -1504,11 +1516,12 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                         app.notifications.iter().rev().take(3).cloned().collect();
                     for n in newest {
                         let color = notification_color(t, &n);
-                        egui::Frame::new()
+                        let card = egui::Frame::new()
                             .fill(t.card)
                             .stroke(Stroke::new(1.0, color.gamma_multiply(0.35)))
                             .corner_radius(CornerRadius::ZERO)
-                            .inner_margin(Margin::symmetric(12, 8))
+                            // A tap anywhere on the card opens it on the
+                            // computer, the way clicking it there would.
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
@@ -1563,6 +1576,22 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                                     });
                                 });
                             });
+                        let hit = ui.interact(
+                            card.response.rect,
+                            egui::Id::new(("deck-quick-notif", n.id)),
+                            Sense::click(),
+                        );
+                        if hit.clicked() {
+                            activate = Some(n.id);
+                        }
+                        if hit.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        hit.on_hover_text(t!(
+                            lang,
+                            "нажмите, чтобы открыть на компьютере",
+                            "tap to open it on the computer"
+                        ));
                         ui.add_space(4.0);
                     }
                 });
@@ -1581,6 +1610,10 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
 
     if let Some(id) = dismiss {
         app.dismiss_notif(id);
+    }
+    if let Some(id) = activate {
+        app.activate_notif(id);
+        app.set_quick(false);
     }
     if jump_notif {
         app.set_quick(false);
@@ -1615,16 +1648,19 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
         .as_ref()
         .map(|b| b.discovering)
         .unwrap_or(false);
+    // A press must show up at once, so the page keeps a short poll: a
+    // connected headphone, a scan that finished or a device that dropped out
+    // reaches the list while the page is open instead of after a wait. The
+    // read costs a couple of milliseconds on the daemon side.
     let stale = app
         .bluetooth_at
-        .map(|at| at.elapsed() > Duration::from_secs(if discovering { 3 } else { 20 }))
+        .map(|at| at.elapsed() > Duration::from_secs(if discovering { 2 } else { 4 }))
         .unwrap_or(true);
     if online && stale && app.bluetooth_busy.is_none() {
         app.load_bluetooth();
     }
-    if discovering {
-        ui.ctx().request_repaint_after(Duration::from_secs(3));
-    }
+    ui.ctx()
+        .request_repaint_after(Duration::from_secs(if discovering { 1 } else { 2 }));
 
     let status = app.bluetooth.clone();
     let mut action: Option<(&'static str, String)> = None;
@@ -2509,8 +2545,13 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
     ui.add_space(8.0);
 
+    // The preview takes what the page has left after the controls. On the Deck
+    // (1280×800) the settings card must stay on screen instead of hiding under
+    // the bottom bar, so its height and the bar are reserved first.
     let area = ui.available_rect_before_wrap();
-    let stream_h = (area.width() / 1.6).clamp(240.0, 520.0);
+    let reserved = 104.0 + 250.0;
+    let room = (area.height() - reserved).max(210.0);
+    let stream_h = (area.width() / 1.6).clamp(210.0, 520.0).min(room);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(area.width(), stream_h), egui::Sense::hover());
     ui.painter().rect_filled(
         rect,
@@ -2851,10 +2892,11 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     let list: Vec<Notification> = app.notifications.iter().rev().cloned().collect();
     let mut dismiss: Option<u64> = None;
+    let mut activate: Option<u64> = None;
     for n in list {
         let color = notification_color(t, &n);
         let art = app.notif_texture(ui.ctx(), n.id, &n.image);
-        egui::Frame::new()
+        let card = egui::Frame::new()
             .fill(t.card)
             .stroke(Stroke::new(1.0, color.gamma_multiply(0.35)))
             .corner_radius(CornerRadius::ZERO)
@@ -2908,19 +2950,31 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     });
                 });
             });
+        // The whole card is the button: a tap opens the notification on the
+        // computer, which is what a person reaching for it means.
+        let hit = ui.interact(
+            card.response.rect,
+            egui::Id::new(("deck-notif", n.id)),
+            Sense::click(),
+        );
+        if hit.clicked() {
+            activate = Some(n.id);
+        }
+        if hit.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        hit.on_hover_text(t!(
+            app.lang,
+            "нажмите, чтобы открыть на компьютере",
+            "tap to open it on the computer"
+        ));
         ui.add_space(6.0);
     }
+    if let Some(id) = activate {
+        app.activate_notif(id);
+    }
     if let Some(id) = dismiss {
-        app.notifications.retain(|n| n.id != id);
-        if let Some(c) = app.client() {
-            app.spawn(move || {
-                Task::Msg(
-                    c.dismiss_notification(id)
-                        .map(|_| String::new())
-                        .map_err(|e| e.to_string()),
-                )
-            });
-        }
+        app.dismiss_notif(id);
     }
 }
 
@@ -5870,43 +5924,65 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             .color(t.muted),
                     );
                 }
-                ui.horizontal(|ui| {
-                    if app.update.downloading {
-                        let done = app
-                            .update
-                            .progress
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        let total = app.update.total.max(1);
-                        ui.add(
-                            egui::ProgressBar::new((done as f32 / total as f32).clamp(0.0, 1.0))
-                                .desired_width(240.0)
-                                .text(format!("{}%", done * 100 / total)),
-                        );
-                    } else if theme::primary(
-                        ui,
-                        t!(app.lang, "скачать обновление", "download update"),
-                        t,
-                    )
-                    .clicked()
-                    {
-                        app.download_update();
-                    }
-                    if theme::ghost(ui, t!(app.lang, "страница релиза", "release page"), t)
+                if app.update.downloading {
+                    let done = app
+                        .update
+                        .progress
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    let total = app.update.total;
+                    app.update
+                        .view
+                        .sample(done, total, Instant::now(), &mut app.update.sampled);
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(t!(app.lang, "иду за обновлением", "downloading"))
+                            .size(14.0)
+                            .strong()
+                            .color(t.ink),
+                    );
+                    let label = theme::progress_label(app.lang, &app.update.view);
+                    theme::progress(ui, t, done, total, &label);
+                    // The bar can only move while the page is being drawn.
+                    ui.ctx().request_repaint_after(Duration::from_millis(180));
+                } else {
+                    ui.horizontal(|ui| {
+                        if theme::primary(
+                            ui,
+                            t!(app.lang, "скачать обновление", "download update"),
+                            t,
+                        )
                         .clicked()
-                    {
-                        let _ = util::open_url(&info.page);
-                    }
-                });
+                        {
+                            app.download_update();
+                        }
+                        if theme::ghost(ui, t!(app.lang, "страница релиза", "release page"), t)
+                            .clicked()
+                        {
+                            let _ = util::open_url(&info.page);
+                        }
+                    });
+                }
             }
             if !app.update.path.is_empty() {
+                ui.add_space(6.0);
+                theme::separator(ui, t);
+                ui.label(
+                    RichText::new(t!(
+                        app.lang,
+                        "обновление скачано и готово к установке",
+                        "the update is downloaded and ready to install"
+                    ))
+                    .size(13.5)
+                    .color(t.good),
+                );
                 ui.label(
                     RichText::new(&app.update.path)
                         .family(FontFamily::Monospace)
                         .size(10.5)
-                        .color(t.muted),
+                        .color(t.faint),
                 );
                 ui.horizontal(|ui| {
-                    if theme::ghost(ui, t!(app.lang, "установить", "install"), t).clicked()
+                    if theme::primary(ui, t!(app.lang, "установить", "install"), t).clicked()
                     {
                         let path = app.update.path.clone();
                         app.spawn(move || {
@@ -6211,6 +6287,23 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .color(t.muted),
             );
         });
+        ui.horizontal_wrapped(|ui| {
+            let mut over = app.cfg.notify_fullscreen;
+            theme::switch(ui, &mut over, t);
+            if over != app.cfg.notify_fullscreen {
+                app.cfg.notify_fullscreen = over;
+                app.save();
+            }
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "показывать и в полном экране",
+                    "show them in fullscreen too"
+                ))
+                .size(13.0)
+                .color(t.muted),
+            );
+        });
         ui.label(
             RichText::new(t!(
                 app.lang,
@@ -6257,6 +6350,83 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             .size(11.5)
             .color(t.faint),
         );
+    });
+
+    ui.add_space(8.0);
+    theme::card(ui, t, |ui| {
+        ui.label(theme::hud(
+            t!(app.lang, "трансляция на пк", "share with the pc"),
+            t.faint,
+        ));
+        ui.horizontal_wrapped(|ui| {
+            let mut on = app.cfg.mirror_deck;
+            theme::switch(ui, &mut on, t);
+            if on != app.cfg.mirror_deck {
+                app.cfg.mirror_deck = on;
+                app.save();
+            }
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "показывать экран деки на пк",
+                    "show the deck screen on the pc"
+                ))
+                .size(13.0)
+                .color(t.muted),
+            );
+        });
+        ui.label(
+            RichText::new(t!(
+                app.lang,
+                "демон на пк показывает этот экран на странице «стим дек». кадры идут, только пока эта страница открыта.",
+                "the daemon shows this screen on its “steam deck” page. frames arrive only while that page is open."
+            ))
+            .size(11.5)
+            .color(t.faint),
+        );
+        ui.horizontal_wrapped(|ui| {
+            let mut fps = app.cfg.mirror_fps;
+            if theme::slider_u32(
+                ui,
+                t,
+                t!(app.lang, "кадров в секунду", "frames per second"),
+                &mut fps,
+                1..=15,
+            ) {
+                app.cfg.mirror_fps = fps.min(15);
+                app.save_soon();
+            }
+            ui.add_space(12.0);
+            let mut quality = app.cfg.mirror_quality as u32;
+            if theme::slider_u32(
+                ui,
+                t,
+                t!(app.lang, "качество", "quality"),
+                &mut quality,
+                30..=95,
+            ) {
+                app.cfg.mirror_quality = quality.min(95) as u8;
+                app.save_soon();
+            }
+        });
+        if app.share.sent > 0 {
+            ui.label(
+                RichText::new(format!(
+                    "{} {} · {}×{}",
+                    app.share.sent,
+                    t!(app.lang, "кадров отправлено", "frames sent"),
+                    app.share.size.0,
+                    app.share.size.1
+                ))
+                .family(FontFamily::Monospace)
+                .size(10.5)
+                .color(t.faint),
+            );
+        }
+        if !app.share.error.is_empty() {
+            // A pc that is off is a normal state, not a failure: amber, not red.
+            ui.label(RichText::new(&app.share.error).size(11.5).color(t.warn));
+        }
     });
 
     ui.add_space(8.0);

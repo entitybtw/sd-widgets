@@ -384,6 +384,69 @@ impl Client {
         self.request("POST", &format!("/api/v1/notifications/{id}/dismiss"), None)
     }
 
+    /// Run the notification's own action on the computer, as a click on the
+    /// desktop notification would.
+    pub fn activate_notification(&self, id: u64) -> ApiResult<Value> {
+        self.request(
+            "POST",
+            &format!("/api/v1/notifications/{id}/activate"),
+            None,
+        )
+    }
+
+    // ---------------------------------------------------------- deck mirror
+
+    /// Ask whether anyone on the computer is watching this deck's screen.
+    /// The deck only captures frames while the answer is yes.
+    pub fn deck_want(&self) -> ApiResult<bool> {
+        let v: Value = self.request("GET", "/api/v1/deck/want", None)?;
+        Ok(v.get("want").and_then(Value::as_bool).unwrap_or(false))
+    }
+
+    /// Push one JPEG of this deck's screen to the daemon, with the page and
+    /// size that go with it. The daemon shows the newest frame and lists the
+    /// decks that keep sending.
+    pub fn push_deck_frame(
+        &self,
+        device: &str,
+        name: &str,
+        page: &str,
+        width: u32,
+        height: u32,
+        jpeg: Vec<u8>,
+    ) -> ApiResult<Value> {
+        let query = format!(
+            "device={}&name={}&page={}&version={}&width={width}&height={height}",
+            urlencoding(device),
+            urlencoding(name),
+            urlencoding(page),
+            urlencoding(VERSION)
+        );
+        let url = self.url(&format!("/api/v1/deck/frame?{query}"));
+        let mut r = self
+            .agent
+            .post(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Content-Type", "image/jpeg")
+            .send(jpeg)
+            .map_err(|e| ApiError {
+                status: 0,
+                message: e.to_string(),
+            })?;
+        let status = r.status().as_u16();
+        let text = r.body_mut().read_to_string().unwrap_or_default();
+        if status != 200 {
+            return Err(ApiError {
+                status,
+                message: error_from_body(&text),
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| ApiError {
+            status,
+            message: e.to_string(),
+        })
+    }
+
     pub fn test_notification(&self) -> ApiResult<Value> {
         self.request("POST", "/api/v1/notifications/test", None)
     }

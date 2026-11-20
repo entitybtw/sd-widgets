@@ -364,6 +364,19 @@ pub fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Bytes as a size a person reads: `84.2 KB`, `1.4 MB`, `812 B`.
+pub fn human_bytes(bytes: u64) -> String {
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let kb = bytes as f64 / 1024.0;
+    if kb < 1024.0 {
+        format!("{kb:.1} KB")
+    } else {
+        format!("{:.1} MB", kb / 1024.0)
+    }
+}
+
 pub fn mask_secret(s: &str) -> String {
     if s.len() <= 8 {
         "••••••••".into()

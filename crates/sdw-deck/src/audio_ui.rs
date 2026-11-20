@@ -55,7 +55,7 @@ pub fn page(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     source_card(app, ui, t, running);
     ui.add_space(8.0);
-    volume_card(app, ui, t);
+    volume_card(app, ui, t, running);
 }
 
 fn status_card(app: &mut App, ui: &mut Ui, t: &Tokens, status: &AudioStatus, running: bool) {
@@ -281,7 +281,7 @@ fn app_row(ui: &mut Ui, t: &Tokens, item: &AudioApp, selected: &mut Vec<String>)
     }
 }
 
-fn volume_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
+fn volume_card(app: &mut App, ui: &mut Ui, t: &Tokens, playing: bool) {
     theme::card(ui, t, |ui| {
         ui.label(theme::hud(
             t!(
@@ -291,7 +291,13 @@ fn volume_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ),
             t.faint,
         ));
-        let mut vol = app.cfg.audio.volume as f32;
+        // While the computer plays on the deck, its level is the level: the
+        // deck player is only a gain on top of the PC's own volume, so a
+        // slider that ignored the PC would lie about what is heard.
+        let mut vol = match (playing, app.pc_volume) {
+            (true, Some((v, at))) if at.elapsed() < Duration::from_secs(4) => v as f32,
+            _ => app.cfg.audio.volume as f32,
+        };
         let (changed, released) = theme::slider_ex(
             ui,
             t,
@@ -303,6 +309,32 @@ fn volume_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
         if changed {
             app.cfg.audio.volume = vol.round().clamp(0.0, 100.0) as u8;
             app.save_soon();
+            if playing {
+                // "volume" sets the computer's sink to the value, so the PC
+                // system-volume slider moves with the deck and the two never
+                // disagree. The reply comes back as the next `PcVolume`.
+                let level = app.cfg.audio.volume;
+                if let Some(c) = app.client() {
+                    app.spawn(move || {
+                        Task::Msg(
+                            c.media_control("volume", level as f64, "")
+                                .map(|_| String::new())
+                                .map_err(|e| e.to_string()),
+                        )
+                    });
+                }
+            }
+        }
+        if playing {
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "громкость общая с компьютером: слайдер двигает системный звук на пк.",
+                    "the level is shared with the computer: this slider moves the system sound on the pc."
+                ))
+                .size(11.0)
+                .color(t.faint),
+            );
         }
         if released {
             app.save();
@@ -415,7 +447,10 @@ pub fn spawn_player(app: &mut App) {
     // Trust the daemon's actual rate when it is known, otherwise the setting.
     let known = app.status.as_ref().map(|s| s.audio.rate).unwrap_or(0);
     let rate = if known > 0 { known } else { app.cfg.audio.rate };
-    let volume = app.cfg.audio.volume as f32 / 100.0;
+    // Unity gain: the computer's own sink level is the level. The slider on
+    // this page moves that level (see `volume_card`), so applying the same
+    // number again here would halve the sound.
+    let volume = 1.0f32;
     let rate = rate.to_string();
     let (program, args): (&str, Vec<String>) = if sdw_core::util::has("pw-play") {
         (

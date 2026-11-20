@@ -44,6 +44,27 @@ fn migrate(mut cfg: DeckConfig) -> DeckConfig {
     cfg
 }
 
+/// Write a field of the config file without touching the rest.
+///
+/// The file belongs to the deck app, which keeps it in memory and writes it
+/// whole; another process that changed one field would be overwritten by the
+/// next save. This reads the file, replaces the one line and writes it back,
+/// so the two writers never lose each other's work.
+pub fn set_field(
+    path: &std::path::Path,
+    key: &str,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut doc: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let obj = doc
+        .as_object_mut()
+        .ok_or_else(|| "deck.json is not an object".to_string())?;
+    obj.insert(key.to_string(), value);
+    let out = serde_json::to_vec_pretty(&doc).map_err(|e| e.to_string())?;
+    crate::util::atomic_write(path, &out).map_err(|e| e.to_string())
+}
+
 pub fn save(cfg: &DeckConfig) -> Result<(), String> {
     let json = serde_json::to_vec_pretty(cfg).map_err(|e| e.to_string())?;
     crate::util::atomic_write(&path(), &json).map_err(|e| e.to_string())

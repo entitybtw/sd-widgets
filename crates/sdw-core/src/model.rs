@@ -627,6 +627,66 @@ pub struct NotificationStatus {
     pub recent: Vec<Notification>,
 }
 
+// ---------------------------------------------------------------- deck mirror
+
+/// Frames per second a deck sends while somebody on the computer is watching
+/// its screen. The frame is halved and JPEG-packed, so this is roughly
+/// 100 KB/s on a 1280×800 deck — fine for Wi-Fi, enough to follow the ui.
+pub const DECK_SHARE_FPS: u32 = 3;
+
+/// One deck sending its screen to the daemon: who it is, what it shows and
+/// how much it has sent. Filled by `POST /api/v1/deck/frame`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeckMirrorClient {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// The page the deck was on when it sent the last frame.
+    #[serde(default)]
+    pub page: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    /// Unix milliseconds of the last frame.
+    #[serde(default)]
+    pub last_ms: u64,
+    /// Sending right now (a frame arrived within the last few seconds).
+    #[serde(default)]
+    pub online: bool,
+    #[serde(default)]
+    pub frames: u64,
+    #[serde(default)]
+    pub bytes: u64,
+}
+
+/// The live deck picture plus everyone sending one.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeckMirrorState {
+    /// A frame arrived recently enough to be shown as live.
+    #[serde(default)]
+    pub live: bool,
+    #[serde(default)]
+    pub frame_ms: u64,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    #[serde(default)]
+    pub page: String,
+    /// Bumped with every stored frame, so a viewer decodes each one once.
+    #[serde(default)]
+    pub seq: u64,
+    /// Somebody on the computer is showing the picture right now.
+    #[serde(default)]
+    pub watched: bool,
+    #[serde(default)]
+    pub clients: Vec<DeckMirrorClient>,
+}
+
 // ---------------------------------------------------------------- media
 
 /// What is playing on the computer right now, plus the system output volume.
@@ -1896,6 +1956,21 @@ pub struct DeckConfig {
     /// Show a smooth in-app popup when a notification arrives from the PC.
     #[serde(default = "default_true")]
     pub notify_popup: bool,
+    /// Keep the same popups on top of the fullscreen screen stream, so a
+    /// notification is not missed while the extra monitor fills the deck.
+    #[serde(default = "default_true")]
+    pub notify_fullscreen: bool,
+    /// Send this deck's screen to the daemon, so its window can show what is
+    /// on the deck. On by default: the frame only goes to the paired computer.
+    #[serde(default = "default_true")]
+    pub mirror_deck: bool,
+    /// Share rate in frames per second. The frame is a full screen and the
+    /// link is Wi-Fi, so this stays modest by default.
+    #[serde(default = "default_mirror_fps")]
+    pub mirror_fps: u32,
+    /// JPEG quality of a shared frame (30..=95).
+    #[serde(default = "default_mirror_quality")]
+    pub mirror_quality: u8,
     #[serde(default = "default_true")]
     pub grid: bool,
     #[serde(default)]
@@ -1930,6 +2005,12 @@ fn default_theme() -> String {
 fn default_columns() -> u32 {
     3
 }
+fn default_mirror_fps() -> u32 {
+    3
+}
+fn default_mirror_quality() -> u8 {
+    62
+}
 fn default_ui_scale() -> f32 {
     1.0
 }
@@ -1953,6 +2034,10 @@ impl Default for DeckConfig {
             lang: default_lang(),
             dark: true,
             notify_popup: true,
+            notify_fullscreen: true,
+            mirror_deck: true,
+            mirror_fps: 3,
+            mirror_quality: 62,
             grid: true,
             style: ThemeCfg::default(),
             sound: SoundCfg::default(),

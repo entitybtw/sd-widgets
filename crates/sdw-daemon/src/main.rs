@@ -9,6 +9,7 @@ mod config;
 mod gui;
 mod install;
 mod media;
+mod mirror;
 mod monitor;
 mod notifications;
 mod server;

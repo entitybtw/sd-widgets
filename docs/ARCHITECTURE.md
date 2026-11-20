@@ -33,7 +33,8 @@
 ### `sdw-deck` (the Deck)
 
 - `app.rs` — state, polling, pairing, page routing, chrome (top bar, arrows, dock,
-  page transition), key input.
+  page transition), key input, screen sharing (`pump_share`: an egui screenshot,
+  halved and JPEG-packed off the ui thread while the daemon asks for it).
 - `pages.rs` — home grid and every page, including the Look page.
 - `clock.rs` — the four clock renderers and their controls.
 - `addons_ui.rs` — the Addons page: import, enable, settings, themes, clocks and
@@ -56,6 +57,8 @@
 - `monitor.rs` — monitor creation per backend, layout, config patching, capture,
   RFB client, frame buffer. niri gets a native virtual output when the running
   compositor offers `create-virtual-output` (biri), otherwise a VKMS connector.
+- `mirror.rs` — the decks that send their screen, the newest frame and the
+  `watching` window that decides how fast they send. No network, no blocking.
 - `notifications.rs` — desktop notification watcher. It advertises `body-markup`,
   so the markup is reduced to plain text here (entities, `<br>`, `<img alt>`,
   D-Bus octal escapes) once, and the Deck only renders UTF-8.
@@ -68,7 +71,8 @@
 - `server.rs` also routes `addon:<id>:<action>` through the declared action
   runner; disabled addons and undeclared actions are rejected.
 - `install.rs` — dependency detection and install jobs.
-- `gui/` — hoplite-style hard-edge egui setup wizard and control panel.
+- `gui/` — hoplite-style hard-edge egui setup wizard and control panel; the
+  **steam deck** page is what holds the mirror's `watching` window open.
 - `config.rs` — daemon config in TOML.
 
 ### `vendor/viiper-client`
