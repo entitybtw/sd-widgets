@@ -108,6 +108,9 @@ impl Default for AddonField {
 pub struct AddonsCfg {
     pub enabled: Vec<String>,
     pub values: BTreeMap<String, BTreeMap<String, Value>>,
+    /// Store bases the user added. Each one serves a catalogue of packages;
+    /// adding a base does not install or trust anything by itself.
+    pub repos: Vec<String>,
 }
 
 impl AddonsCfg {
@@ -135,6 +138,20 @@ impl AddonsCfg {
             .entry(id.to_string())
             .or_default()
             .insert(key.to_string(), value);
+    }
+    /// Add a store base once, without a trailing slash. Returns true when it
+    /// was new.
+    pub fn add_repo(&mut self, url: &str) -> bool {
+        let url = url.trim().trim_end_matches('/');
+        if url.is_empty() || self.repos.iter().any(|r| r == url) {
+            return false;
+        }
+        self.repos.push(url.to_string());
+        true
+    }
+    pub fn remove_repo(&mut self, url: &str) {
+        let url = url.trim().trim_end_matches('/');
+        self.repos.retain(|r| r.trim_end_matches('/') != url);
     }
 }
 
@@ -318,6 +335,10 @@ fn install_manifest(src: &Path) -> Result<Addon, String> {
 
 fn install_css(src: &Path) -> Result<Addon, String> {
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("theme");
+    install_css_named(src, stem)
+}
+
+fn install_css_named(src: &Path, stem: &str) -> Result<Addon, String> {
     let id = clean_id(stem)?;
     let dest = root().join(&id);
     if dest.exists() {
@@ -341,34 +362,102 @@ fn install_css(src: &Path) -> Result<Addon, String> {
 }
 
 fn install_zip(src: &Path) -> Result<Addon, String> {
-    if !util::has("unzip") {
-        return Err("для .sdwaddon нужен unzip в PATH (или распакуйте и укажите папку)".into());
+    let bytes = std::fs::read(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let name = src.file_stem().and_then(|s| s.to_str()).unwrap_or("addon");
+    install_bytes(name, &bytes)
+}
+
+/// Install a package from bytes that came from a URL or a zip.
+///
+/// The format is sniffed instead of trusted to an extension: a zip starts with
+/// `PK`, a manifest is JSON, everything else is treated as theme CSS. That is
+/// what makes "paste a link" work for folders zipped on any OS.
+pub fn install_bytes(name: &str, bytes: &[u8]) -> Result<Addon, String> {
+    if bytes.is_empty() {
+        return Err("пустой файл".into());
     }
-    let tmp = std::env::temp_dir().join(format!("sdw-addon-{}", crate::model::random_id(6)));
+    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+        return install_zip_bytes(name, bytes);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| "файл не похож на аддон".to_string())?;
+    let trimmed = text.trim_start();
+    if trimmed.starts_with('{') {
+        let tmp =
+            std::env::temp_dir().join(format!("sdw-addon-{}.json", crate::model::random_id(6)));
+        std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+        let result = install_manifest(&tmp);
+        let _ = std::fs::remove_file(&tmp);
+        return result;
+    }
+    let tmp = std::env::temp_dir().join(format!("sdw-addon-{}.css", crate::model::random_id(6)));
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    let css_name = if name.trim().is_empty() {
+        "theme"
+    } else {
+        name
+    };
+    let result = install_css_named(&tmp, css_name);
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+fn install_zip_bytes(name: &str, bytes: &[u8]) -> Result<Addon, String> {
+    let tmp = std::env::temp_dir().join(format!(
+        "sdw-addon-{}-{}",
+        crate::model::random_id(6),
+        clean_id(name).unwrap_or_else(|_| "addon".into())
+    ));
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
-    util::run(
-        "unzip",
-        &[
-            "-o",
-            &src.display().to_string(),
-            "-d",
-            &tmp.display().to_string(),
-        ],
-    )
-    .map_err(|e| format!("unzip: {e}"))?;
-    // A zip may keep everything under one folder.
-    if tmp.join(MANIFEST).is_file() {
-        return install_dir(&tmp);
-    }
-    if let Ok(entries) = std::fs::read_dir(&tmp) {
-        for entry in entries.flatten() {
-            if entry.path().join(MANIFEST).is_file() {
-                return install_dir(&entry.path());
+    let result = extract_zip(bytes, &tmp).and_then(|()| {
+        if tmp.join(MANIFEST).is_file() {
+            return install_dir(&tmp);
+        }
+        // A zip may keep everything under one folder, or the manifest may sit
+        // next to a README at the root of a repository archive.
+        if let Ok(entries) = std::fs::read_dir(&tmp) {
+            for entry in entries.flatten() {
+                if entry.path().join(MANIFEST).is_file() {
+                    return install_dir(&entry.path());
+                }
             }
         }
+        Err(format!("в архиве нет {MANIFEST}"))
+    });
+    let _ = std::fs::remove_dir_all(&tmp);
+    result
+}
+
+/// Unpack a zip without an external `unzip`, rejecting absolute paths, `..`
+/// escapes and archives that expand to something unreasonable.
+fn extract_zip(bytes: &[u8], dest: &Path) -> Result<(), String> {
+    let reader = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| format!("архив: {e}"))?;
+    if archive.len() > 4000 {
+        return Err("в архиве слишком много файлов".into());
     }
-    Err(format!("в архиве нет {MANIFEST}"))
+    let mut total = 0u64;
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
+        let Some(rel) = file.enclosed_name() else {
+            continue;
+        };
+        let out = dest.join(rel);
+        if file.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            continue;
+        }
+        total = total.saturating_add(file.size());
+        if total > 64 * 1024 * 1024 {
+            return Err("архив распаковывается больше чем на 64 МБ".into());
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut f = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+        std::io::copy(&mut file, &mut f).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn load_at(dir: PathBuf) -> Result<Addon, String> {
@@ -477,7 +566,8 @@ pub fn example_manifest() -> AddonManifest {
                 description: "runs on the computer".into(),
                 confirm: false,
                 action: Action::Shell {
-                    command: "notify-send sd-widgets 'hello from an addon'".into(),
+                    // {name} comes from the setting below, expanded per run.
+                    command: "notify-send sd-widgets 'hello from an addon, {name}'".into(),
                 },
             }],
         },
@@ -581,6 +671,323 @@ pub fn info(cfg: &AddonsCfg) -> Vec<AddonInfo> {
         .collect()
 }
 
+/// Values available to an addon's templates: each setting as `{key}` and as
+/// `{settings.key}`, so a manifest reads naturally.
+pub fn variables(cfg: &AddonsCfg, id: &str) -> BTreeMap<String, String> {
+    let mut vars = BTreeMap::new();
+    if let Some(values) = cfg.values.get(id) {
+        for (key, value) in values {
+            let text = match value {
+                Value::String(s) => s.clone(),
+                Value::Null => String::new(),
+                other => other.to_string(),
+            };
+            vars.insert(key.clone(), text.clone());
+            vars.insert(format!("settings.{key}"), text);
+        }
+    }
+    vars
+}
+
+/// Fill `{key}` in every string of an action from the addon's settings. Called
+/// right before the action runs, so editing a setting changes the next call
+/// without reinstalling anything.
+pub fn expand_action(action: &Action, vars: &BTreeMap<String, String>) -> Action {
+    if vars.is_empty() {
+        return action.clone();
+    }
+    let x = |text: &str| crate::util::expand(text, vars);
+    match action {
+        Action::Shell { command } => Action::Shell {
+            command: x(command),
+        },
+        Action::Launch { target } => Action::Launch { target: x(target) },
+        Action::Media { command } => Action::Media {
+            command: x(command),
+        },
+        Action::Key { combo } => Action::Key { combo: x(combo) },
+        Action::Url { url } => Action::Url { url: x(url) },
+        Action::Remote { host, command } => Action::Remote {
+            host: host.clone(),
+            command: x(command),
+        },
+        Action::Ha {
+            host,
+            domain,
+            service,
+            entity,
+            data,
+        } => Action::Ha {
+            host: host.clone(),
+            domain: domain.clone(),
+            service: service.clone(),
+            entity: x(entity),
+            data: expand_value(data, vars),
+        },
+        Action::Http {
+            method,
+            url,
+            headers,
+            body,
+        } => Action::Http {
+            method: method.clone(),
+            url: x(url),
+            headers: headers.iter().map(|(k, v)| (k.clone(), x(v))).collect(),
+            body: x(body),
+        },
+        other => other.clone(),
+    }
+}
+
+fn expand_value(value: &Value, vars: &BTreeMap<String, String>) -> Value {
+    match value {
+        Value::String(s) => Value::String(crate::util::expand(s, vars)),
+        Value::Array(list) => Value::Array(list.iter().map(|v| expand_value(v, vars)).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), expand_value(v, vars)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+// ---------------------------------------------------------------- store
+
+/// One package listed by a store repository.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub tagline: String,
+    pub description: String,
+    pub version: String,
+    pub author: String,
+    pub scope: String,
+    pub homepage: String,
+    /// Where the package lives: an absolute URL or a path inside the repo.
+    pub url: String,
+    /// Optional SHA-256 of the download, verified before installing.
+    pub sha256: String,
+}
+
+/// A store repository: a static JSON catalogue plus a base URL.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RepoCatalog {
+    pub name: String,
+    pub url: String,
+    pub addons: Vec<CatalogEntry>,
+}
+
+/// Names tried under a store base, in order. The first two are obvious; the
+/// last two match static hosts that expose a small API tree.
+const CATALOG_NAMES: [&str; 4] = [
+    "repo.json",
+    "index.json",
+    "api/v1/addons.json",
+    "addons.json",
+];
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(30)))
+        .http_status_as_error(false)
+        .user_agent(concat!("sd-widgets/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into()
+}
+
+fn get_text(url: &str) -> Result<String, String> {
+    let mut r = agent()
+        .get(url)
+        .header("Accept", "application/json, text/plain")
+        .call()
+        .map_err(|e| format!("{url}: {e}"))?;
+    let status = r.status().as_u16();
+    let text = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
+    if status != 200 {
+        return Err(format!("{url}: HTTP {status}"));
+    }
+    Ok(text)
+}
+
+fn download(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+    let mut r = agent().get(url).call().map_err(|e| format!("{url}: {e}"))?;
+    let status = r.status().as_u16();
+    if status != 200 {
+        return Err(format!("{url}: HTTP {status}"));
+    }
+    r.body_mut()
+        .with_config()
+        .limit(limit)
+        .read_to_vec()
+        .map_err(|e| format!("{url}: {e}"))
+}
+
+/// Name of a package taken from its URL: the file stem, without a doubled
+/// `.sdwaddon` suffix or a query string.
+fn name_from_url(url: &str) -> String {
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches('/');
+    let stem = path.rsplit('/').next().unwrap_or("addon");
+    let stem = stem
+        .strip_suffix(".sdwaddon")
+        .or_else(|| stem.strip_suffix(".zip"))
+        .or_else(|| stem.strip_suffix(".json"))
+        .or_else(|| stem.strip_suffix(".css"))
+        .unwrap_or(stem);
+    if stem.is_empty() {
+        "addon".into()
+    } else {
+        stem.to_string()
+    }
+}
+
+fn join_url(base: &str, rel: &str) -> String {
+    let rel = rel.trim();
+    if rel.starts_with("http://") || rel.starts_with("https://") {
+        return rel.to_string();
+    }
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        rel.trim_start_matches('/')
+    )
+}
+
+/// Parse a catalogue document: either `{ "addons": [...] }` (or the older
+/// `extensions` spelling) or a bare array. Relative package URLs are resolved
+/// against the repository base.
+pub fn parse_catalog(base: &str, text: &str) -> Result<RepoCatalog, String> {
+    let value: Value = serde_json::from_str(text).map_err(|e| format!("каталог: {e}"))?;
+    let (name, list) = match &value {
+        Value::Array(list) => (String::new(), list.clone()),
+        Value::Object(map) => {
+            let list = map
+                .get("addons")
+                .or_else(|| map.get("extensions"))
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "в каталоге нет поля addons".to_string())?;
+            (
+                map.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                list,
+            )
+        }
+        _ => return Err("каталог должен быть объектом или списком".into()),
+    };
+    let mut addons = Vec::new();
+    for item in list {
+        let mut entry: CatalogEntry =
+            serde_json::from_value(item).map_err(|e| format!("элемент каталога: {e}"))?;
+        if entry.id.trim().is_empty() {
+            entry.id = name_from_url(&entry.url);
+        }
+        if entry.name.trim().is_empty() {
+            entry.name = entry.id.clone();
+        }
+        if entry.url.trim().is_empty() {
+            // A repo may list only ids and serve the packages from the usual
+            // folder; the convention keeps the catalogue short.
+            entry.url = format!("extensions/{}.sdwaddon", entry.id);
+        }
+        entry.url = join_url(base, &entry.url);
+        if entry.id.trim().is_empty() || entry.url.trim().is_empty() {
+            continue;
+        }
+        addons.push(entry);
+    }
+    Ok(RepoCatalog {
+        name: if name.trim().is_empty() {
+            base.to_string()
+        } else {
+            name
+        },
+        url: base.to_string(),
+        addons,
+    })
+}
+
+/// Fetch and parse the catalogue of a store base.
+pub fn fetch_repo(base: &str) -> Result<RepoCatalog, String> {
+    let base = base.trim().trim_end_matches('/');
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Err("адрес магазина должен начинаться с http:// или https://".into());
+    }
+    let candidates: Vec<String> = if base.ends_with(".json") {
+        vec![base.to_string()]
+    } else {
+        CATALOG_NAMES.iter().map(|n| join_url(base, n)).collect()
+    };
+    let mut errors = Vec::new();
+    for url in candidates {
+        match get_text(&url) {
+            Ok(text) => match parse_catalog(base, &text) {
+                Ok(catalog) => return Ok(catalog),
+                Err(e) => errors.push(format!("{url}: {e}")),
+            },
+            Err(e) => errors.push(e),
+        }
+    }
+    let detail = errors.first().cloned().unwrap_or_default();
+    Err(format!(
+        "не удалось прочитать каталог {base}{}",
+        if detail.is_empty() {
+            String::new()
+        } else {
+            format!(" ({detail})")
+        }
+    ))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// Download and install a package from any http(s) link. The bytes decide the
+/// format: zip, manifest JSON or theme CSS.
+pub fn install_url(url: &str) -> Result<Addon, String> {
+    let url = url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("ссылка должна начинаться с http:// или https://".into());
+    }
+    let bytes = download(url, 32 * 1024 * 1024)?;
+    install_bytes(&name_from_url(url), &bytes)
+}
+
+/// Install one catalogue entry, checking its checksum when the repo declares
+/// one. A mismatch means the download is not what the catalogue promised.
+pub fn install_entry(entry: &CatalogEntry) -> Result<Addon, String> {
+    let url = entry.url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("ссылка должна начинаться с http:// или https://".into());
+    }
+    let bytes = download(url, 32 * 1024 * 1024)?;
+    if !entry.sha256.trim().is_empty() {
+        use sha2::{Digest, Sha256};
+        let actual = hex(&Sha256::digest(&bytes));
+        if !actual.eq_ignore_ascii_case(entry.sha256.trim()) {
+            return Err(format!(
+                "контрольная сумма не совпала: ожидалось {}, получено {actual}",
+                entry.sha256.trim()
+            ));
+        }
+    }
+    install_bytes(&name_from_url(url), &bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +1009,78 @@ mod tests {
         assert_eq!(clean_id("theme.v2").unwrap(), "theme.v2");
         assert!(clean_id("..").is_err());
         assert!(clean_id("").is_err());
+    }
+
+    #[test]
+    fn catalog_resolves_relative_urls() {
+        let text = r#"{"name":"Test repo","addons":[
+            {"id":"lamp","name":"Lamp","url":"packs/lamp.sdwaddon"},
+            {"id":"clock","version":"2","sha256":"00"}
+        ]}"#;
+        let catalog = parse_catalog("https://example.org/store", text).unwrap();
+        assert_eq!(catalog.name, "Test repo");
+        assert_eq!(catalog.addons.len(), 2);
+        assert_eq!(
+            catalog.addons[0].url,
+            "https://example.org/store/packs/lamp.sdwaddon"
+        );
+        assert_eq!(
+            catalog.addons[1].url,
+            "https://example.org/store/extensions/clock.sdwaddon"
+        );
+        assert_eq!(catalog.addons[1].name, "clock");
+    }
+
+    #[test]
+    fn catalog_accepts_a_bare_list() {
+        let text = r#"[{"name":"A","url":"https://cdn.example/a.zip"}]"#;
+        let catalog = parse_catalog("https://example.org", text).unwrap();
+        assert_eq!(catalog.addons.len(), 1);
+        assert_eq!(catalog.addons[0].id, "a");
+    }
+
+    #[test]
+    fn package_names_come_from_the_url() {
+        assert_eq!(
+            name_from_url("https://x/y/My-Pack.sdwaddon?token=1"),
+            "My-Pack"
+        );
+        assert_eq!(name_from_url("https://x/y/theme.css"), "theme");
+        assert_eq!(name_from_url("https://x/y/"), "y");
+    }
+
+    #[test]
+    fn fetches_a_catalogue_over_http() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
+                let body = r#"{"name":"t","addons":[{"id":"x","url":"x.sdwaddon"}]}"#;
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+            }
+        });
+        let base = format!("http://127.0.0.1:{port}");
+        let catalog = fetch_repo(&base).unwrap();
+        assert_eq!(catalog.addons.len(), 1);
+        assert_eq!(catalog.addons[0].url, format!("{base}/x.sdwaddon"));
+    }
+
+    #[test]
+    fn repos_are_added_once() {
+        let mut cfg = AddonsCfg::default();
+        assert!(cfg.add_repo("https://store.example/"));
+        assert!(!cfg.add_repo("https://store.example"));
+        assert_eq!(cfg.repos, vec!["https://store.example"]);
+        cfg.remove_repo("https://store.example/");
+        assert!(cfg.repos.is_empty());
     }
 
     #[test]

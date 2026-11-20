@@ -128,10 +128,23 @@ addon form can only name an action that already exists in a local package.
 
 ## Addons
 
-Addons are files on the daemon machine, not an HTTP resource. `GET /api/v1/status`
-carries the list (`id`, `name`, `version`, `description`, `scope`, `enabled`,
-declared `actions`, `tiles`, `has_theme`, `has_clock`). Install, enable,
-configure and remove them in the daemon window or on the Deck; the format is in
+`GET /api/v1/status` carries the installed list (`id`, `name`, `version`,
+`description`, `scope`, `enabled`, declared `actions`, `tiles`, `has_theme`,
+`has_clock`).
+
+`POST /api/v1/addons/install`
+
+```json
+{ "url": "https://example.org/packs/lamp.sdwaddon" }
+```
+
+Downloads and installs a package on the computer, seeds its default settings and
+enables it. The URL must be `http`/`https`; the body decides whether it is a zip,
+a manifest or CSS. The deck's store uses this to install a package with daemon
+actions on both machines.
+
+Install, enable, configure and remove addons from the daemon window or on the
+Deck; the package format and the catalogue schema are in
 [`ADDONS.md`](ADDONS.md).
 
 ## Security

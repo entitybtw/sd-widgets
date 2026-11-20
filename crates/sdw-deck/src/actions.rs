@@ -29,6 +29,8 @@ pub fn run(action: &Action) -> Result<String, String> {
         Action::Page { .. } => Ok("страница".into()),
         Action::Remote { .. } => Ok("компьютер".into()),
         Action::Ha { .. } => Ok("home assistant".into()),
+        // HTTP runs in the background from the app, never on the UI thread.
+        Action::Http { .. } => Err("http выполняется в фоне".into()),
     }
 }
 

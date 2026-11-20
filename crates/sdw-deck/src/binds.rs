@@ -28,10 +28,11 @@ pub enum ActionKind {
     Remote,
     Ha,
     Url,
+    Http,
 }
 
 impl ActionKind {
-    pub const ALL: [ActionKind; 14] = [
+    pub const ALL: [ActionKind; 15] = [
         ActionKind::None,
         ActionKind::Shell,
         ActionKind::Launch,
@@ -46,6 +47,7 @@ impl ActionKind {
         ActionKind::Remote,
         ActionKind::Ha,
         ActionKind::Url,
+        ActionKind::Http,
     ];
 
     pub fn of(action: &Action) -> Self {
@@ -64,6 +66,7 @@ impl ActionKind {
             Action::Remote { .. } => Self::Remote,
             Action::Ha { .. } => Self::Ha,
             Action::Url { .. } => Self::Url,
+            Action::Http { .. } => Self::Http,
         }
     }
 
@@ -83,6 +86,7 @@ impl ActionKind {
             Self::Remote => t!(lang, "компьютер", "computer"),
             Self::Ha => t!(lang, "home assistant", "home assistant"),
             Self::Url => t!(lang, "url", "url"),
+            Self::Http => t!(lang, "http-запрос", "http request"),
         }
     }
 
@@ -122,6 +126,12 @@ impl ActionKind {
             },
             Self::Url => Action::Url {
                 url: "https://".into(),
+            },
+            Self::Http => Action::Http {
+                method: "GET".into(),
+                url: "https://".into(),
+                headers: Default::default(),
+                body: String::new(),
             },
         }
     }
@@ -1072,6 +1082,72 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 Action::Url { url } => {
                     ui.add(TextEdit::singleline(url).desired_width(f32::INFINITY));
                 }
+                Action::Http {
+                    method,
+                    url,
+                    headers,
+                    body,
+                } => {
+                    ui.horizontal(|ui| {
+                        egui::ComboBox::from_id_salt("bind-http-method")
+                            .selected_text(
+                                RichText::new(method.clone())
+                                    .family(FontFamily::Monospace)
+                                    .size(12.5),
+                            )
+                            .width(90.0)
+                            .show_ui(ui, |ui| {
+                                for m in ["GET", "POST", "PUT", "PATCH", "DELETE"] {
+                                    if ui.selectable_label(method == m, m).clicked() {
+                                        *method = m.into();
+                                    }
+                                }
+                            });
+                        ui.add(
+                            TextEdit::singleline(url)
+                                .hint_text("https://api.example/…")
+                                .desired_width(f32::INFINITY),
+                        );
+                    });
+                    ui.label(
+                        RichText::new(t!(
+                            lang,
+                            "заголовки, по одному в строке: имя: значение",
+                            "headers, one per line: name: value"
+                        ))
+                        .size(11.5)
+                        .color(t.faint),
+                    );
+                    let mut text = headers
+                        .iter()
+                        .map(|(k, v)| format!("{k}: {v}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if ui
+                        .add(
+                            TextEdit::multiline(&mut text)
+                                .desired_rows(2)
+                                .desired_width(f32::INFINITY),
+                        )
+                        .changed()
+                    {
+                        *headers = parse_headers(&text);
+                    }
+                    ui.label(
+                        RichText::new(t!(
+                            lang,
+                            "тело запроса; {key} подставляется из настроек аддона",
+                            "request body; {key} comes from the addon's settings"
+                        ))
+                        .size(11.5)
+                        .color(t.faint),
+                    );
+                    ui.add(
+                        TextEdit::multiline(body)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY),
+                    );
+                }
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -1239,3 +1315,21 @@ pub fn divider(ui: &mut Ui, t: &Tokens) {
 }
 
 pub fn _touch(_: Vec2) {}
+
+/// Read `name: value` lines into headers, ignoring blanks and comments.
+fn parse_headers(text: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let k = k.trim();
+            if !k.is_empty() {
+                out.insert(k.to_string(), v.trim().to_string());
+            }
+        }
+    }
+    out
+}

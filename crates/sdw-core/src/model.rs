@@ -1,6 +1,7 @@
 //! SD Widgets shared types. Everything that crosses the network lives here.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const PROTOCOL: u32 = 1;
@@ -984,6 +985,22 @@ pub enum Action {
     Url {
         url: String,
     },
+    /// Call an API. Values in `{name}` braces are filled from the addon's
+    /// settings before the request is sent, so one action can talk to many
+    /// services without a line of code.
+    Http {
+        #[serde(default = "default_method")]
+        method: String,
+        url: String,
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        #[serde(default)]
+        body: String,
+    },
+}
+
+fn default_method() -> String {
+    "GET".into()
 }
 
 impl Default for Action {
@@ -1020,6 +1037,7 @@ impl Action {
                 }
             }
             Self::Url { url } => format!("Открыть URL: {url}"),
+            Self::Http { method, url, .. } => format!("{method} {url}"),
         }
     }
     pub fn kind_label(&self) -> &'static str {
@@ -1035,6 +1053,7 @@ impl Action {
             Self::Remote { .. } => "ПК",
             Self::Ha { .. } => "Home Assistant",
             Self::Url { .. } => "URL",
+            Self::Http { .. } => "HTTP",
         }
     }
 }

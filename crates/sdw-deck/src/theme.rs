@@ -629,6 +629,7 @@ pub mod icon {
     pub const FULLSCREEN: &str = "\u{e5d0}";
     pub const HEADPHONES: &str = "\u{e310}";
     pub const ADDON: &str = "\u{e87b}";
+    pub const STORE: &str = "\u{e8d1}";
 }
 
 /// The window / taskbar icon, decoded once from the packaged PNG.

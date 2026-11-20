@@ -210,6 +210,11 @@ impl Client {
         self.request("PATCH", "/api/v1/config", Some(&patch))
     }
 
+    pub fn addon_install(&self, url: &str) -> ApiResult<Value> {
+        let body = serde_json::json!({ "url": url });
+        self.request("POST", "/api/v1/addons/install", Some(&body))
+    }
+
     pub fn logs(&self, since: u64) -> ApiResult<Vec<LogEntry>> {
         self.request("GET", &format!("/api/v1/logs?since={since}"), None)
     }

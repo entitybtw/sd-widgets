@@ -294,6 +294,11 @@ pub enum Task {
     AudioApps(Result<Vec<AudioApp>, String>),
     Msg(Result<String, String>),
     Headset(Option<Headset>),
+    /// Catalogue entries from every store base, plus the errors that happened.
+    Catalog(Vec<sdw_core::addons::CatalogEntry>, String),
+    /// A catalogue package installed on the deck (and on the computer when
+    /// one is connected), with a note when the computer part failed.
+    AddonInstalled(Result<(sdw_core::addons::Addon, String), String>),
 }
 
 /// Multi-finger touch state from `egui::Event::Touch`.
@@ -523,6 +528,17 @@ pub struct App {
     pub theme_pack_name: String,
     /// Path typed in the addons page to import a package.
     pub addon_import: String,
+    /// Store base typed in the addons page.
+    pub addon_repo_input: String,
+    /// Catalogue of every configured store, flattened.
+    pub addon_catalog: Vec<sdw_core::addons::CatalogEntry>,
+    pub addon_catalog_pending: bool,
+    pub addon_catalog_err: String,
+    /// When the catalogue was last fetched; keeps a page visit from firing a
+    /// request on every frame.
+    pub addon_catalog_at: Option<Instant>,
+    /// Id of the package currently downloading.
+    pub addon_installing: Option<String>,
 
     pub osk_open: bool,
     pub osk_shift: bool,
@@ -735,6 +751,12 @@ impl App {
             applied_scale: 0.0,
             style_draft: cfg.style.css.clone(),
             addon_import: String::new(),
+            addon_repo_input: String::new(),
+            addon_catalog: Vec::new(),
+            addon_catalog_pending: false,
+            addon_catalog_err: String::new(),
+            addon_catalog_at: None,
+            addon_installing: None,
             audio_player: None,
             audio_confirm_left: 0,
             audio_error: String::new(),
@@ -1705,6 +1727,57 @@ impl App {
         }
     }
 
+    /// Read every store catalogue in one worker. Network work never runs on
+    /// the UI thread, and one broken repository does not hide the others.
+    pub fn load_addon_catalog(&mut self) {
+        if self.addon_catalog_pending {
+            return;
+        }
+        let repos = self.cfg.addons.repos.clone();
+        if repos.is_empty() {
+            self.addon_catalog.clear();
+            self.addon_catalog_err.clear();
+            return;
+        }
+        self.addon_catalog_pending = true;
+        self.addon_catalog_at = Some(Instant::now());
+        self.spawn(move || {
+            let mut list = Vec::new();
+            let mut errors = Vec::new();
+            for repo in repos {
+                match sdw_core::addons::fetch_repo(&repo) {
+                    Ok(catalog) => list.extend(catalog.addons),
+                    Err(e) => errors.push(e),
+                }
+            }
+            Task::Catalog(list, errors.join("; "))
+        });
+    }
+
+    /// Install one catalogue package locally, then ask the computer to do the
+    /// same: daemon actions only run where the package is installed.
+    pub fn install_catalog_entry(&mut self, entry: sdw_core::addons::CatalogEntry) {
+        if self.addon_installing.is_some() {
+            return;
+        }
+        self.addon_installing = Some(entry.id.clone());
+        let client = self.client();
+        self.spawn(move || {
+            let result = sdw_core::addons::install_entry(&entry).map(|addon| {
+                let note = match client {
+                    Some(c) => c
+                        .addon_install(&entry.url)
+                        .err()
+                        .map(|e| e.message)
+                        .unwrap_or_default(),
+                    None => String::new(),
+                };
+                (addon, note)
+            });
+            Task::AddonInstalled(result)
+        });
+    }
+
     pub fn save_ha_categories(&mut self) {
         let list = self.ha.categories.clone();
         if let Some(c) = self.client() {
@@ -2091,6 +2164,31 @@ impl App {
                     Task::Msg(
                         c.remote(&command)
                             .map(|_| format!("пк: {command}"))
+                            .map_err(|e| e.to_string()),
+                    )
+                });
+            }
+            Action::Http {
+                method,
+                url,
+                headers,
+                body,
+            } => {
+                // An addon may call any API. The request lives in a worker so
+                // a slow or unreachable host never freezes the page.
+                let (method, url, headers, body) =
+                    (method.clone(), url.clone(), headers.clone(), body.clone());
+                let shown = method.clone();
+                self.spawn(move || {
+                    Task::Msg(
+                        sdw_core::util::http_call(&method, &url, &headers, &body)
+                            .map(|text| {
+                                if text.is_empty() {
+                                    format!("{shown} ok")
+                                } else {
+                                    text
+                                }
+                            })
                             .map_err(|e| e.to_string()),
                     )
                 });
@@ -2728,6 +2826,38 @@ impl App {
             }
             Task::Msg(Err(e)) => self.toast(e, false),
             Task::Headset(found) => self.headset = found,
+            Task::Catalog(list, errors) => {
+                self.addon_catalog_pending = false;
+                self.addon_catalog = list;
+                self.addon_catalog_err = errors;
+            }
+            Task::AddonInstalled(Ok((addon, note))) => {
+                self.addon_installing = None;
+                let id = addon.id().to_string();
+                self.cfg.addons.set(&id, true);
+                crate::addons_ui::defaults(self, &addon);
+                self.save();
+                let name = addon.manifest.name.clone();
+                self.toast(
+                    if note.is_empty() {
+                        format!(
+                            "{} {name}",
+                            t!(self.lang, "аддон установлен:", "addon installed:")
+                        )
+                    } else {
+                        format!(
+                            "{} {name}; {}: {note}",
+                            t!(self.lang, "аддон установлен:", "addon installed:"),
+                            t!(self.lang, "компьютер", "computer")
+                        )
+                    },
+                    note.is_empty(),
+                );
+            }
+            Task::AddonInstalled(Err(e)) => {
+                self.addon_installing = None;
+                self.toast(format!("{}: {e}", t!(self.lang, "аддон", "addon")), false);
+            }
         }
     }
 

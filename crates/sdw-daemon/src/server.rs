@@ -108,6 +108,7 @@ fn handle(state: Arc<AppState>, mut req: Request) {
         (Method::Post, "/api/v1/viiper/password") => viiper_password(state, req),
 
         (Method::Get, "/api/v1/monitor") => respond_json(req, 200, &state.monitor.status()),
+        (Method::Post, "/api/v1/addons/install") => addons_install(state, req),
         (Method::Post, "/api/v1/monitor/start") => monitor_start(state, req),
         (Method::Post, "/api/v1/monitor/stop") => {
             state.monitor.stop();
@@ -391,6 +392,51 @@ fn viiper_password(state: Arc<AppState>, mut req: Request) {
 
 // ---------------------------------------------------------------- monitor
 
+/// Install a package from a URL on the computer. The deck's store links a
+/// package once and asks both sides to install it, so an addon with daemon
+/// actions works on the computer without copying files by hand.
+fn addons_install(state: Arc<AppState>, mut req: Request) {
+    let body: Value = match read_json(&mut req) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &e),
+    };
+    let url = body.get("url").and_then(Value::as_str).unwrap_or("").trim();
+    if url.is_empty() {
+        return error(req, 400, "Нужна ссылка на аддон");
+    }
+    match sdw_core::addons::install_url(url) {
+        Ok(addon) => {
+            let id = addon.id().to_string();
+            let info = addon.manifest.clone();
+            let fields = addon.manifest.settings.clone();
+            let _ = state.update_cfg(|c| {
+                c.addons.set(&id, true);
+                // Seed declared defaults once; a reinstall keeps the values
+                // the user already typed.
+                for field in &fields {
+                    if c.addons.value(&id, &field.key).is_null() {
+                        c.addons.set_value(&id, &field.key, field.default.clone());
+                    }
+                }
+            });
+            state
+                .logger
+                .info(format!("Аддон установлен из ссылки: {}", info.name));
+            respond_json(
+                req,
+                200,
+                &json!({
+                    "ok": true,
+                    "id": id,
+                    "name": info.name,
+                    "version": info.version,
+                }),
+            )
+        }
+        Err(e) => error(req, 400, &e),
+    }
+}
+
 fn monitor_start(state: Arc<AppState>, mut req: Request) {
     let body: MonitorStart = match read_json(&mut req) {
         Ok(b) => b,
@@ -580,15 +626,19 @@ pub(crate) fn run_addon_action(
         return Err(format!("Аддон {id} выключен"));
     }
     let addon = sdw_core::addons::find(id).ok_or_else(|| format!("Нет аддона {id}"))?;
-    let action = addon
+    let entry = addon
         .manifest
         .daemon
         .actions
         .iter()
         .find(|a| a.id == action_id)
         .ok_or_else(|| format!("Нет действия {action_id} у аддона {id}"))?;
+    // A package declares its own settings; fill `{key}` right before running,
+    // so changing a value applies to the next call without reinstalling.
+    let vars = sdw_core::addons::variables(&cfg.addons, id);
+    let action = sdw_core::addons::expand_action(&entry.action, &vars);
     let label = addon.manifest.name.clone();
-    let result = match &action.action {
+    let result = match &action {
         Action::None => Ok("ok".into()),
         Action::Shell { command } => run_shell(command),
         Action::Launch { target } => sdw_core::util::run("gtk-launch", &[target])
@@ -639,6 +689,12 @@ pub(crate) fn run_addon_action(
         Action::Page { .. } => Err("Страницы деки не работают на компьютере".into()),
         Action::Remote { .. } => Err("Вложенные удалённые команды запрещены".into()),
         Action::Ha { .. } => Err("Home Assistant выполняется на деке".into()),
+        Action::Http {
+            method,
+            url,
+            headers,
+            body,
+        } => sdw_core::util::http_call(method, url, headers, body),
     };
     result.map(|message| {
         state

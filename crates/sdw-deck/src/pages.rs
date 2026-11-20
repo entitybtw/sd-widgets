@@ -527,6 +527,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
         if !addons.is_on(addon.id()) {
             continue;
         }
+        let vars = sdw_core::addons::variables(&addons, addon.id());
         for tile in &addon.manifest.deck.tiles {
             let color = theme::parse_color(&tile.accent).unwrap_or(t.accent);
             let glyph = if tile.icon.trim().is_empty() {
@@ -545,7 +546,7 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     dim: false,
                     reveal: 1.0,
                 },
-                tile.action.clone(),
+                sdw_core::addons::expand_action(&tile.action, &vars),
                 index,
             ));
             index += 1.0;

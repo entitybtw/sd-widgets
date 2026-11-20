@@ -1,5 +1,6 @@
 //! Small cross-platform helpers: paths, processes, network addresses.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -237,6 +238,128 @@ pub fn format_duration(secs: u64) -> String {
     }
 }
 
+/// Replace `{name}` in a template with the matching value.
+///
+/// Unknown names stay exactly as written, so a typo in an addon is visible in
+/// the result instead of silently turning into an empty string. Braces that do
+/// not form a short key are left alone as well (CSS and JSON pass through).
+pub fn expand(template: &str, vars: &BTreeMap<String, String>) -> String {
+    if !template.contains('{') || vars.is_empty() {
+        return template.to_string();
+    }
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let key = &after[..close];
+        if key.is_empty() || key.len() > 64 || key.contains('{') || key.contains('\n') {
+            out.push('{');
+            rest = after;
+            continue;
+        }
+        match vars.get(key) {
+            Some(v) => out.push_str(v),
+            None => {
+                out.push('{');
+                out.push_str(key);
+                out.push('}');
+            }
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Perform an HTTP request on behalf of an addon action.
+///
+/// The body of a successful answer is returned (trimmed to something a toast or
+/// a log line can show). Only absolute `http(s)` URLs are accepted: an addon is
+/// allowed to talk to an API, not to read local files through `file://`.
+pub fn http_call(
+    method: &str,
+    url: &str,
+    headers: &BTreeMap<String, String>,
+    body: &str,
+) -> Result<String, String> {
+    let url = url.trim();
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!(
+            "{url}: адреса только http:// и https:// (проверьте подстановку {{...}})"
+        ));
+    }
+    let method = {
+        let m = method.trim().to_ascii_uppercase();
+        if m.is_empty() {
+            "GET".to_string()
+        } else {
+            m
+        }
+    };
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(20)))
+        .http_status_as_error(false)
+        .user_agent(concat!("sd-widgets/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .into();
+    let mut req = match method.as_str() {
+        "GET" => agent.get(url),
+        "DELETE" => agent.delete(url),
+        "HEAD" => agent.head(url),
+        "POST" | "PUT" | "PATCH" => {
+            let mut r = match method.as_str() {
+                "POST" => agent.post(url),
+                "PUT" => agent.put(url),
+                _ => agent.patch(url),
+            };
+            let has_type = headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("content-type"));
+            for (k, v) in headers {
+                r = r.header(k, v);
+            }
+            if !body.is_empty() && !has_type {
+                r = r.header("Content-Type", "application/json");
+            }
+            // A POST/PUT without a body still needs `send`, not `call`.
+            let resp = r.send(body);
+            return finish(&method, url, resp);
+        }
+        other => return Err(format!("метод {other} не поддерживается")),
+    };
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+    finish(&method, url, req.call())
+}
+
+fn finish(
+    method: &str,
+    url: &str,
+    result: Result<ureq::http::Response<ureq::Body>, ureq::Error>,
+) -> Result<String, String> {
+    let mut resp = result.map_err(|e| format!("{method} {url}: {e}"))?;
+    let status = resp.status().as_u16();
+    let text = resp
+        .body_mut()
+        .with_config()
+        .limit(1 << 20)
+        .read_to_string()
+        .map_err(|e| e.to_string())?;
+    if !(200..300).contains(&status) {
+        return Err(format!(
+            "{method} {url}: HTTP {status}: {}",
+            truncate(text.trim(), 240)
+        ));
+    }
+    Ok(truncate(text.trim(), 400))
+}
+
 pub fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
@@ -309,4 +432,29 @@ pub fn b64_decode(text: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn vars() -> BTreeMap<String, String> {
+        let mut v = BTreeMap::new();
+        v.insert("name".into(), "deck".into());
+        v.insert("settings.lamp".into(), "light.kitchen".into());
+        v
+    }
+
+    #[test]
+    fn templates_replace_known_names_only() {
+        let v = vars();
+        assert_eq!(expand("hi {name}", &v), "hi deck");
+        assert_eq!(
+            expand("{settings.lamp} {missing}", &v),
+            "light.kitchen {missing}"
+        );
+        assert_eq!(expand("body { color: {name} }", &v), "body { color: deck }");
+        assert_eq!(expand("no braces", &v), "no braces");
+        assert_eq!(expand("{unclosed", &v), "{unclosed");
+    }
 }

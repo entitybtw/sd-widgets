@@ -265,8 +265,10 @@ Details: [`docs/AUDIO.md`](docs/AUDIO.md).
 
 ## Addons
 
-An addon is a folder with `addon.json` and its assets, or a single `.css` /
-`.json` / `.sdwaddon` file. One package can extend both sides:
+An addon is a folder with `addon.json` and its assets, a single `.css` /
+`.json` / `.sdwaddon` file, or a link to any of those. Packages unpack zips
+themselves, so there is no `unzip` to install. One package can extend both
+sides:
 
 - a **theme** CSS and extra CSS;
 - a **clock preset** JSON;
@@ -275,10 +277,33 @@ An addon is a folder with `addon.json` and its assets, or a single `.css` /
 - **daemon actions** exposed to the deck as `addon:<id>:<action>` and runnable
   from both the deck and the daemon GUI;
 - typed **settings** (`text`, `number`, `bool`, `color`, `choice`) rendered by
-  both applications.
+  both applications, with `{key}` filled into every action at run time.
+
+### Store
+
+**Addons → store** takes a link to a repository and lists its packages as
+tiles with one **install** button. A store is a static JSON catalogue
+(`repo.json`, `index.json`, `api/v1/addons.json` or `addons.json`) plus the
+packages it points at; relative links resolve against the repository base and
+an optional `sha256` is verified before install. The deck installs the package
+locally and asks the paired computer to install the same link, so a package
+with daemon actions works on both sides after one press.
+
+### HTTP actions
+
+An addon action can call any API:
+
+```json
+{ "http": { "method": "POST", "url": "{base}/hooks/{token}",
+            "body": "{\"entity\":\"{settings.entity}\"}" } }
+```
+
+The request runs in the background on both sides, has a 20 s timeout, and its
+answer becomes a short toast or log line. Only `http`/`https` addresses are
+accepted.
 
 Install from **Addons → import** on the deck or in the daemon window. The exact
-format, every field and the security model are in
+format, every field, the catalogue schema and the security model are in
 [`docs/ADDONS.md`](docs/ADDONS.md).
 
 ## API

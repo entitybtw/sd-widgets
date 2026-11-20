@@ -89,6 +89,8 @@ enum TaskResult {
     Update(Result<UpdateInfo, String>),
     Updated(Result<(String, u64), String>),
     Installed(Result<String, String>),
+    Catalog(Vec<sdw_core::addons::CatalogEntry>, String),
+    AddonInstalled(Result<sdw_core::addons::Addon, String>),
 }
 
 #[derive(Clone)]
@@ -202,6 +204,12 @@ pub struct App {
     // settings
     name_edit: String,
     addon_import: String,
+    addon_repo_input: String,
+    addon_catalog: Vec<sdw_core::addons::CatalogEntry>,
+    addon_catalog_pending: bool,
+    addon_catalog_err: String,
+    addon_catalog_at: Option<Instant>,
+    addon_installing: Option<String>,
 
     // updates
     update_info: Option<UpdateInfo>,
@@ -355,6 +363,12 @@ impl App {
             new_token: None,
             name_edit: cfg.name.clone(),
             addon_import: String::new(),
+            addon_repo_input: String::new(),
+            addon_catalog: Vec::new(),
+            addon_catalog_pending: false,
+            addon_catalog_err: String::new(),
+            addon_catalog_at: None,
+            addon_installing: None,
             update_info: None,
             update_error: String::new(),
             update_checking: false,
@@ -397,6 +411,32 @@ impl App {
         let tx = self.task_tx.clone();
         std::thread::spawn(move || {
             let _ = tx.send(f());
+        });
+    }
+
+    /// Read every store catalogue off the UI thread.
+    fn load_addon_catalog(&mut self) {
+        if self.addon_catalog_pending {
+            return;
+        }
+        let repos = self.state.cfg().addons.repos;
+        if repos.is_empty() {
+            self.addon_catalog.clear();
+            self.addon_catalog_err.clear();
+            return;
+        }
+        self.addon_catalog_pending = true;
+        self.addon_catalog_at = Some(Instant::now());
+        self.spawn(move || {
+            let mut list = Vec::new();
+            let mut errors = Vec::new();
+            for repo in repos {
+                match sdw_core::addons::fetch_repo(&repo) {
+                    Ok(catalog) => list.extend(catalog.addons),
+                    Err(e) => errors.push(e),
+                }
+            }
+            TaskResult::Catalog(list, errors.join("; "))
         });
     }
 
@@ -468,6 +508,40 @@ impl App {
                 TaskResult::Updated(Err(e)) => {
                     self.update_downloading = false;
                     self.toast(format!("скачивание: {e}"), false);
+                }
+                TaskResult::Catalog(list, errors) => {
+                    self.addon_catalog_pending = false;
+                    self.addon_catalog = list;
+                    self.addon_catalog_err = errors;
+                }
+                TaskResult::AddonInstalled(Ok(addon)) => {
+                    self.addon_installing = None;
+                    let id = addon.id().to_string();
+                    self.save(|c| {
+                        c.addons.set(&id, true);
+                    });
+                    for field in &addon.manifest.settings {
+                        let key = field.key.clone();
+                        let value = field.default.clone();
+                        self.save(|c| {
+                            if c.addons.value(&id, &key).is_null() {
+                                c.addons.set_value(&id, &key, value);
+                            }
+                        });
+                    }
+                    self.toast(
+                        format!(
+                            "{}: {}",
+                            t!(self.lang, "аддон установлен", "addon installed"),
+                            addon.manifest.name
+                        ),
+                        true,
+                    );
+                    self.status = self.state.status();
+                }
+                TaskResult::AddonInstalled(Err(e)) => {
+                    self.addon_installing = None;
+                    self.toast(e, false);
                 }
                 TaskResult::Installed(Ok(msg)) => self.toast(msg, true),
                 TaskResult::Installed(Err(e)) => self.toast(format!("установка: {e}"), false),
@@ -3958,6 +4032,230 @@ impl App {
         ui.add_space(10.0);
     }
 
+    /// Store bases and their catalogues. The daemon installs on itself; the
+    /// deck asks it to do the same for the package it just installed.
+    fn addons_store_ui(&mut self, ui: &mut Ui, t: &Tokens) {
+        let repos = self.state.cfg().addons.repos.clone();
+        let stale = self
+            .addon_catalog_at
+            .map(|at| at.elapsed() > Duration::from_secs(600))
+            .unwrap_or(true);
+        if stale && !repos.is_empty() {
+            self.load_addon_catalog();
+        }
+        let mut wanted: Option<sdw_core::addons::CatalogEntry> = None;
+        let mut drop_repo: Option<String> = None;
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(hud(t!(self.lang, "магазин", "store"), t.faint));
+                if self.addon_catalog_pending {
+                    ui.spinner();
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ghost(ui, t!(self.lang, "обновить", "refresh"), t).clicked() {
+                        self.addon_catalog_at = None;
+                        self.load_addon_catalog();
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.addon_repo_input)
+                        .hint_text(t!(
+                            self.lang,
+                            "ссылка на магазин или на файл .sdwaddon",
+                            "a store URL or a .sdwaddon file"
+                        ))
+                        .desired_width(380.0),
+                );
+                let typed = self.addon_repo_input.trim().to_string();
+                let is_file = typed.ends_with(".sdwaddon")
+                    || typed.ends_with(".zip")
+                    || typed.ends_with(".json")
+                    || typed.ends_with(".css");
+                if primary(
+                    ui,
+                    if is_file {
+                        t!(self.lang, "установить файл", "install file")
+                    } else {
+                        t!(self.lang, "добавить магазин", "add store")
+                    },
+                    t,
+                )
+                .clicked()
+                {
+                    if !(typed.starts_with("http://") || typed.starts_with("https://")) {
+                        self.toast(
+                            t!(
+                                self.lang,
+                                "нужна ссылка http:// или https://",
+                                "a http:// or https:// link is required"
+                            ),
+                            false,
+                        );
+                    } else if is_file {
+                        self.addon_installing = Some(typed.clone());
+                        let entry = sdw_core::addons::CatalogEntry {
+                            url: typed,
+                            ..Default::default()
+                        };
+                        self.spawn(move || {
+                            TaskResult::AddonInstalled(sdw_core::addons::install_entry(&entry))
+                        });
+                        self.addon_repo_input.clear();
+                    } else {
+                        let known = self
+                            .state
+                            .cfg()
+                            .addons
+                            .repos
+                            .iter()
+                            .any(|r| r.trim_end_matches('/') == typed);
+                        if !known {
+                            let _ = self.state.update_cfg(|c| {
+                                c.addons.add_repo(&typed);
+                            });
+                        }
+                        if !known {
+                            self.addon_repo_input.clear();
+                            self.addon_catalog_at = None;
+                            self.load_addon_catalog();
+                        } else {
+                            self.toast(
+                                t!(self.lang, "магазин уже добавлен", "store already added"),
+                                true,
+                            );
+                        }
+                    }
+                }
+            });
+            for repo in &repos {
+                ui.horizontal(|ui| {
+                    ui.label(theme::icon(theme::icon::STORE, 15.0, t.faint));
+                    ui.label(
+                        RichText::new(repo)
+                            .family(FontFamily::Monospace)
+                            .size(11.0)
+                            .color(t.muted),
+                    );
+                    if ghost(ui, t!(self.lang, "убрать", "remove"), t).clicked() {
+                        drop_repo = Some(repo.clone());
+                    }
+                });
+            }
+            if !self.addon_catalog_err.is_empty() {
+                small(
+                    ui,
+                    &sdw_core::util::truncate(&self.addon_catalog_err, 220),
+                    t.warn,
+                );
+            }
+            if self.addon_catalog.is_empty() {
+                if repos.is_empty() {
+                    small(
+                        ui,
+                        t!(
+                            self.lang,
+                            "добавьте ссылку на магазин — он покажет свои пакеты здесь; ссылка на .sdwaddon ставится сразу.",
+                            "add a store link and its packages appear here; a .sdwaddon link installs right away."
+                        ),
+                        t.muted,
+                    );
+                }
+                return;
+            }
+            let cols = if ui.available_width() >= 820.0 { 3 } else { 2 };
+            let width =
+                ((ui.available_width() - 8.0 * (cols as f32 - 1.0)) / cols as f32).max(170.0);
+            let entries = self.addon_catalog.clone();
+            for row in entries.chunks(cols) {
+                ui.horizontal_top(|ui| {
+                    for entry in row {
+                        ui.allocate_ui_with_layout(
+                            Vec2::new(width, 0.0),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                ui.set_width(ui.available_width());
+                                egui::Frame::new()
+                                    .fill(t.well)
+                                    .stroke(Stroke::new(1.0, t.line))
+                                    .corner_radius(0)
+                                    .inner_margin(egui::Margin::same(10))
+                                    .show(ui, |ui| {
+                                        ui.set_width(ui.available_width());
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&entry.name)
+                                                    .size(14.5)
+                                                    .strong()
+                                                    .color(t.strong),
+                                            )
+                                            .truncate(),
+                                        );
+                                        let tagline = if entry.tagline.is_empty() {
+                                            &entry.description
+                                        } else {
+                                            &entry.tagline
+                                        };
+                                        if !tagline.is_empty() {
+                                            small(
+                                                ui,
+                                                &sdw_core::util::truncate(tagline, 110),
+                                                t.muted,
+                                            );
+                                        }
+                                        ui.horizontal(|ui| {
+                                            let meta =
+                                                [entry.version.as_str(), entry.author.as_str()]
+                                                    .into_iter()
+                                                    .filter(|x| !x.trim().is_empty())
+                                                    .collect::<Vec<_>>()
+                                                    .join(" · ");
+                                            if !meta.is_empty() {
+                                                small(ui, &meta, t.faint);
+                                            }
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if self.addon_installing.as_deref()
+                                                        == Some(entry.id.as_str())
+                                                    {
+                                                        ui.spinner();
+                                                    } else if ghost(
+                                                        ui,
+                                                        t!(self.lang, "установить", "install"),
+                                                        t,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        wanted = Some(entry.clone());
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    });
+                            },
+                        );
+                    }
+                });
+                ui.add_space(6.0);
+            }
+        });
+        if let Some(repo) = drop_repo {
+            let _ = self.state.update_cfg(|c| c.addons.remove_repo(&repo));
+            self.addon_catalog.retain(|e| !e.url.starts_with(&repo));
+            self.addon_catalog_at = None;
+        }
+        if let Some(entry) = wanted {
+            if self.addon_installing.is_none() {
+                self.addon_installing = Some(entry.id.clone());
+                self.spawn(move || {
+                    TaskResult::AddonInstalled(sdw_core::addons::install_entry(&entry))
+                });
+            }
+        }
+    }
+
     fn addons_ui(&mut self, ui: &mut Ui, t: &Tokens) {
         self.page_header(
             ui,
@@ -4035,6 +4333,8 @@ impl App {
                 small(ui, &path.display().to_string(), t.faint);
             });
         });
+        ui.add_space(10.0);
+        self.addons_store_ui(ui, t);
         ui.add_space(10.0);
 
         let cfg = self.state.cfg();
