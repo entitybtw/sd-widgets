@@ -585,6 +585,9 @@ pub struct App {
     pub quick_at: Option<Instant>,
     /// Finger offset while a top-edge pull-down is in progress.
     pub quick_pull: f32,
+    /// A click landed on the pull handle or inside the panel this frame, so
+    /// the full-screen clock must not treat it as "leave the clock".
+    pub quick_clicked: bool,
 
     pub osk_open: bool,
     pub osk_shift: bool,
@@ -820,6 +823,7 @@ impl App {
             quick_brightness: None,
             quick_at: None,
             quick_pull: 0.0,
+            quick_clicked: false,
             audio_player: None,
             audio_confirm_left: 0,
             audio_error: String::new(),
@@ -1321,6 +1325,8 @@ impl App {
     }
 
     pub fn set_page(&mut self, page: Page) {
+        // Any explicit navigation leaves the full-screen clock behind.
+        self.clock_full = false;
         if self.page != page {
             if let (Some(a), Some(b)) = (
                 Page::ORDER.iter().position(|p| *p == self.page),
@@ -3318,6 +3324,32 @@ impl App {
                 self.set_page(Page::Computers);
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Notifications are one press away on every page, not only in
+                // the pull-down: the bell carries the unread marker.
+                let unread = self.notif_unread;
+                let bell = ui
+                    .add(
+                        egui::Button::new(theme::icon(
+                            theme::icon::NOTIFICATIONS,
+                            16.0,
+                            if unread > 0 { t.accent } else { t.faint },
+                        ))
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::NONE)
+                        .corner_radius(CornerRadius::ZERO),
+                    )
+                    .on_hover_text(t!(self.lang, "уведомления", "notifications"));
+                if unread > 0 {
+                    let corner = bell.rect.right_top() + egui::vec2(-3.0, 3.0);
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(corner, egui::vec2(6.0, 6.0)),
+                        CornerRadius::ZERO,
+                        t.bad,
+                    );
+                }
+                if bell.clicked() {
+                    self.set_page(Page::Notifications);
+                }
                 for (at, glyph, hint, active) in [
                     (
                         0,
@@ -3905,7 +3937,9 @@ impl App {
     /// The pull-down panel and the small handle that always opens it.
     fn quick_ui(&mut self, ctx: &egui::Context) {
         let t = Tokens::get(ctx);
-        let blocked = self.clock_full || self.stream.fullscreen || self.binds.capture;
+        // The panel belongs to every screen, including the full-screen clock:
+        // notifications and the Deck's own sound/light stay one pull away.
+        let blocked = self.stream.fullscreen || self.binds.capture;
         if blocked {
             if self.quick_open {
                 self.set_quick(false);
@@ -3941,6 +3975,7 @@ impl App {
                     );
                     if resp.clicked() {
                         toggle = true;
+                        self.quick_clicked = true;
                     }
                 });
             if toggle {
@@ -3982,10 +4017,12 @@ impl eframe::App for App {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.pad_ui(ctx, raw);
         self.touch_gesture_tick(ctx, raw);
+        self.swipe_raw(ctx, raw);
     }
 
     fn ui(&mut self, root: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
+        self.quick_clicked = false;
         self.maybe_check_updates();
         self.tick(&ctx);
         self.keyboard_tick(&ctx);

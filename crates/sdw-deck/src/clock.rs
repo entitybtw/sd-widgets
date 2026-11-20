@@ -88,11 +88,74 @@ pub fn fullscreen(app: &mut App, root: &mut Ui, ctx: &egui::Context) {
     let lang = app.lang;
     let time = ctx.input(|i| i.time) as f32;
     let face = face_of(app, lang, time);
+    let mut consumed = false;
+    let mut action: Option<ClockAction> = None;
     egui::CentralPanel::default()
         .frame(egui::Frame::new().fill(t.bg))
         .show(root, |ui| {
             let rect = ui.available_rect_before_wrap();
             canvas(ui, rect, &t, &cfg, &face);
+
+            // The same shortcuts every other page has: notifications, the
+            // control centre and a way out. A tap elsewhere still leaves.
+            let side = 36.0;
+            let gap = 6.0;
+            let top = rect.top() + 12.0;
+            let mut x = rect.right() - 12.0 - side;
+            let button = |ui: &mut Ui, x: f32, glyph: &str, active: bool, tip: &str| {
+                let r = Rect::from_min_size(pos2(x, top), vec2(side, side));
+                ui.put(
+                    r,
+                    egui::Button::new(theme::icon(
+                        glyph,
+                        20.0,
+                        if active { t.accent } else { t.strong },
+                    ))
+                    .fill(t.bg2)
+                    .stroke(Stroke::new(1.0, if active { t.accent } else { t.line }))
+                    .corner_radius(0.0),
+                )
+                .on_hover_text(tip)
+            };
+            if button(
+                ui,
+                x,
+                theme::icon::NOTIFICATIONS,
+                app.notif_unread > 0,
+                t!(lang, "уведомления", "notifications"),
+            )
+            .clicked()
+            {
+                consumed = true;
+                action = Some(ClockAction::Notifications);
+            }
+            x -= side + gap;
+            if button(
+                ui,
+                x,
+                theme::icon::TUNE,
+                app.quick_open,
+                t!(lang, "центр управления", "control centre"),
+            )
+            .clicked()
+            {
+                consumed = true;
+                action = Some(ClockAction::Quick);
+            }
+            x -= side + gap;
+            if button(
+                ui,
+                x,
+                theme::icon::CLOSE,
+                false,
+                t!(lang, "выйти из часов", "leave the clock"),
+            )
+            .clicked()
+            {
+                consumed = true;
+                action = Some(ClockAction::Exit);
+            }
+
             ui.painter().text(
                 pos2(rect.center().x, rect.bottom() - 16.0),
                 Align2::CENTER_CENTER,
@@ -104,10 +167,31 @@ pub fn fullscreen(app: &mut App, root: &mut Ui, ctx: &egui::Context) {
                 Color32::from_white_alpha(90),
             );
         });
-    if ctx.input(|i| i.pointer.any_click()) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    match action {
+        Some(ClockAction::Notifications) => app.set_page(crate::app::Page::Notifications),
+        Some(ClockAction::Quick) => {
+            let open = !app.quick_open;
+            app.set_quick(open);
+        }
+        Some(ClockAction::Exit) => app.clock_full = false,
+        None => {}
+    }
+    if (ctx.input(|i| i.pointer.any_click()) || ctx.input(|i| i.key_pressed(egui::Key::Escape)))
+        && !consumed
+        && !app.quick_clicked
+        && !app.quick_open
+    {
         app.clock_full = false;
     }
     repaint(ctx, &cfg);
+}
+
+/// What a shortcut on the full-screen clock asked for. Applied after the
+/// panel is drawn so the clock's `Face` borrow of `App` is already released.
+enum ClockAction {
+    Notifications,
+    Quick,
+    Exit,
 }
 
 fn face_of(app: &App, lang: Lang, time: f32) -> Face<'_> {

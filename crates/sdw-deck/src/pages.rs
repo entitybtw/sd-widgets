@@ -1316,38 +1316,55 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
     }
     let rect = ctx.content_rect();
     let width = (rect.width() - 24.0).clamp(320.0, 860.0);
-    let slide = (1.0 - anim) * 540.0;
+    // The panel starts above the screen and slides down fast, then settles:
+    // a linear 0.16 s slide looked like a snap on the Deck's 60 Hz panel.
+    let eased = 1.0 - (1.0 - anim) * (1.0 - anim);
+    let slide = (1.0 - eased) * 540.0;
     let pos = egui::pos2(rect.center().x - width / 2.0, rect.top() + 6.0 - slide);
     let mut close = false;
+    let mut shade_clicked = false;
 
-    // A dim layer behind the panel; a tap on it closes the panel.
-    if app.quick_open {
+    // A dim layer behind the panel; a tap on it closes the panel. It fades out
+    // together with the panel instead of vanishing on the closing frame.
+    if anim > 0.001 {
         egui::Area::new(egui::Id::new("deck-quick-shade"))
             .fixed_pos(rect.min)
             .order(egui::Order::Middle)
             .show(ctx, |ui| {
-                let (_, resp) = ui.allocate_exact_size(rect.size(), Sense::click());
-                ui.painter()
-                    .rect_filled(rect, CornerRadius::ZERO, Color32::from_black_alpha(96));
+                let sense = if app.quick_open {
+                    Sense::click()
+                } else {
+                    Sense::hover()
+                };
+                let (_, resp) = ui.allocate_exact_size(rect.size(), sense);
+                ui.painter().rect_filled(
+                    rect,
+                    CornerRadius::ZERO,
+                    Color32::from_black_alpha((96.0 * anim).round() as u8),
+                );
                 if resp.clicked() {
                     close = true;
+                    shade_clicked = true;
                 }
             });
     }
 
     let mut jump_notif = false;
     let mut dismiss: Option<u64> = None;
-    egui::Area::new(egui::Id::new("deck-quick-panel"))
+    let panel = egui::Area::new(egui::Id::new("deck-quick-panel"))
         .fixed_pos(pos)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(if t.dark {
-                    Color32::from_rgba_premultiplied(0x12, 0x18, 0x20, 252)
+                    Color32::from_rgba_premultiplied(0x12, 0x18, 0x20, (252.0 * anim) as u8)
                 } else {
-                    Color32::from_rgba_premultiplied(0xf7, 0xf9, 0xfc, 252)
+                    Color32::from_rgba_premultiplied(0xf7, 0xf9, 0xfc, (252.0 * anim) as u8)
                 })
-                .stroke(Stroke::new(1.0, t.line_strong))
+                .stroke(Stroke::new(
+                    1.0,
+                    t.line_strong.gamma_multiply(anim.max(0.15)),
+                ))
                 .corner_radius(CornerRadius::ZERO)
                 .inner_margin(Margin::symmetric(18, 12))
                 .show(ui, |ui| {
@@ -1540,6 +1557,17 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                     }
                 });
         });
+
+    if shade_clicked {
+        app.quick_clicked = true;
+    }
+    if ctx.input(|i| i.pointer.any_click())
+        && ctx
+            .input(|i| i.pointer.interact_pos())
+            .is_some_and(|pos| panel.response.rect.contains(pos))
+    {
+        app.quick_clicked = true;
+    }
 
     if let Some(id) = dismiss {
         app.dismiss_notif(id);
