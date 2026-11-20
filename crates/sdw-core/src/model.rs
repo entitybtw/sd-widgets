@@ -62,6 +62,102 @@ pub struct DiscoveryResponse {
     pub address: String,
 }
 
+// ---------------------------------------------------------------- power
+
+/// A power action on the computer. These are declared variants, not strings:
+/// the deck can ask for one of them and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerAction {
+    /// Lock the session, or blank the lock screen on Windows.
+    Lock,
+    /// Suspend to RAM.
+    Sleep,
+    /// Restart.
+    Reboot,
+    /// Power off.
+    Shutdown,
+    /// Turn the display off without locking.
+    ScreenOff,
+}
+
+impl PowerAction {
+    pub const ALL: [PowerAction; 5] = [
+        PowerAction::Lock,
+        PowerAction::Sleep,
+        PowerAction::Reboot,
+        PowerAction::Shutdown,
+        PowerAction::ScreenOff,
+    ];
+
+    /// The command string used by `POST /api/v1/power` when a deck without
+    /// the enum (an older bind, an addon action) sends a plain name.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Lock => "lock",
+            Self::Sleep => "sleep",
+            Self::Reboot => "reboot",
+            Self::Shutdown => "shutdown",
+            Self::ScreenOff => "screen_off",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "lock" => Some(Self::Lock),
+            "sleep" | "suspend" => Some(Self::Sleep),
+            "reboot" | "restart" => Some(Self::Reboot),
+            "shutdown" | "poweroff" | "power_off" => Some(Self::Shutdown),
+            "screen_off" | "monitor_off" | "display_off" => Some(Self::ScreenOff),
+            _ => None,
+        }
+    }
+
+    /// True when the action ends the session; the deck asks for a second press.
+    pub fn destructive(self) -> bool {
+        matches!(self, Self::Reboot | Self::Shutdown)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppKind {
+    Gui,
+    Terminal,
+}
+
+/// One application the computer can launch, listed by the daemon.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AppEntry {
+    /// Stable id: a `.desktop` file stem on Linux, an `AUMID` or a path stem
+    /// on Windows. This is what the deck sends back.
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub comment: String,
+    /// `gui` or `terminal`, so the deck can show a different glyph.
+    #[serde(default = "app_kind_default")]
+    pub kind: AppKind,
+    /// Desktop categories or the install location; shown as a subtitle.
+    #[serde(default)]
+    pub source: String,
+}
+
+fn app_kind_default() -> AppKind {
+    AppKind::Gui
+}
+
+/// One running window or process the computer can focus.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WindowEntry {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub app: String,
+    #[serde(default)]
+    pub focused: bool,
+}
+
 // ---------------------------------------------------------------- status
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

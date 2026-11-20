@@ -186,6 +186,7 @@ pub mod icon {
     pub const CHECK_BOX: &str = "\u{e86c}";
     pub const ADDON: &str = "\u{e87b}";
     pub const STORE: &str = "\u{e8d1}";
+    pub const POWER: &str = "\u{f8c7}";
     pub const AUDIO: &str = "\u{e32d}";
 }
 

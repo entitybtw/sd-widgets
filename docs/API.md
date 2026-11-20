@@ -116,7 +116,7 @@ Allowed commands:
 
 - `media_play_pause`, `media_next`, `media_prev`, `media_stop`
 - `volume_up`, `volume_down`, `volume_mute`
-- `lock`
+- `lock`, `sleep` (alias `suspend`), `reboot`, `shutdown`, `screen_off`
 - `monitor_start`, `monitor_stop`
 - `open:https://…` (http and https only)
 - `launch:<desktop-id>` (validated characters only)
@@ -125,6 +125,49 @@ Allowed commands:
 
 Anything else returns `400`. There is no arbitrary shell execution endpoint; the
 addon form can only name an action that already exists in a local package.
+
+## Power and applications
+
+`POST /api/v1/power`
+
+```json
+{ "action": "lock" }
+```
+
+Declared actions: `lock`, `sleep`, `reboot`, `shutdown`, `screen_off`. On Linux
+the daemon uses the session manager (`loginctl`, `systemctl`) and the running
+compositor; on Windows the native `rundll32` and `shutdown` commands. Anything
+else returns `400`.
+
+`GET /api/v1/apps`
+
+Returns the applications installed for the computer as a JSON array:
+
+```json
+[
+  {
+    "id": "org.gnome.Nautilus",
+    "name": "Files",
+    "comment": "Browse files",
+    "kind": "gui",
+    "source": "applications · System"
+  }
+]
+```
+
+On Linux the daemon reads `.desktop` files from the XDG application directories
+and skips hidden or `NoDisplay` entries. On Windows it reads the Start Menu
+shortcuts. No executable path or command line is included.
+
+`POST /api/v1/apps/launch`
+
+```json
+{ "id": "org.gnome.Nautilus" }
+```
+
+Starts one application from that list. The id must match an entry found by a
+fresh scan; a missing or unknown id returns `400`. There is no way to pass an
+arbitrary command.
 
 ## Addons
 

@@ -26,6 +26,7 @@ pub enum Page {
     Home,
     Clock,
     Computers,
+    Control,
     Gamepad,
     Media,
     Screen,
@@ -50,10 +51,11 @@ impl Page {
         Page::Binds,
     ];
     /// Every page, in the order the arrows and the floating dock walk through them.
-    pub const ORDER: [Page; 13] = [
+    pub const ORDER: [Page; 14] = [
         Page::Home,
         Page::Clock,
         Page::Computers,
+        Page::Control,
         Page::Gamepad,
         Page::Media,
         Page::Screen,
@@ -70,6 +72,7 @@ impl Page {
             Page::Home => "home",
             Page::Clock => "clock",
             Page::Computers => "computers",
+            Page::Control => "control",
             Page::Gamepad => "gamepad",
             Page::Media => "media",
             Page::Screen => "screen",
@@ -86,6 +89,7 @@ impl Page {
         match key.trim().to_ascii_lowercase().as_str() {
             "clock" | "watch" | "time" => Page::Clock,
             "computers" | "pc" => Page::Computers,
+            "control" | "pult" | "power" => Page::Control,
             "gamepad" => Page::Gamepad,
             "media" | "music" => Page::Media,
             "screen" | "stream" => Page::Screen,
@@ -104,6 +108,7 @@ impl Page {
             Page::Home => t!(l, "домой", "home"),
             Page::Clock => t!(l, "часы", "clock"),
             Page::Computers => t!(l, "компьютеры", "computers"),
+            Page::Control => t!(l, "пульт", "control"),
             Page::Gamepad => t!(l, "геймпад", "gamepad"),
             Page::Media => t!(l, "медиа", "media"),
             Page::Screen => t!(l, "экран", "screen"),
@@ -121,6 +126,7 @@ impl Page {
             Page::Home => theme::icon::HOME,
             Page::Clock => theme::icon::CLOCK,
             Page::Computers => theme::icon::COMPUTERS,
+            Page::Control => theme::icon::POWER,
             Page::Gamepad => theme::icon::GAMEPAD,
             Page::Media => theme::icon::MUSIC,
             Page::Screen => theme::icon::SCREEN,
@@ -299,6 +305,8 @@ pub enum Task {
     /// A catalogue package installed on the deck (and on the computer when
     /// one is connected), with a note when the computer part failed.
     AddonInstalled(Result<(sdw_core::addons::Addon, String), String>),
+    /// Applications listed by the active computer.
+    Apps(Result<Vec<sdw_core::model::AppEntry>, String>),
 }
 
 /// Multi-finger touch state from `egui::Event::Touch`.
@@ -540,6 +548,15 @@ pub struct App {
     /// Id of the package currently downloading.
     pub addon_installing: Option<String>,
 
+    /// Applications on the active computer, newest list first.
+    pub control_apps: Vec<sdw_core::model::AppEntry>,
+    pub control_apps_pending: bool,
+    pub control_apps_err: String,
+    pub control_apps_at: Option<Instant>,
+    pub control_filter: String,
+    /// Power action waiting for the second press.
+    pub power_confirm: Option<sdw_core::model::PowerAction>,
+
     pub osk_open: bool,
     pub osk_shift: bool,
     pub osk_symbols: bool,
@@ -757,6 +774,12 @@ impl App {
             addon_catalog_err: String::new(),
             addon_catalog_at: None,
             addon_installing: None,
+            control_apps: Vec::new(),
+            control_apps_pending: false,
+            control_apps_err: String::new(),
+            control_apps_at: None,
+            control_filter: String::new(),
+            power_confirm: None,
             audio_player: None,
             audio_confirm_left: 0,
             audio_error: String::new(),
@@ -1775,6 +1798,71 @@ impl App {
                 (addon, note)
             });
             Task::AddonInstalled(result)
+        });
+    }
+
+    /// Read the application list from the active computer. One request at a
+    /// time; a failed scan is shown in the page, not as a toast storm.
+    pub fn load_control_apps(&mut self) {
+        if self.control_apps_pending {
+            return;
+        }
+        self.control_apps_pending = true;
+        self.control_apps_at = Some(Instant::now());
+        let Some(client) = self.client() else {
+            self.control_apps_pending = false;
+            self.control_apps_err = t!(
+                self.lang,
+                "сначала выберите компьютер",
+                "choose a computer first"
+            )
+            .to_string();
+            return;
+        };
+        self.spawn(move || Task::Apps(client.apps().map_err(|e| e.to_string())));
+    }
+
+    /// Ask the computer for a declared power action. Reboot and shutdown never
+    /// reach this method without the confirmation on the page.
+    pub fn remote_power(&mut self, action: sdw_core::model::PowerAction) {
+        let Some(client) = self.client() else {
+            self.toast(
+                t!(self.lang, "нет активного компьютера", "no active computer"),
+                false,
+            );
+            return;
+        };
+        self.spawn(move || {
+            Task::Msg(
+                client
+                    .power(action)
+                    .map(|v| {
+                        v.get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("готово")
+                            .to_string()
+                    })
+                    .map_err(|e| e.to_string()),
+            )
+        });
+    }
+
+    pub fn launch_app(&mut self, id: String, name: String) {
+        let Some(client) = self.client() else {
+            self.toast(
+                t!(self.lang, "нет активного компьютера", "no active computer"),
+                false,
+            );
+            return;
+        };
+        let lang = self.lang;
+        self.spawn(move || {
+            Task::Msg(
+                client
+                    .app_launch(&id)
+                    .map(|_| format!("{name}: {}", t!(lang, "запущено", "started")))
+                    .map_err(|e| e.to_string()),
+            )
         });
     }
 
@@ -2858,6 +2946,15 @@ impl App {
                 self.addon_installing = None;
                 self.toast(format!("{}: {e}", t!(self.lang, "аддон", "addon")), false);
             }
+            Task::Apps(Ok(list)) => {
+                self.control_apps_pending = false;
+                self.control_apps = list;
+                self.control_apps_err.clear();
+            }
+            Task::Apps(Err(e)) => {
+                self.control_apps_pending = false;
+                self.control_apps_err = e;
+            }
         }
     }
 
@@ -3186,6 +3283,7 @@ impl App {
             Page::Home => crate::pages::home(self, ui, t),
             Page::Clock => crate::pages::clock(self, ui, t),
             Page::Computers => crate::pages::computers(self, ui, t),
+            Page::Control => crate::pages::control(self, ui, t),
             Page::Gamepad => crate::pages::gamepad(self, ui, t),
             Page::Media => crate::pages::media(self, ui, t),
             Page::Screen => crate::pages::screen(self, ui, t),

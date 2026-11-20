@@ -31,6 +31,9 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
   away.
 - **Addons on both sides**: declarative packages add themes, clock presets, home
   tiles, sounds and daemon actions without rebuilding anything.
+- **Remote control**: a fixed set of power actions (lock, sleep, restart, shut
+  down, screen off) and a list of installed applications to start — the daemon
+  launches only apps it discovered itself, never a command line from the deck.
 - **PC audio on the Deck**: stream the whole computer or picked applications to
   the Deck speakers, with a configurable number of “are you sure?” steps.
 - **Self-updates**: both applications check the newest release on
@@ -47,6 +50,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | --- | --- |
 | **Home** | A grid of large touch tiles: gamepad, screen, notifications, Home Assistant, binds, computers. |
 | **Computers** | LAN discovery, pairing by password, switching between several computers. |
+| **Control** | Lock, sleep, restart, shut down or blank the computer's screen, and start any installed application. |
 | **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control or gesture. |
 | **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality, input forwarding. |
 | **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. |
@@ -312,8 +316,9 @@ The Deck and the daemon speak JSON over HTTP. See [`docs/API.md`](docs/API.md) f
 the endpoints: pairing, status, gamepad, notifications, Home Assistant, monitor,
 remote commands and discovery.
 
-Remote PC commands are a **fixed whitelist** (`suspend`, `lock`, `volume`, media
-keys, opening URLs). There is no arbitrary shell endpoint.
+Remote PC commands are a **fixed whitelist** (`lock`, `sleep`, `reboot`,
+`shutdown`, `screen_off`, volume, media keys, opening URLs) plus a declared list
+of installed applications. There is no arbitrary shell endpoint.
 
 ## Repository layout
 

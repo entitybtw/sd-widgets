@@ -127,6 +127,9 @@ fn handle(state: Arc<AppState>, mut req: Request) {
         (Method::Get, "/api/v1/audio/stream") => audio_stream(state, req),
 
         (Method::Post, "/api/v1/remote") => remote_command(state, req),
+        (Method::Post, "/api/v1/power") => power_command(state, req),
+        (Method::Get, "/api/v1/apps") => apps_list(req),
+        (Method::Post, "/api/v1/apps/launch") => app_launch(state, req),
         (Method::Get, "/api/v1/media") => respond_json(req, 200, &state.media.snapshot()),
         (Method::Post, "/api/v1/media/control") => media_control(state, req),
         (Method::Get, "/api/v1/media/art") => {
@@ -520,7 +523,6 @@ fn remote_command(state: Arc<AppState>, mut req: Request) {
         "volume_up" => volume_step("5%+"),
         "volume_down" => volume_step("5%-"),
         "volume_mute" => volume_mute(),
-        "lock" => sdw_core::util::run("loginctl", &["lock-session"]).map(|_| "locked".into()),
         "monitor_start" => {
             let cfg = state.cfg();
             let req = MonitorStart {
@@ -548,7 +550,9 @@ fn remote_command(state: Arc<AppState>, mut req: Request) {
             Ok("screen stopped".into())
         }
         _ => {
-            if let Some(url) = command.strip_prefix("open:") {
+            if let Some(action) = PowerAction::parse(&command) {
+                crate::apps::power(action)
+            } else if let Some(url) = command.strip_prefix("open:") {
                 let url = url.trim();
                 if url.starts_with("http://") || url.starts_with("https://") {
                     sdw_core::util::open_url(url).map(|_| "opened".into())
@@ -579,6 +583,50 @@ fn remote_command(state: Arc<AppState>, mut req: Request) {
     match result {
         Ok(message) => {
             state.logger.info(format!("Удалённая команда: {command}"));
+            respond_json(req, 200, &json!({"ok": true, "message": message}))
+        }
+        Err(e) => error(req, 400, &e),
+    }
+}
+
+/// Declared power actions over HTTP. The body may carry either the enum name
+/// (`"lock"`) or a full object for a future version that needs options.
+fn power_command(state: Arc<AppState>, mut req: Request) {
+    let body: Value = match read_json(&mut req) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &e),
+    };
+    let name = body.get("action").and_then(Value::as_str).unwrap_or("");
+    let Some(action) = PowerAction::parse(name) else {
+        return error(req, 400, "Неизвестное действие питания");
+    };
+    match crate::apps::power(action) {
+        Ok(message) => {
+            state
+                .logger
+                .info(format!("Питание: {} ({message})", action.key()));
+            respond_json(req, 200, &json!({"ok": true, "message": message}))
+        }
+        Err(e) => error(req, 400, &e),
+    }
+}
+
+/// The application list. Sanitized entries only: no command line leaves the
+/// daemon, so the deck can only ask for an app that is already installed here.
+fn apps_list(req: Request) {
+    let list: Vec<AppEntry> = crate::apps::scan().into_iter().map(|a| a.entry).collect();
+    respond_json(req, 200, &list);
+}
+
+fn app_launch(state: Arc<AppState>, mut req: Request) {
+    let body: Value = match read_json(&mut req) {
+        Ok(b) => b,
+        Err(e) => return error(req, 400, &e),
+    };
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    match crate::apps::launch(id) {
+        Ok(message) => {
+            state.logger.info(format!("Приложение: {message}"));
             respond_json(req, 200, &json!({"ok": true, "message": message}))
         }
         Err(e) => error(req, 400, &e),

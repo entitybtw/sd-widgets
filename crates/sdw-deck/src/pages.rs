@@ -90,6 +90,7 @@ fn quick_action(
         Page::HomeAssistant => "ha",
         Page::Binds => "binds",
         Page::Computers => "computers",
+        Page::Control => "control",
         _ => "",
     };
     if !key.is_empty() && !app.tile_shown(key) {
@@ -501,6 +502,27 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
             },
             Page::Binds,
             4.0,
+        ));
+    }
+    if app.tile_shown("control") {
+        items.push(HomeItem::Page(
+            Tile {
+                title: t!(app.lang, "пульт", "control").into(),
+                subtitle: t!(
+                    app.lang,
+                    "питание и приложения пк",
+                    "pc power and applications"
+                )
+                .into(),
+                glyph: theme::icon::POWER.into(),
+                accent: Color32::from_rgb(0xa9, 0x8b, 0xff),
+                badge: None,
+                badge_color: t.accent,
+                dim: status.is_none(),
+                reveal: 1.0,
+            },
+            Page::Control,
+            4.5,
         ));
     }
     if app.tile_shown("computers") {
@@ -980,6 +1002,301 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
 }
 
 // ---------------------------------------------------------------- gamepad
+
+/// Power and applications of the active computer.
+///
+/// Everything here goes through declared commands: the deck sends an action
+/// name or an application id discovered by the daemon, never a command line.
+pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    let lang = app.lang;
+    page_title(
+        ui,
+        t,
+        t!(lang, "пульт", "control"),
+        t!(
+            lang,
+            "питание, приложения и экран компьютера — с деки.",
+            "power, applications and the screen of the computer from the deck."
+        ),
+    );
+
+    let online = app.status.is_some();
+    let stale = app
+        .control_apps_at
+        .map(|at| at.elapsed() > Duration::from_secs(90))
+        .unwrap_or(true);
+    if online && stale {
+        app.load_control_apps();
+    }
+
+    let mut run: Option<PowerAction> = None;
+    let mut ask: Option<PowerAction> = None;
+    let mut cancel = false;
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(theme::hud(t!(lang, "питание", "power"), t.faint));
+            if !online {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new(t!(
+                            lang,
+                            "нет связи с компьютером",
+                            "the computer is offline"
+                        ))
+                        .size(12.0)
+                        .color(t.warn),
+                    );
+                });
+            }
+        });
+        ui.add_space(6.0);
+
+        if let Some(action) = app.power_confirm {
+            ui.label(
+                RichText::new(format!(
+                    "{} {}?",
+                    t!(lang, "точно", "really"),
+                    power_name(lang, action)
+                ))
+                .size(17.0)
+                .strong()
+                .color(t.strong),
+            );
+            ui.horizontal(|ui| {
+                if theme::primary(ui, t!(lang, "да, выполнить", "yes, do it"), t).clicked()
+                {
+                    run = Some(action);
+                }
+                if theme::ghost(ui, t!(lang, "отмена", "cancel"), t).clicked() {
+                    cancel = true;
+                }
+            });
+        } else {
+            ui.horizontal_top(|ui| {
+                let count = PowerAction::ALL.len() as f32;
+                let width = ((ui.available_width() - 8.0 * (count - 1.0)) / count).max(104.0);
+                for action in PowerAction::ALL {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(width, 0.0),
+                        Layout::top_down(Align::Center),
+                        |ui| {
+                            let color = if action == PowerAction::Shutdown {
+                                t.bad
+                            } else {
+                                t.muted
+                            };
+                            ui.label(theme::icon(power_glyph(action), 24.0, color));
+                            ui.add_space(2.0);
+                            if theme::ghost(ui, power_name(lang, action), t).clicked() {
+                                if action.destructive() {
+                                    ask = Some(action);
+                                } else {
+                                    run = Some(action);
+                                }
+                            }
+                        },
+                    );
+                }
+            });
+        }
+    });
+
+    ui.add_space(10.0);
+
+    let mut refresh = false;
+    let mut launched: Option<(String, String)> = None;
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(theme::hud(t!(lang, "приложения", "applications"), t.faint));
+            if app.control_apps_pending {
+                ui.spinner();
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::ghost(ui, t!(lang, "обновить", "refresh"), t).clicked() {
+                    refresh = true;
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(&mut app.control_filter)
+                    .hint_text(t!(lang, "поиск приложения", "search applications"))
+                    .desired_width(360.0),
+            );
+            ui.label(
+                RichText::new(format!(
+                    "{} {}",
+                    app.control_apps.len(),
+                    t!(lang, "на компьютере", "on the computer")
+                ))
+                .family(FontFamily::Monospace)
+                .size(11.0)
+                .color(t.faint),
+            );
+        });
+        if !app.control_apps_err.is_empty() {
+            ui.label(
+                RichText::new(util::truncate(&app.control_apps_err, 220))
+                    .size(12.0)
+                    .color(t.warn),
+            );
+        }
+        if app.control_apps.is_empty() {
+            if !app.control_apps_pending && app.control_apps_err.is_empty() {
+                theme::small(
+                    ui,
+                    t!(
+                        lang,
+                        "на компьютере не нашлось приложений с ярлыками.",
+                        "no applications with shortcuts were found on the computer."
+                    ),
+                    t.muted,
+                );
+            }
+            return;
+        }
+
+        let needle = app.control_filter.trim().to_lowercase();
+        let list: Vec<AppEntry> = app
+            .control_apps
+            .iter()
+            .filter(|a| {
+                needle.is_empty()
+                    || a.name.to_lowercase().contains(&needle)
+                    || a.comment.to_lowercase().contains(&needle)
+                    || a.source.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .collect();
+        if list.is_empty() {
+            theme::small(ui, t!(lang, "ничего не найдено", "nothing found"), t.muted);
+            return;
+        }
+        let cols = if ui.available_width() >= 760.0 { 2 } else { 1 };
+        let width = ((ui.available_width() - 8.0 * (cols as f32 - 1.0)) / cols as f32).max(220.0);
+        for row in list.chunks(cols) {
+            ui.horizontal_top(|ui| {
+                for entry in row {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(width, 0.0),
+                        Layout::top_down(Align::Min),
+                        |ui| {
+                            egui::Frame::new()
+                                .fill(t.well)
+                                .stroke(Stroke::new(1.0, t.line))
+                                .corner_radius(CornerRadius::ZERO)
+                                .inner_margin(Margin::symmetric(12, 9))
+                                .show(ui, |ui| {
+                                    ui.set_width(ui.available_width());
+                                    ui.horizontal(|ui| {
+                                        let glyph = match entry.kind {
+                                            AppKind::Terminal => theme::icon::TERMINAL,
+                                            AppKind::Gui => theme::icon::WIDGETS,
+                                        };
+                                        ui.label(theme::icon(glyph, 18.0, t.accent));
+                                        ui.vertical(|ui| {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(&entry.name)
+                                                        .size(14.5)
+                                                        .strong()
+                                                        .color(t.strong),
+                                                )
+                                                .truncate(),
+                                            );
+                                            if !entry.comment.is_empty() {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(util::truncate(
+                                                            &entry.comment,
+                                                            72,
+                                                        ))
+                                                        .size(11.5)
+                                                        .color(t.muted),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                            }
+                                            if !entry.source.is_empty() {
+                                                ui.add(
+                                                    egui::Label::new(
+                                                        RichText::new(util::truncate(
+                                                            &entry.source,
+                                                            48,
+                                                        ))
+                                                        .family(FontFamily::Monospace)
+                                                        .size(10.0)
+                                                        .color(t.faint),
+                                                    )
+                                                    .truncate(),
+                                                );
+                                            }
+                                        });
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                if theme::ghost(
+                                                    ui,
+                                                    t!(lang, "запустить", "start"),
+                                                    t,
+                                                )
+                                                .clicked()
+                                                {
+                                                    launched = Some((
+                                                        entry.id.clone(),
+                                                        entry.name.clone(),
+                                                    ));
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                        },
+                    );
+                }
+            });
+            ui.add_space(4.0);
+        }
+    });
+
+    if let Some(action) = run {
+        app.power_confirm = None;
+        app.remote_power(action);
+    }
+    if let Some(action) = ask {
+        app.power_confirm = Some(action);
+    }
+    if cancel {
+        app.power_confirm = None;
+    }
+    if refresh {
+        app.control_apps_at = None;
+        app.load_control_apps();
+    }
+    if let Some((id, name)) = launched {
+        app.launch_app(id, name);
+    }
+}
+
+fn power_name(lang: Lang, action: PowerAction) -> &'static str {
+    match action {
+        PowerAction::Lock => t!(lang, "заблокировать", "lock"),
+        PowerAction::Sleep => t!(lang, "сон", "sleep"),
+        PowerAction::Reboot => t!(lang, "перезагрузка", "restart"),
+        PowerAction::Shutdown => t!(lang, "выключить", "shut down"),
+        PowerAction::ScreenOff => t!(lang, "погасить экран", "screen off"),
+    }
+}
+
+fn power_glyph(action: PowerAction) -> &'static str {
+    match action {
+        PowerAction::Lock => theme::icon::LOCK,
+        PowerAction::Sleep => theme::icon::BEDTIME,
+        PowerAction::Reboot => theme::icon::RESTART_ALT,
+        PowerAction::Shutdown => theme::icon::POWER,
+        PowerAction::ScreenOff => theme::icon::SCREEN,
+    }
+}
 
 pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
     page_title(
@@ -5306,6 +5623,7 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ("notifications", "уведомления", "notifications"),
             ("ha", "home assistant", "home assistant"),
             ("binds", "бинды", "binds"),
+            ("control", "пульт", "control"),
             ("computers", "компьютеры", "computers"),
         ];
         ui.horizontal_wrapped(|ui| {

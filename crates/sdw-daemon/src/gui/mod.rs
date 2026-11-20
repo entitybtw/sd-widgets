@@ -29,6 +29,7 @@ enum Page {
     Audio,
     Notifications,
     HomeAssistant,
+    Control,
     Addons,
     Security,
     Install,
@@ -37,13 +38,14 @@ enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 11] = [
+    const ALL: [Page; 12] = [
         Page::Overview,
         Page::Gamepads,
         Page::Screen,
         Page::Audio,
         Page::Notifications,
         Page::HomeAssistant,
+        Page::Control,
         Page::Addons,
         Page::Security,
         Page::Install,
@@ -58,6 +60,7 @@ impl Page {
             Page::Audio => t!(l, "звук", "audio"),
             Page::Notifications => t!(l, "уведомления", "notifications"),
             Page::HomeAssistant => t!(l, "home assistant", "home assistant"),
+            Page::Control => t!(l, "пульт", "control"),
             Page::Addons => t!(l, "аддоны", "addons"),
             Page::Security => t!(l, "безопасность", "security"),
             Page::Install => t!(l, "установка", "install"),
@@ -73,6 +76,7 @@ impl Page {
             Page::Audio => theme::icon::AUDIO,
             Page::Notifications => theme::icon::NOTIFICATIONS,
             Page::HomeAssistant => theme::icon::HOME_ASSISTANT,
+            Page::Control => theme::icon::POWER,
             Page::Addons => theme::icon::ADDON,
             Page::Security => theme::icon::SECURITY,
             Page::Install => theme::icon::INSTALL,
@@ -91,6 +95,7 @@ enum TaskResult {
     Installed(Result<String, String>),
     Catalog(Vec<sdw_core::addons::CatalogEntry>, String),
     AddonInstalled(Result<sdw_core::addons::Addon, String>),
+    Apps(Vec<AppEntry>),
 }
 
 #[derive(Clone)]
@@ -210,6 +215,10 @@ pub struct App {
     addon_catalog_err: String,
     addon_catalog_at: Option<Instant>,
     addon_installing: Option<String>,
+    control_apps: Vec<AppEntry>,
+    control_filter: String,
+    control_pending: bool,
+    control_scanned: bool,
 
     // updates
     update_info: Option<UpdateInfo>,
@@ -369,6 +378,10 @@ impl App {
             addon_catalog_err: String::new(),
             addon_catalog_at: None,
             addon_installing: None,
+            control_apps: Vec::new(),
+            control_filter: String::new(),
+            control_pending: false,
+            control_scanned: false,
             update_info: None,
             update_error: String::new(),
             update_checking: false,
@@ -542,6 +555,10 @@ impl App {
                 TaskResult::AddonInstalled(Err(e)) => {
                     self.addon_installing = None;
                     self.toast(e, false);
+                }
+                TaskResult::Apps(list) => {
+                    self.control_pending = false;
+                    self.control_apps = list;
                 }
                 TaskResult::Installed(Ok(msg)) => self.toast(msg, true),
                 TaskResult::Installed(Err(e)) => self.toast(format!("установка: {e}"), false),
@@ -1080,6 +1097,7 @@ impl App {
             Page::Audio => self.audio_ui(ui, t),
             Page::Notifications => self.notifications_ui(ui, t),
             Page::HomeAssistant => self.ha_ui(ui, t),
+            Page::Control => self.control_ui(ui, t),
             Page::Addons => self.addons_ui(ui, t),
             Page::Security => self.security_ui(ui, t),
             Page::Install => self.install_ui(ui, t),
@@ -4032,6 +4050,117 @@ impl App {
         ui.add_space(10.0);
     }
 
+    /// Power and application launchers: the same list the deck sees, with
+    /// the same declared commands behind it.
+    fn control_ui(&mut self, ui: &mut Ui, t: &Tokens) {
+        self.page_header(
+            ui,
+            t,
+            t!(self.lang, "пульт", "control"),
+            t!(
+                self.lang,
+                "питание и запуск приложений; то же самое умеет дека.",
+                "power actions and application launch; the deck can do the same."
+            ),
+        );
+        if !self.control_scanned && !self.control_pending {
+            self.control_pending = true;
+            self.control_scanned = true;
+            self.spawn(|| {
+                TaskResult::Apps(crate::apps::scan().into_iter().map(|a| a.entry).collect())
+            });
+        }
+
+        card(ui, t, |ui| {
+            ui.label(hud(t!(self.lang, "питание", "power"), t.faint));
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                for action in PowerAction::ALL {
+                    if ghost(ui, power_label(self.lang, action), t).clicked() {
+                        if action.destructive() {
+                            self.toast(
+                                t!(
+                                    self.lang,
+                                    "перезагрузка и выключение — только с деки",
+                                    "restart and shutdown are only available from the deck"
+                                ),
+                                false,
+                            );
+                        } else {
+                            let action_now = action;
+                            self.spawn(move || TaskResult::Msg(crate::apps::power(action_now)));
+                        }
+                    }
+                }
+            });
+            small(
+                ui,
+                t!(
+                    self.lang,
+                    "выключение и перезагрузка требуют подтверждения с деки.",
+                    "shut down and restart ask for confirmation on the deck."
+                ),
+                t.faint,
+            );
+        });
+        ui.add_space(10.0);
+
+        card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(hud(t!(self.lang, "приложения", "applications"), t.faint));
+                if self.control_pending {
+                    ui.spinner();
+                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ghost(ui, t!(self.lang, "обновить", "refresh"), t).clicked() {
+                        self.control_pending = true;
+                        self.control_scanned = true;
+                        self.spawn(|| {
+                            TaskResult::Apps(
+                                crate::apps::scan().into_iter().map(|a| a.entry).collect(),
+                            )
+                        });
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.control_filter)
+                        .hint_text(t!(self.lang, "поиск приложения", "search applications"))
+                        .desired_width(320.0),
+                );
+                ui.label(
+                    RichText::new(format!("{}", self.control_apps.len()))
+                        .family(FontFamily::Monospace)
+                        .size(11.0)
+                        .color(t.faint),
+                );
+            });
+            let needle = self.control_filter.trim().to_lowercase();
+            let mut launch: Option<String> = None;
+            for entry in self.control_apps.iter().filter(|a| {
+                needle.is_empty()
+                    || a.name.to_lowercase().contains(&needle)
+                    || a.comment.to_lowercase().contains(&needle)
+            }) {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&entry.name).size(13.5).color(t.strong));
+                    if !entry.source.is_empty() {
+                        small(ui, &sdw_core::util::truncate(&entry.source, 40), t.faint);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ghost(ui, t!(self.lang, "запустить", "start"), t).clicked() {
+                            launch = Some(entry.id.clone());
+                        }
+                    });
+                });
+            }
+            if let Some(id) = launch {
+                self.spawn(move || TaskResult::Msg(crate::apps::launch(&id)));
+            }
+        });
+    }
+
     /// Store bases and their catalogues. The daemon installs on itself; the
     /// deck asks it to do the same for the package it just installed.
     fn addons_store_ui(&mut self, ui: &mut Ui, t: &Tokens) {
@@ -5137,4 +5266,14 @@ fn expand_path(raw: &str) -> std::path::PathBuf {
             .unwrap_or_else(|| std::path::PathBuf::from(raw));
     }
     std::path::PathBuf::from(raw)
+}
+
+fn power_label(lang: Lang, action: PowerAction) -> &'static str {
+    match action {
+        PowerAction::Lock => t!(lang, "заблокировать", "lock"),
+        PowerAction::Sleep => t!(lang, "сон", "sleep"),
+        PowerAction::Reboot => t!(lang, "перезагрузка", "restart"),
+        PowerAction::Shutdown => t!(lang, "выключить", "shut down"),
+        PowerAction::ScreenOff => t!(lang, "погасить экран", "screen off"),
+    }
 }

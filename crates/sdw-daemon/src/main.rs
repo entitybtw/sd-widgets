@@ -1,5 +1,6 @@
 //! sd-widgets daemon: virtual gamepads, extra screen, notifications and Home Assistant.
 
+mod apps;
 mod audio;
 mod autostart;
 mod config;

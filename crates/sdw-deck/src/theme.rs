@@ -630,6 +630,9 @@ pub mod icon {
     pub const HEADPHONES: &str = "\u{e310}";
     pub const ADDON: &str = "\u{e87b}";
     pub const STORE: &str = "\u{e8d1}";
+    pub const RESTART_ALT: &str = "\u{f053}";
+    pub const BEDTIME: &str = "\u{eef0}";
+    pub const TERMINAL: &str = "\u{eb8e}";
 }
 
 /// The window / taskbar icon, decoded once from the packaged PNG.

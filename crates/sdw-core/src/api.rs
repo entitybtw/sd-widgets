@@ -210,6 +210,23 @@ impl Client {
         self.request("PATCH", "/api/v1/config", Some(&patch))
     }
 
+    /// Applications installed on the computer.
+    pub fn apps(&self) -> ApiResult<Vec<AppEntry>> {
+        self.request("GET", "/api/v1/apps", None)
+    }
+
+    /// Start one of the applications returned by [`Client::apps`].
+    pub fn app_launch(&self, id: &str) -> ApiResult<Value> {
+        let body = serde_json::json!({ "id": id });
+        self.request("POST", "/api/v1/apps/launch", Some(&body))
+    }
+
+    /// Lock, suspend, restart or power off the computer.
+    pub fn power(&self, action: PowerAction) -> ApiResult<Value> {
+        let body = serde_json::json!({ "action": action.key() });
+        self.request("POST", "/api/v1/power", Some(&body))
+    }
+
     pub fn addon_install(&self, url: &str) -> ApiResult<Value> {
         let body = serde_json::json!({ "url": url });
         self.request("POST", "/api/v1/addons/install", Some(&body))
