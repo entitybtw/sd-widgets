@@ -459,7 +459,7 @@ impl JobCtx {
     }
     pub fn error(&self, text: impl Into<String>) {
         let text = text.into();
-        self.line(format!("Ошибка: {text}"));
+        self.line(format!("error: {text}"));
         if let Ok(mut slot) = self.job.lock() {
             if let Some(j) = slot.as_mut() {
                 j.error = Some(text);

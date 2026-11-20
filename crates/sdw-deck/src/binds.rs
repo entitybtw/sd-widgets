@@ -263,14 +263,14 @@ pub fn capture_gesture(app: &mut App, spec: &GestureSpec) {
     };
     editor.set_trigger(Trigger::Gesture { spec: *spec });
     if editor.name.trim().is_empty() {
-        editor.name = spec.label();
+        editor.name = spec.label_lang(app.lang);
     }
     app.binds.editor = Some(editor);
     app.toast(
         format!(
             "{}: {}",
             t!(app.lang, "жест записан", "gesture captured"),
-            spec.label()
+            spec.label_lang(app.lang)
         ),
         true,
     );
@@ -383,8 +383,8 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
             let hay = format!(
                 "{} {} {}",
                 bind.name,
-                bind.trigger.label(),
-                bind.action.label()
+                bind.trigger.label_lang(app.lang),
+                bind.action.label_lang(app.lang)
             )
             .to_lowercase();
             if !hay.contains(&needle) {
@@ -410,7 +410,7 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(if bind.name.trim().is_empty() {
-                                    bind.trigger.label()
+                                    bind.trigger.label_lang(app.lang)
                                 } else {
                                     bind.name.clone()
                                 })
@@ -425,7 +425,7 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             .wrap(),
                         );
                         ui.label(
-                            RichText::new(bind.trigger.label())
+                            RichText::new(bind.trigger.label_lang(app.lang))
                                 .family(FontFamily::Monospace)
                                 .size(12.0)
                                 .color(t.accent),
@@ -453,7 +453,11 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         if theme::switch(ui, &mut enabled, t).changed() {
                             toggle = Some((i, enabled));
                         }
-                        ui.label(RichText::new(bind.action.label()).size(13.5).color(t.muted));
+                        ui.label(
+                            RichText::new(bind.action.label_lang(app.lang))
+                                .size(13.5)
+                                .color(t.muted),
+                        );
                     });
                 });
             });
@@ -488,9 +492,10 @@ pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
 }
 
 fn seed_defaults(app: &mut App) {
+    let lang = app.lang;
     let defaults = vec![
         (
-            "звук: выключить",
+            t!(lang, "звук: выключить", "sound: mute"),
             Trigger::Button {
                 device: "steam deck".into(),
                 code: crate::input::BTN_L4.to_string(),
@@ -499,7 +504,7 @@ fn seed_defaults(app: &mut App) {
             Action::Mute,
         ),
         (
-            "громкость −",
+            t!(lang, "громкость −", "volume −"),
             Trigger::Button {
                 device: "steam deck".into(),
                 code: crate::input::BTN_L5.to_string(),
@@ -508,7 +513,7 @@ fn seed_defaults(app: &mut App) {
             Action::Volume { delta: -5 },
         ),
         (
-            "громкость +",
+            t!(lang, "громкость +", "volume +"),
             Trigger::Button {
                 device: "steam deck".into(),
                 code: crate::input::BTN_R4.to_string(),
@@ -517,7 +522,7 @@ fn seed_defaults(app: &mut App) {
             Action::Volume { delta: 5 },
         ),
         (
-            "яркость −",
+            t!(lang, "яркость −", "brightness −"),
             Trigger::Button {
                 device: "steam deck".into(),
                 code: crate::input::BTN_R5.to_string(),
@@ -526,7 +531,7 @@ fn seed_defaults(app: &mut App) {
             Action::Brightness { delta: -5 },
         ),
         (
-            "три пальца вправо: компьютеры",
+            t!(lang, "три пальца вправо: компьютеры", "three fingers right: computers"),
             Trigger::Gesture {
                 spec: GestureSpec {
                     kind: GestureKind::Swipe,
@@ -539,7 +544,11 @@ fn seed_defaults(app: &mut App) {
             },
         ),
         (
-            "четыре пальца вниз: уведомления",
+            t!(
+                lang,
+                "четыре пальца вниз: уведомления",
+                "four fingers down: notifications"
+            ),
             Trigger::Gesture {
                 spec: GestureSpec {
                     kind: GestureKind::Swipe,
@@ -755,7 +764,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             ] {
                                 if ui
                                     .selectable_label(dir == d, swipe_arrow(d))
-                                    .on_hover_text(d.label())
+                                    .on_hover_text(d.label_lang(lang))
                                     .clicked()
                                 {
                                     dir = d;
@@ -774,7 +783,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         };
                     }
                     ui.label(
-                        RichText::new(spec.label())
+                        RichText::new(spec.label_lang(lang))
                             .family(FontFamily::Monospace)
                             .size(13.0)
                             .color(t.accent),
@@ -783,7 +792,11 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 Trigger::Combo { codes, label } => {
                     ui.add(
                         TextEdit::singleline(&mut editor.combo_codes)
-                            .hint_text("коды через запятую, например 46, 48")
+                            .hint_text(t!(
+                                lang,
+                                "коды через запятую, например 46, 48",
+                                "comma separated codes, for example 46, 48"
+                            ))
                             .desired_width(f32::INFINITY),
                     );
                     ui.add(
@@ -1165,7 +1178,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
             if !matches!(editor.action, Action::None) {
                 ui.add_space(4.0);
                 ui.label(
-                    RichText::new(editor.action.label())
+                    RichText::new(editor.action.label_lang(lang))
                         .family(FontFamily::Monospace)
                         .size(11.5)
                         .color(t.faint),
@@ -1227,7 +1240,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 return;
             }
             let name = if editor.name.trim().is_empty() {
-                trigger.label()
+                trigger.label_lang(lang)
             } else {
                 editor.name.trim().to_string()
             };

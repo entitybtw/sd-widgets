@@ -10,6 +10,7 @@ use sdw_core::udp::{self, GamepadState};
 use std::collections::HashSet;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use sdw_core::{t, Lang};
 use std::time::{Duration, Instant};
 
 pub const EV_KEY: u16 = 1;
@@ -137,6 +138,30 @@ enum Raw {
     TouchDown(bool),
 }
 
+/// Stable codes for the two failures the UI can translate itself.
+pub const ERROR_LINUX_ONLY: &str = "linux-only";
+pub const ERROR_NO_DEVICES: &str = "no-devices";
+
+/// Turn an input error code into a line of the current language. Unknown
+/// strings pass through, so a future code never disappears silently.
+pub fn error_text(lang: Lang, code: &str) -> String {
+    match code {
+        ERROR_LINUX_ONLY => t!(
+            lang,
+            "чтение контроллера steam deck доступно только в linux",
+            "steam deck controller input is linux only"
+        )
+        .to_string(),
+        ERROR_NO_DEVICES => t!(
+            lang,
+            "не найдено доступных устройств ввода. добавьте пользователя в группу input.",
+            "no readable input devices. add the user to the input group."
+        )
+        .to_string(),
+        other => other.to_string(),
+    }
+}
+
 pub fn start() -> InputHandle {
     let (cmd_tx, cmd_rx) = channel();
     let (evt_tx, evt_rx) = channel();
@@ -151,7 +176,7 @@ pub fn start() -> InputHandle {
     let (devices, has_gamepad, errors): (Vec<String>, bool, Vec<String>) = (
         Vec::new(),
         false,
-        vec!["чтение контроллера steam deck доступно только в linux".into()],
+        vec![ERROR_LINUX_ONLY.into()],
     );
 
     let evt_tx2 = evt_tx.clone();
@@ -266,10 +291,7 @@ fn scan_into(raw_tx: &Sender<Raw>, st: &mut ScanState) -> (Vec<String>, bool, Ve
     }
     st.seen.retain(|p| current.contains(p));
     if devices.is_empty() {
-        errors.push(
-            "не найдено доступных устройств ввода. добавьте пользователя в группу input."
-                .to_string(),
-        );
+        errors.push(ERROR_NO_DEVICES.to_string());
     }
     (devices, has_gamepad, errors)
 }

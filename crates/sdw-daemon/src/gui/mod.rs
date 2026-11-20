@@ -500,9 +500,13 @@ impl App {
                 TaskResult::Monitor(Ok(m)) => {
                     self.toast(
                         if m.running {
-                            format!("экран запущен · {}", m.backend_label)
+                            format!(
+                                "{} · {}",
+                                t!(self.lang, "экран запущен", "screen started"),
+                                m.backend_label
+                            )
                         } else {
-                            "экран остановлен".into()
+                            t!(self.lang, "экран остановлен", "screen stopped").into()
                         },
                         true,
                     );
@@ -532,7 +536,7 @@ impl App {
                     self.update_downloading = false;
                     self.update_path = path.clone();
                     self.update_total = size;
-                    self.toast("обновление скачано", true);
+                    self.toast(t!(self.lang, "обновление скачано", "update downloaded"), true);
                 }
                 TaskResult::Updated(Err(e)) => {
                     self.update_downloading = false;
@@ -613,7 +617,14 @@ impl App {
             return;
         };
         let Some(asset) = info.asset_for("sdw-daemon").cloned() else {
-            self.toast("в релизе нет файла для этого компьютера", false);
+            self.toast(
+                t!(
+                    self.lang,
+                    "в релизе нет файла для этого компьютера",
+                    "the release has no file for this computer"
+                ),
+                false,
+            );
             return;
         };
         if self.update_downloading {
@@ -646,12 +657,13 @@ impl App {
         let state = self.state.clone();
         self.toast(
             if restart {
-                "перезапускаю viiper…"
+                t!(self.lang, "перезапускаю viiper…", "restarting viiper…")
             } else {
-                "запускаю viiper…"
+                t!(self.lang, "запускаю viiper…", "starting viiper…")
             },
             true,
         );
+        let lang = self.lang;
         self.spawn(move || {
             let cfg = state.cfg();
             let r = if restart {
@@ -659,13 +671,15 @@ impl App {
             } else {
                 state.viiper.start(&cfg)
             };
-            TaskResult::Msg(r.map(|_| "viiper запущен".to_string()))
+            TaskResult::Msg(
+                r.map(|_| t!(lang, "viiper запущен", "viiper started").to_string()),
+            )
         });
     }
 
     fn stop_viiper(&mut self) {
         self.state.viiper.stop();
-        self.toast("viiper остановлен", true);
+        self.toast(t!(self.lang, "viiper остановлен", "viiper stopped"), true);
         self.last_poll = Instant::now() - Duration::from_secs(2);
     }
 
@@ -683,7 +697,7 @@ impl App {
             sudo_password: self.screen.sudo.clone(),
         };
         let state = self.state.clone();
-        self.toast("запускаю экран…", true);
+        self.toast(t!(self.lang, "запускаю экран…", "starting the screen…"), true);
         self.spawn(move || {
             let cfg = state.cfg();
             let r = state.monitor.start(&req, &cfg);
@@ -810,10 +824,13 @@ impl eframe::App for App {
                 }
                 if !self.hidden_notice {
                     self.hidden_notice = true;
-                    self.state.logger.info(
+                    self.state.logger.info(t!(
+                        self.lang,
                         "окно свёрнуто: демон работает в фоне; трей, --show или повторный \
                          запуск вернут окно, --quit остановит",
-                    );
+                        "window hidden: the daemon keeps running; the tray, --show or a \
+                         second launch brings it back, --quit stops it"
+                    ));
                 }
             }
         }
@@ -2285,10 +2302,11 @@ impl App {
                             {
                                 let id = pad.id.clone();
                                 let state = self.state.clone();
+                                let lang = self.lang;
                                 self.spawn(move || {
-                                    TaskResult::Msg(
-                                        state.viiper.delete_pad(&id).map(|_| "пад удалён".into()),
-                                    )
+                                    TaskResult::Msg(state.viiper.delete_pad(&id).map(|_| {
+                                        t!(lang, "пад удалён", "pad removed").to_string()
+                                    }))
                                 });
                             }
                         });
@@ -2431,10 +2449,11 @@ impl App {
                                 action: "click".into(),
                                 amount: 0,
                             };
+                            let lang = self.lang;
                             self.spawn(move || {
-                                TaskResult::Msg(
-                                    state.monitor.input(&input).map(|_| "клик отправлен".into()),
-                                )
+                                TaskResult::Msg(state.monitor.input(&input).map(|_| {
+                                    t!(lang, "клик отправлен", "click sent").to_string()
+                                }))
                             });
                         }
                     }
@@ -3014,6 +3033,7 @@ impl App {
 
 impl App {
     fn ha_ui(&mut self, ui: &mut Ui, t: &Tokens) {
+        let lang = self.lang;
         let s = self.status.clone();
         self.page_header(
             ui,
@@ -3030,7 +3050,11 @@ impl App {
         }
         card(ui, t, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("подключение").size(15.0).strong());
+                ui.label(
+                    RichText::new(t!(self.lang, "подключение", "connection"))
+                        .size(15.0)
+                        .strong(),
+                );
                 tag(
                     ui,
                     if s.ha.connected {
@@ -3108,7 +3132,12 @@ impl App {
                             c.ha.url = url;
                             c.ha.token = token;
                         });
-                        TaskResult::Msg(Ok("home assistant подключён".into()))
+                        TaskResult::Msg(Ok(t!(
+                            lang,
+                            "home assistant подключён",
+                            "home assistant connected"
+                        )
+                        .to_string()))
                     });
                 }
                 if ghost(ui, t!(self.lang, "проверить", "test"), t).clicked() {
@@ -3116,7 +3145,12 @@ impl App {
                     self.spawn(move || {
                         let client = state.ha.lock().ok().and_then(|h| h.client.clone());
                         let Some(client) = client else {
-                            return TaskResult::Msg(Err("home assistant не настроен".into()));
+                            return TaskResult::Msg(Err(t!(
+                                lang,
+                                "home assistant не настроен",
+                                "home assistant is not set up"
+                            )
+                            .into()));
                         };
                         let entities = client.states();
                         let ok = entities.is_ok();
@@ -3126,9 +3160,15 @@ impl App {
                             h.apply(entities, rooms, views);
                         }
                         TaskResult::Msg(if ok {
-                            Ok("home assistant отвечает".into())
+                            Ok(t!(lang, "home assistant отвечает", "home assistant answers")
+                                .to_string())
                         } else {
-                            Err("home assistant не отвечает".into())
+                            Err(t!(
+                                lang,
+                                "home assistant не отвечает",
+                                "home assistant does not answer"
+                            )
+                            .into())
                         })
                     });
                 }
@@ -3436,7 +3476,9 @@ impl App {
                         Ok(())
                     })
                     .unwrap_or(Err("home assistant lock".into()));
-                TaskResult::Msg(res.map(|_| "пресет применён".into()))
+                TaskResult::Msg(
+                    res.map(|_| t!(lang, "пресет применён", "preset applied").to_string()),
+                )
             });
         }
 
@@ -3530,6 +3572,7 @@ impl App {
     }
 
     fn ha_entity_row(&mut self, ui: &mut Ui, t: &Tokens, e: &HaEntity) {
+        let lang = self.lang;
         let cfg = self.state.cfg();
         let fav = cfg.ha.favorites.contains(&e.entity_id);
         let controllable = sdw_core::ha::is_controllable(e);
@@ -3610,7 +3653,10 @@ impl App {
                                         .lock()
                                         .map(|h| h.call(&call))
                                         .unwrap_or(Err("lock".into()))
-                                        .map(|_| "команда отправлена".into()),
+                                        .map(|_| {
+                                            t!(lang, "команда отправлена", "command sent")
+                                                .to_string()
+                                        }),
                                 )
                             });
                         }
@@ -3635,7 +3681,7 @@ impl App {
                                         .lock()
                                         .map(|h| h.toggle(&entity, !on))
                                         .unwrap_or(Err("lock".into()))
-                                        .map(|_| "готово".into()),
+                                        .map(|_| t!(lang, "готово", "done").to_string()),
                                 )
                             });
                         }
@@ -3660,7 +3706,7 @@ impl App {
                                 .lock()
                                 .map(|h| h.set_brightness(&entity, pct))
                                 .unwrap_or(Err("lock".into()))
-                                .map(|_| "яркость".into()),
+                                .map(|_| t!(lang, "яркость", "brightness").to_string()),
                         )
                     });
                 }
@@ -3922,7 +3968,10 @@ impl App {
                     let sudo = self.install_sudo.clone();
                     let logger = self.state.logger.clone();
                     let jobs = self.state.jobs.clone();
-                    let _ = jobs.start("установка", move |ctx| {
+                    let lang = self.lang;
+                    let _ = jobs.start(
+                        t!(lang, "установка", "installation"),
+                        move |ctx| {
                         let _ = install::install(&components, &sudo, &ctx, &logger);
                     });
                 }
@@ -3959,15 +4008,16 @@ impl App {
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         for line in &job.lines {
-                            mono(
-                                ui,
-                                line,
-                                if line.starts_with("Ошибка") {
-                                    t.bad
-                                } else {
-                                    t.muted
-                                },
-                            );
+                            // The job manager marks failures with a stable
+                            // `error: ` prefix; show it in the reader's language.
+                            let (text, color) = match line.strip_prefix("error: ") {
+                                Some(rest) => (
+                                    format!("{}: {rest}", t!(self.lang, "ошибка", "error")),
+                                    t.bad,
+                                ),
+                                None => (line.clone(), t.muted),
+                            };
+                            mono(ui, &text, color);
                         }
                     });
             }

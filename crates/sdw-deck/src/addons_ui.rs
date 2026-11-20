@@ -425,6 +425,7 @@ fn addon_card(app: &mut App, ui: &mut Ui, t: &Tokens, addon: &Addon) {
     let theme_css = addon.theme_css();
     let clock_cfg = addon.clock();
     let mut delete = false;
+    let mut export = false;
     let mut want_on = enabled;
 
     theme::card(ui, t, |ui| {
@@ -446,6 +447,9 @@ fn addon_card(app: &mut App, ui: &mut Ui, t: &Tokens, addon: &Addon) {
                 }
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::ghost(ui, t!(app.lang, "экспорт", "export"), t).clicked() {
+                    export = true;
+                }
                 if ui
                     .add(
                         egui::Button::new(
@@ -554,6 +558,19 @@ fn addon_card(app: &mut App, ui: &mut Ui, t: &Tokens, addon: &Addon) {
             defaults(app, addon);
         }
         app.save();
+    }
+    if export {
+        match addons::export_zip(&id, &addons::export_dir()) {
+            Ok(path) => app.toast(
+                format!(
+                    "{} {}",
+                    t!(app.lang, "экспортировано:", "exported:"),
+                    path.display()
+                ),
+                true,
+            ),
+            Err(e) => app.toast(e, false),
+        }
     }
     if delete {
         let _ = addons::remove(&id);
@@ -672,7 +689,7 @@ fn expand(raw: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(raw)
 }
 
-fn now_tag() -> String {
+pub(crate) fn now_tag() -> String {
     let now = theme::local_now();
     format!("{:02}-{:02}-{:02}", now.hour, now.minute, now.second)
 }

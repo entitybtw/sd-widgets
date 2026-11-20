@@ -318,7 +318,11 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 }
             });
             for e in &app.input_errors {
-                ui.label(RichText::new(e).size(12.0).color(t.bad));
+                ui.label(
+                    RichText::new(crate::input::error_text(app.lang, e))
+                        .size(12.0)
+                        .color(t.bad),
+                );
             }
         });
         ui.add_space(14.0);
@@ -802,7 +806,7 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                         "{} {} · {}",
                                         t!(app.lang, "пад", "pad"),
                                         pad.name,
-                                        pad.kind.label()
+                                        pad.kind.label_lang(app.lang)
                                     ))
                                     .size(12.0)
                                     .color(t.faint),
@@ -1829,7 +1833,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     ui.label(
                         RichText::new(format!(
                             "{} · {} · {}",
-                            pad.kind.label(),
+                            pad.kind.label_lang(app.lang),
                             if live.map(|p| p.connected).unwrap_or(false) {
                                 t!(app.lang, "подключён", "connected")
                             } else {
@@ -1911,7 +1915,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     if ui
                         .selectable_label(
                             app.gamepad_kind == kind,
-                            RichText::new(kind.label()).size(13.5),
+                            RichText::new(kind.label_lang(app.lang)).size(13.5),
                         )
                         .clicked()
                     {
@@ -1925,7 +1929,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         .hint_text(format!(
                             "{} · {}",
                             app.cfg.device_name,
-                            app.gamepad_kind.label()
+                            app.gamepad_kind.label_lang(app.lang)
                         ))
                         .desired_width(300.0),
                 );
@@ -2059,6 +2063,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
             online,
             enabled: app.gamepad_on,
             devices: app.input_devices.len(),
+            lang: app.lang,
         },
     );
     if clicked.is_some() {
@@ -2172,7 +2177,11 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         } else {
                             t.muted
                         }));
-                        ui.label(RichText::new(bind.action.label()).size(12.5).color(t.muted));
+                        ui.label(
+                            RichText::new(bind.action.label_lang(app.lang))
+                                .size(12.5)
+                                .color(t.muted),
+                        );
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if theme::ghost(ui, t!(app.lang, "изменить", "edit"), t).clicked()
                             {
@@ -2240,7 +2249,11 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 );
             }
             for e in &errors {
-                ui.label(RichText::new(e).size(12.5).color(t.bad));
+                ui.label(
+                    RichText::new(crate::input::error_text(app.lang, e))
+                        .size(12.5)
+                        .color(t.bad),
+                );
             }
             if let Some((code, label, at)) = &app.last_button {
                 ui.label(
@@ -2428,11 +2441,14 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui.vertical(|ui| {
                 ui.label(theme::hud(t!(app.lang, "бэкенд", "backend"), t.faint));
                 egui::ComboBox::from_id_salt("monitor-backend")
-                    .selected_text(app.stream.backend.label())
+                    .selected_text(app.stream.backend.label_lang(app.lang))
                     .show_ui(ui, |ui| {
                         for b in backend_list() {
                             if ui
-                                .selectable_label(app.stream.backend == b, b.label())
+                                .selectable_label(
+                                    app.stream.backend == b,
+                                    b.label_lang(app.lang),
+                                )
                                 .clicked()
                             {
                                 app.stream.backend = b;
@@ -2641,10 +2657,11 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
             && theme::ghost(ui, t!(app.lang, "очистить", "clear"), t).clicked()
         {
             if let Some(c) = app.client() {
+                let lang = app.lang;
                 app.spawn(move || {
                     Task::Msg(
                         c.clear_notifications()
-                            .map(|_| "очищено".to_string())
+                            .map(|_| t!(lang, "очищено", "cleared").to_string())
                             .map_err(|e| e.to_string()),
                     )
                 });
@@ -4371,10 +4388,18 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 let url = app.ha.url.trim().to_string();
                 let token = app.ha.token.trim().to_string();
                 if let Some(c) = app.client() {
+                    let lang = app.lang;
                     app.spawn(move || {
                         Task::Msg(
                             c.ha_config(&url, &token, &[])
-                                .map(|_| "home assistant подключён".into())
+                                .map(|_| {
+                                    t!(
+                                        lang,
+                                        "home assistant подключён",
+                                        "home assistant connected"
+                                    )
+                                    .to_string()
+                                })
                                 .map_err(|e| e.to_string()),
                         )
                     });
@@ -5594,6 +5619,13 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .color(t.muted),
             );
         }
+        for e in &errors {
+            ui.label(
+                RichText::new(crate::input::error_text(app.lang, e))
+                    .size(12.5)
+                    .color(t.bad),
+            );
+        }
         for d in devices {
             ui.label(
                 RichText::new(d)
@@ -5601,9 +5633,6 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(11.5)
                     .color(t.muted),
             );
-        }
-        for e in errors {
-            ui.label(RichText::new(e).size(12.0).color(t.bad));
         }
         ui.add_space(4.0);
         ui.label(

@@ -1641,10 +1641,11 @@ impl App {
             host.pad = None;
         }
         self.save();
+        let lang = self.lang;
         self.spawn(move || {
             Task::Msg(
                 c.delete_pad(&pad.id)
-                    .map(|_| "пад удалён".into())
+                    .map(|_| t!(lang, "пад удалён", "pad removed").to_string())
                     .map_err(|e| e.to_string()),
             )
         });
@@ -1738,7 +1739,8 @@ impl App {
             return;
         };
         let Ok(img) = image::load_from_memory(&bytes) else {
-            self.stream.error = "не удалось декодировать кадр".into();
+            self.stream.error =
+                t!(self.lang, "не удалось декодировать кадр", "could not decode the frame").into();
             return;
         };
         let size = [img.width() as usize, img.height() as usize];
@@ -1918,6 +1920,7 @@ impl App {
             return;
         };
         let (action, address) = (action.to_string(), address.to_string());
+        let lang = self.lang;
         self.spawn(move || {
             Task::BtAction(
                 client
@@ -1925,8 +1928,8 @@ impl App {
                     .map(|v| {
                         v.get("message")
                             .and_then(|m| m.as_str())
-                            .unwrap_or("готово")
-                            .to_string()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| t!(lang, "готово", "done").to_string())
                     })
                     .map_err(|e| e.to_string()),
             )
@@ -1974,20 +1977,21 @@ impl App {
     pub fn quick_set_volume(&mut self, percent: u8) {
         self.quick_volume = Some(percent.min(100));
         self.quick_muted = false;
-        if let Err(e) = crate::sys::set_volume(percent) {
+        if let Err(e) = crate::sys::set_volume(percent, self.lang) {
             self.toast(e, false);
         }
     }
 
     pub fn quick_set_brightness(&mut self, percent: u8) {
         self.quick_brightness = Some(percent.clamp(1, 100));
-        if let Err(e) = crate::sys::set_brightness(percent) {
+        if let Err(e) = crate::sys::set_brightness(percent, self.lang) {
             self.toast(e, false);
         }
     }
 
     pub fn quick_toggle_mute(&mut self) {
-        self.spawn(|| Task::QuickMute(crate::sys::toggle_mute()));
+        let lang = self.lang;
+        self.spawn(move || Task::QuickMute(crate::sys::toggle_mute(lang)));
     }
 
     /// Read the application list from the active computer. One request at a
@@ -2021,6 +2025,7 @@ impl App {
             );
             return;
         };
+        let lang = self.lang;
         self.spawn(move || {
             Task::Msg(
                 client
@@ -2028,8 +2033,8 @@ impl App {
                     .map(|v| {
                         v.get("message")
                             .and_then(|m| m.as_str())
-                            .unwrap_or("готово")
-                            .to_string()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| t!(lang, "готово", "done").to_string())
                     })
                     .map_err(|e| e.to_string()),
             )
@@ -2499,7 +2504,7 @@ impl App {
                     )
                 });
             }
-            other => match crate::actions::run(other) {
+            other => match crate::actions::run(other, self.lang) {
                 Ok(message) => {
                     if !message.is_empty() {
                         self.toast(message, true);

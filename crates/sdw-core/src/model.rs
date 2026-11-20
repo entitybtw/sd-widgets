@@ -274,12 +274,27 @@ impl PadKind {
             Self::SwitchPro => "Switch 2 Pro",
         }
     }
+    /// The names are product names, so both languages are the same.
+    pub fn label_lang(self, _lang: crate::i18n::Lang) -> &'static str {
+        self.label()
+    }
     pub fn hint(self) -> &'static str {
-        match self {
-            Self::Xbox360 => "Самый совместимый: XInput, Steam, почти все игры.",
-            Self::DualShock4 => "PS4-пад, гироскоп и тачпад.",
-            Self::DualSense => "PS5-пад, гироскоп и тачпад.",
-            Self::SwitchPro => "Nintendo Switch 2 Pro, гироскоп.",
+        self.hint_lang(crate::i18n::Lang::Ru)
+    }
+    pub fn hint_lang(self, lang: crate::i18n::Lang) -> &'static str {
+        match lang {
+            crate::i18n::Lang::Ru => match self {
+                Self::Xbox360 => "Самый совместимый: XInput, Steam, почти все игры.",
+                Self::DualShock4 => "PS4-пад, гироскоп и тачпад.",
+                Self::DualSense => "PS5-пад, гироскоп и тачпад.",
+                Self::SwitchPro => "Nintendo Switch 2 Pro, гироскоп.",
+            },
+            crate::i18n::Lang::En => match self {
+                Self::Xbox360 => "The most compatible: XInput, Steam, nearly every game.",
+                Self::DualShock4 => "PS4 pad, gyro and touchpad.",
+                Self::DualSense => "PS5 pad, gyro and touchpad.",
+                Self::SwitchPro => "Nintendo Switch 2 Pro, gyro.",
+            },
         }
     }
 }
@@ -330,9 +345,19 @@ pub enum MonitorMode {
 
 impl MonitorMode {
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Extend => "Дополнительный монитор",
-            Self::Mirror => "Зеркало экрана",
+        self.label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
+        match lang {
+            crate::i18n::Lang::Ru => match self {
+                Self::Extend => "Дополнительный монитор",
+                Self::Mirror => "Зеркало экрана",
+            },
+            crate::i18n::Lang::En => match self {
+                Self::Extend => "Extra monitor",
+                Self::Mirror => "Screen mirror",
+            },
         }
     }
 }
@@ -352,14 +377,29 @@ pub enum MonitorBackend {
 
 impl MonitorBackend {
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Auto => "Авто",
-            Self::Hyprland => "Hyprland headless",
-            Self::Vkms => "VKMS (виртуальный DRM)",
-            Self::Krfb => "KDE Krfb",
-            Self::Mirror => "Зеркало (grim)",
-            Self::X11 => "X11 (ffmpeg)",
-            Self::Gdigrab => "Windows (gdigrab)",
+        self.label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
+        match lang {
+            crate::i18n::Lang::Ru => match self {
+                Self::Auto => "Авто",
+                Self::Hyprland => "Hyprland headless",
+                Self::Vkms => "VKMS (виртуальный DRM)",
+                Self::Krfb => "KDE Krfb",
+                Self::Mirror => "Зеркало (grim)",
+                Self::X11 => "X11 (ffmpeg)",
+                Self::Gdigrab => "Windows (gdigrab)",
+            },
+            crate::i18n::Lang::En => match self {
+                Self::Auto => "Auto",
+                Self::Hyprland => "Hyprland headless",
+                Self::Vkms => "VKMS (virtual DRM)",
+                Self::Krfb => "KDE Krfb",
+                Self::Mirror => "Mirror (grim)",
+                Self::X11 => "X11 (ffmpeg)",
+                Self::Gdigrab => "Windows (gdigrab)",
+            },
         }
     }
 }
@@ -959,11 +999,23 @@ pub enum SwipeDir {
 
 impl SwipeDir {
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Left => "влево",
-            Self::Right => "вправо",
-            Self::Up => "вверх",
-            Self::Down => "вниз",
+        self.label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
+        match lang {
+            crate::i18n::Lang::Ru => match self {
+                Self::Left => "влево",
+                Self::Right => "вправо",
+                Self::Up => "вверх",
+                Self::Down => "вниз",
+            },
+            crate::i18n::Lang::En => match self {
+                Self::Left => "left",
+                Self::Right => "right",
+                Self::Up => "up",
+                Self::Down => "down",
+            },
         }
     }
 }
@@ -1021,22 +1073,46 @@ impl GestureSpec {
         }
     }
     pub fn label(&self) -> String {
-        let fingers = match self.fingers {
-            1 => "1 палец".to_string(),
-            2 => "2 пальца".to_string(),
-            3 => "3 пальца".to_string(),
-            4 => "4 пальца".to_string(),
-            n => format!("{n} пальцев"),
-        };
-        match self.kind {
-            GestureKind::Swipe => format!(
-                "{fingers}: свайп {}",
-                self.dir.unwrap_or(SwipeDir::Left).label()
-            ),
-            GestureKind::Tap => format!("{fingers}: тап"),
-            GestureKind::LongPress => format!("{fingers}: удержание"),
-            GestureKind::PinchIn => format!("{fingers}: сжать"),
-            GestureKind::PinchOut => format!("{fingers}: разжать"),
+        self.label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn label_lang(&self, lang: crate::i18n::Lang) -> String {
+        match lang {
+            crate::i18n::Lang::Ru => {
+                let fingers = match self.fingers {
+                    1 => "1 палец".to_string(),
+                    2 => "2 пальца".to_string(),
+                    3 => "3 пальца".to_string(),
+                    4 => "4 пальца".to_string(),
+                    n => format!("{n} пальцев"),
+                };
+                match self.kind {
+                    GestureKind::Swipe => format!(
+                        "{fingers}: свайп {}",
+                        self.dir.unwrap_or(SwipeDir::Left).label()
+                    ),
+                    GestureKind::Tap => format!("{fingers}: тап"),
+                    GestureKind::LongPress => format!("{fingers}: удержание"),
+                    GestureKind::PinchIn => format!("{fingers}: сжать"),
+                    GestureKind::PinchOut => format!("{fingers}: разжать"),
+                }
+            }
+            crate::i18n::Lang::En => {
+                let fingers = match self.fingers {
+                    1 => "1 finger".to_string(),
+                    n => format!("{n} fingers"),
+                };
+                match self.kind {
+                    GestureKind::Swipe => format!(
+                        "{fingers}: swipe {}",
+                        self.dir.unwrap_or(SwipeDir::Left).label_lang(lang)
+                    ),
+                    GestureKind::Tap => format!("{fingers}: tap"),
+                    GestureKind::LongPress => format!("{fingers}: long press"),
+                    GestureKind::PinchIn => format!("{fingers}: pinch in"),
+                    GestureKind::PinchOut => format!("{fingers}: pinch out"),
+                }
+            }
         }
     }
 }
@@ -1060,10 +1136,20 @@ pub enum Trigger {
 
 impl Trigger {
     pub fn label(&self) -> String {
+        self.label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn label_lang(&self, lang: crate::i18n::Lang) -> String {
         match self {
-            Self::Gesture { spec } => spec.label(),
-            Self::Button { label, .. } => format!("Кнопка: {label}"),
-            Self::Combo { label, .. } => format!("Комбо: {label}"),
+            Self::Gesture { spec } => spec.label_lang(lang),
+            Self::Button { label, .. } => match lang {
+                crate::i18n::Lang::Ru => format!("Кнопка: {label}"),
+                crate::i18n::Lang::En => format!("Button: {label}"),
+            },
+            Self::Combo { label, .. } => match lang {
+                crate::i18n::Lang::Ru => format!("Комбо: {label}"),
+                crate::i18n::Lang::En => format!("Combo: {label}"),
+            },
         }
     }
 }
@@ -1141,49 +1227,104 @@ impl Default for Action {
 
 impl Action {
     pub fn label(&self) -> String {
-        match self {
-            Self::None => "Ничего".into(),
-            Self::Shell { command } => format!("Команда: {command}"),
-            Self::Launch { target } => format!("Запустить: {target}"),
-            Self::Volume { delta } => format!("Громкость {delta:+}%"),
-            Self::VolumeSet { percent } => format!("Громкость {percent}%"),
-            Self::Mute => "Выключить звук".into(),
-            Self::Brightness { delta } => format!("Яркость {delta:+}%"),
-            Self::BrightnessSet { percent } => format!("Яркость {percent}%"),
-            Self::Media { command } => format!("Медиа: {command}"),
-            Self::Key { combo } => format!("Клавиши: {combo}"),
-            Self::Page { page } => format!("Открыть: {page}"),
-            Self::Remote { command, .. } => format!("ПК: {command}"),
-            Self::Ha {
-                domain,
-                service,
-                entity,
-                ..
-            } => {
-                if entity.is_empty() {
-                    format!("HA: {domain}.{service}")
-                } else {
-                    format!("HA: {domain}.{service} · {entity}")
+        self.label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn label_lang(&self, lang: crate::i18n::Lang) -> String {
+        match lang {
+            crate::i18n::Lang::Ru => match self {
+                Self::None => "Ничего".into(),
+                Self::Shell { command } => format!("Команда: {command}"),
+                Self::Launch { target } => format!("Запустить: {target}"),
+                Self::Volume { delta } => format!("Громкость {delta:+}%"),
+                Self::VolumeSet { percent } => format!("Громкость {percent}%"),
+                Self::Mute => "Выключить звук".into(),
+                Self::Brightness { delta } => format!("Яркость {delta:+}%"),
+                Self::BrightnessSet { percent } => format!("Яркость {percent}%"),
+                Self::Media { command } => format!("Медиа: {command}"),
+                Self::Key { combo } => format!("Клавиши: {combo}"),
+                Self::Page { page } => format!("Открыть: {page}"),
+                Self::Remote { command, .. } => format!("ПК: {command}"),
+                Self::Ha {
+                    domain,
+                    service,
+                    entity,
+                    ..
+                } => {
+                    if entity.is_empty() {
+                        format!("HA: {domain}.{service}")
+                    } else {
+                        format!("HA: {domain}.{service} · {entity}")
+                    }
                 }
-            }
-            Self::Url { url } => format!("Открыть URL: {url}"),
-            Self::Http { method, url, .. } => format!("{method} {url}"),
+                Self::Url { url } => format!("Открыть URL: {url}"),
+                Self::Http { method, url, .. } => format!("{method} {url}"),
+            },
+            crate::i18n::Lang::En => match self {
+                Self::None => "Nothing".into(),
+                Self::Shell { command } => format!("Command: {command}"),
+                Self::Launch { target } => format!("Launch: {target}"),
+                Self::Volume { delta } => format!("Volume {delta:+}%"),
+                Self::VolumeSet { percent } => format!("Volume {percent}%"),
+                Self::Mute => "Mute".into(),
+                Self::Brightness { delta } => format!("Brightness {delta:+}%"),
+                Self::BrightnessSet { percent } => format!("Brightness {percent}%"),
+                Self::Media { command } => format!("Media: {command}"),
+                Self::Key { combo } => format!("Keys: {combo}"),
+                Self::Page { page } => format!("Open: {page}"),
+                Self::Remote { command, .. } => format!("PC: {command}"),
+                Self::Ha {
+                    domain,
+                    service,
+                    entity,
+                    ..
+                } => {
+                    if entity.is_empty() {
+                        format!("HA: {domain}.{service}")
+                    } else {
+                        format!("HA: {domain}.{service} · {entity}")
+                    }
+                }
+                Self::Url { url } => format!("Open URL: {url}"),
+                Self::Http { method, url, .. } => format!("{method} {url}"),
+            },
         }
     }
+
     pub fn kind_label(&self) -> &'static str {
-        match self {
-            Self::None => "Ничего",
-            Self::Shell { .. } => "Команда",
-            Self::Launch { .. } => "Приложение",
-            Self::Volume { .. } | Self::VolumeSet { .. } | Self::Mute => "Звук",
-            Self::Brightness { .. } | Self::BrightnessSet { .. } => "Яркость",
-            Self::Media { .. } => "Медиа",
-            Self::Key { .. } => "Клавиши",
-            Self::Page { .. } => "Страница",
-            Self::Remote { .. } => "ПК",
-            Self::Ha { .. } => "Home Assistant",
-            Self::Url { .. } => "URL",
-            Self::Http { .. } => "HTTP",
+        self.kind_label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn kind_label_lang(&self, lang: crate::i18n::Lang) -> &'static str {
+        match lang {
+            crate::i18n::Lang::Ru => match self {
+                Self::None => "Ничего",
+                Self::Shell { .. } => "Команда",
+                Self::Launch { .. } => "Приложение",
+                Self::Volume { .. } | Self::VolumeSet { .. } | Self::Mute => "Звук",
+                Self::Brightness { .. } | Self::BrightnessSet { .. } => "Яркость",
+                Self::Media { .. } => "Медиа",
+                Self::Key { .. } => "Клавиши",
+                Self::Page { .. } => "Страница",
+                Self::Remote { .. } => "ПК",
+                Self::Ha { .. } => "Home Assistant",
+                Self::Url { .. } => "URL",
+                Self::Http { .. } => "HTTP",
+            },
+            crate::i18n::Lang::En => match self {
+                Self::None => "Nothing",
+                Self::Shell { .. } => "Command",
+                Self::Launch { .. } => "App",
+                Self::Volume { .. } | Self::VolumeSet { .. } | Self::Mute => "Sound",
+                Self::Brightness { .. } | Self::BrightnessSet { .. } => "Brightness",
+                Self::Media { .. } => "Media",
+                Self::Key { .. } => "Keys",
+                Self::Page { .. } => "Page",
+                Self::Remote { .. } => "PC",
+                Self::Ha { .. } => "Home Assistant",
+                Self::Url { .. } => "URL",
+                Self::Http { .. } => "HTTP",
+            },
         }
     }
 }
@@ -1730,6 +1871,8 @@ pub struct ClockCfg {
     /// This is the default: every theme, preset and CSS file repaints the
     /// clock, and only an explicit colour makes it independent.
     pub follow_theme: bool,
+    /// One Material symbol shown in the clock's corner, or empty for none.
+    pub icon: String,
 }
 
 impl Default for ClockCfg {
@@ -1755,6 +1898,7 @@ impl Default for ClockCfg {
             position: "left".into(),
             font: "auto".into(),
             follow_theme: true,
+            icon: String::new(),
         }
     }
 }

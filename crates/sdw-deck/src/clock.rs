@@ -484,6 +484,36 @@ fn minimal(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
 
 // ---------------------------------------------------------------- controls
 
+/// Material symbols offered as the clock badge: time, weather, a mood.
+const CLOCK_ICONS: [(&str, &str, &str); 12] = [
+    (theme::icon::CLOCK, "часы", "clock"),
+    (theme::icon::SUN, "солнце", "sun"),
+    (theme::icon::MOON, "луна", "moon"),
+    (theme::icon::STAR, "звезда", "star"),
+    (theme::icon::BULB, "идея", "idea"),
+    (theme::icon::MUSIC, "музыка", "music"),
+    (theme::icon::CODE, "код", "code"),
+    (theme::icon::GAMEPAD, "игры", "games"),
+    (theme::icon::PERSON, "человек", "person"),
+    (theme::icon::HEADPHONES, "наушники", "headphones"),
+    (theme::icon::HOME, "дом", "home"),
+    (theme::icon::SCENE, "сцена", "scene"),
+];
+
+/// A stable, readable name for a clock preset: the caption when it is set,
+/// otherwise the face and the day.
+fn preset_name(cfg: &ClockCfg) -> String {
+    let caption = cfg.caption.trim();
+    let ascii_name = !caption.is_empty()
+        && caption
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | '-' | '_'));
+    if ascii_name {
+        return caption.to_string();
+    }
+    format!("{}-{}", cfg.style, crate::addons_ui::now_tag())
+}
+
 fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut cfg = app.cfg.clock.clone();
     let before = cfg.clone();
@@ -682,12 +712,115 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         "имя, город, что угодно",
                         "name, city, anything"
                     ))
-                    .desired_width(260.0),
+                    .desired_width(220.0),
             );
             ui.add_space(10.0);
             if theme::ghost(ui, t!(app.lang, "сбросить", "reset"), t).clicked() {
                 cfg = ClockCfg::default();
             }
+        });
+        ui.add_space(2.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(rt(t!(app.lang, "значок", "icon"), 12.0, t.faint));
+            let none = cfg.icon.trim().is_empty();
+            if ui
+                .selectable_label(none, rt(t!(app.lang, "нет", "none"), 12.0, t.muted))
+                .clicked()
+            {
+                cfg.icon.clear();
+            }
+            for (glyph, ru, en) in CLOCK_ICONS {
+                let active = cfg.icon == glyph;
+                let resp = ui
+                    .add(
+                        egui::Button::new(theme::icon(
+                            glyph,
+                            18.0,
+                            if active { t.strong } else { t.muted },
+                        ))
+                        .fill(if active { t.accent_soft } else { t.well })
+                        .stroke(Stroke::new(1.0, if active { t.accent } else { t.line }))
+                        .corner_radius(0.0)
+                        .min_size(vec2(34.0, 30.0)),
+                    )
+                    .on_hover_text(t!(app.lang, ru, en));
+                if resp.clicked() {
+                    cfg.icon = if active {
+                        String::new()
+                    } else {
+                        glyph.to_string()
+                    };
+                }
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            if theme::ghost(ui, t!(app.lang, "сохранить часы", "save clock"), t).clicked()
+            {
+                let name = preset_name(&cfg);
+                match sdw_core::addons::create_clock(&name, &cfg) {
+                    Ok(addon) => {
+                        app.cfg.addons.set(addon.id(), true);
+                        app.save();
+                        app.toast(
+                            t!(
+                                app.lang,
+                                "часы сохранены как аддон",
+                                "clock saved as an addon"
+                            ),
+                            true,
+                        );
+                    }
+                    Err(e) => app.toast(e, false),
+                }
+            }
+            if theme::ghost(ui, t!(app.lang, "экспорт часов", "export clock"), t).clicked()
+            {
+                match sdw_core::addons::export_clock(
+                    &preset_name(&cfg),
+                    &cfg,
+                    &sdw_core::addons::export_dir(),
+                ) {
+                    Ok(path) => app.toast(
+                        format!(
+                            "{} {}",
+                            t!(app.lang, "экспортировано:", "exported:"),
+                            path.display()
+                        ),
+                        true,
+                    ),
+                    Err(e) => app.toast(e, false),
+                }
+            }
+            if theme::ghost(ui, t!(app.lang, "экспорт темы", "export theme"), t).clicked()
+            {
+                match sdw_core::addons::export_theme(
+                    &format!("theme-{}", crate::addons_ui::now_tag()),
+                    &app.cfg.style.css,
+                    &sdw_core::addons::export_dir(),
+                ) {
+                    Ok(path) => app.toast(
+                        format!(
+                            "{} {}",
+                            t!(app.lang, "экспортировано:", "exported:"),
+                            path.display()
+                        ),
+                        true,
+                    ),
+                    Err(e) => app.toast(e, false),
+                }
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(rt(
+                    &format!(
+                        "{} {}",
+                        t!(app.lang, "папка:", "folder:"),
+                        sdw_core::addons::export_dir().display()
+                    ),
+                    10.5,
+                    t.faint,
+                ));
+            });
         });
     });
     if cfg.style != before.style
@@ -708,6 +841,7 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
         || cfg.accent != before.accent
         || cfg.bg_top != before.bg_top
         || cfg.bg_bottom != before.bg_bottom
+        || cfg.icon != before.icon
         || (cfg.speed - before.speed).abs() > f32::EPSILON
         || (cfg.font_scale - before.font_scale).abs() > f32::EPSILON
     {
@@ -772,7 +906,8 @@ fn brightness(c: Color32) -> f32 {
 /// Headset battery and a one-line notification summary, as hairline chips in
 /// the top-left corner of the canvas. Every part can be switched off.
 fn info_strip(ui: &Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face, pal: &Palette) {
-    if !cfg.show_headset && !cfg.show_notifications {
+    let badge = cfg.icon.trim();
+    if !cfg.show_headset && !cfg.show_notifications && badge.is_empty() {
         return;
     }
     let painter = ui.painter_at(rect);
@@ -786,6 +921,35 @@ fn info_strip(ui: &Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face, pal: &P
     let y = rect.top() + 10.0;
     // Leave the corner free for the full-screen button on the page.
     let avail = (rect.width() - 60.0).max(80.0);
+
+    if !badge.is_empty() {
+        let side = 26.0;
+        let box_rect = Rect::from_min_size(pos2(x, y - 2.0), vec2(side, side));
+        painter.rect_filled(
+            box_rect,
+            0.0,
+            Color32::from_rgba_unmultiplied(
+                pal.bg_bottom.r(),
+                pal.bg_bottom.g(),
+                pal.bg_bottom.b(),
+                0xD2,
+            ),
+        );
+        painter.rect_stroke(
+            box_rect,
+            0.0,
+            Stroke::new(1.0, pal.accent.gamma_multiply(0.55)),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            box_rect.center(),
+            Align2::CENTER_CENTER,
+            badge,
+            FontId::new(17.0, theme::icon_family()),
+            pal.accent,
+        );
+        x += side + 6.0;
+    }
 
     if cfg.show_headset {
         if let Some((pct, name)) = f.headset {

@@ -10,8 +10,9 @@ use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Response, RichText, Sense,
     Stroke, Ui, Vec2,
 };
-use sdw_core::model::{DeckViewCfg, GestureKind, SwipeDir, Trigger};
+use sdw_core::model::{DeckViewCfg, GestureKind, GestureSpec, SwipeDir, Trigger};
 use sdw_core::udp::{self, GamepadState};
+use sdw_core::{t, Lang};
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -152,6 +153,7 @@ pub struct DeckInput<'a> {
     pub online: bool,
     pub enabled: bool,
     pub devices: usize,
+    pub lang: Lang,
 }
 
 pub struct DeckViewState {
@@ -746,7 +748,11 @@ fn screen_content(
         p.text(
             Pos2::new(pad.center().x, pad.bottom() - h * 0.02),
             Align2::CENTER_BOTTOM,
-            "нажмите «назначить бинд»",
+            t!(
+                input.lang,
+                "нажмите «назначить бинд»",
+                "press “assign bind”"
+            ),
             FontId::new(h * 0.042, FontFamily::Proportional),
             t.warn,
         );
@@ -755,9 +761,9 @@ fn screen_content(
             Pos2::new(pad.center().x, pad.bottom() - h * 0.02),
             Align2::CENTER_BOTTOM,
             if input.devices == 0 {
-                "нет доступа к /dev/input"
+                t!(input.lang, "нет доступа к /dev/input", "no access to /dev/input")
             } else {
-                "нажмите кнопку"
+                t!(input.lang, "нажмите кнопку", "press a button")
             },
             FontId::new(h * 0.042, FontFamily::Proportional),
             t.faint,
@@ -1122,20 +1128,13 @@ fn control_rect(control: DeckControl, rect: Rect) -> Option<Rect> {
 }
 
 /// Small helper used by the bind editor when it wants to show the chosen gesture.
-pub fn gesture_hint(kind: GestureKind, fingers: u8, dir: SwipeDir) -> String {
-    let fingers = match fingers {
-        1 => "1 палец".to_string(),
-        2 => "2 пальца".to_string(),
-        3 => "3 пальца".to_string(),
-        n => format!("{n} пальца"),
-    };
-    match kind {
-        GestureKind::Swipe => format!("{fingers}: свайп {}", dir.label()),
-        GestureKind::Tap => format!("{fingers}: тап"),
-        GestureKind::LongPress => format!("{fingers}: удержание"),
-        GestureKind::PinchIn => format!("{fingers}: сжать"),
-        GestureKind::PinchOut => format!("{fingers}: разжать"),
+pub fn gesture_hint(kind: GestureKind, fingers: u8, dir: SwipeDir, lang: Lang) -> String {
+    GestureSpec {
+        kind,
+        fingers,
+        dir: Some(dir),
     }
+    .label_lang(lang)
 }
 
 /// Renders a compact live input strip, used under the deck when space is tight.

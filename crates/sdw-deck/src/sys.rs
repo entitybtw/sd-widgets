@@ -7,6 +7,7 @@
 //! `brightnessctl`, then `light`. Every path is optional: the panel hides a row
 //! it cannot read instead of showing a dead slider.
 
+use sdw_core::{t, Lang};
 use std::path::PathBuf;
 
 // ---------------------------------------------------------------- volume
@@ -34,7 +35,7 @@ pub fn volume() -> Option<(u8, bool)> {
 }
 
 /// Set the output volume, unmuting first so the change is audible.
-pub fn set_volume(percent: u8) -> Result<(), String> {
+pub fn set_volume(percent: u8, lang: Lang) -> Result<(), String> {
     let percent = percent.min(100);
     if sdw_core::util::has("wpctl") {
         let value = format!("{percent}%");
@@ -48,11 +49,11 @@ pub fn set_volume(percent: u8) -> Result<(), String> {
         let _ = sdw_core::util::run("pactl", &["set-sink-mute", "@DEFAULT_SINK@", "0"]);
         return Ok(());
     }
-    Err("Нет wpctl или pactl".into())
+    Err(t!(lang, "Нет wpctl или pactl", "no wpctl or pactl").into())
 }
 
 /// Flip the mute of the default sink; returns the new state.
-pub fn toggle_mute() -> Result<bool, String> {
+pub fn toggle_mute(lang: Lang) -> Result<bool, String> {
     let muted = volume().map(|(_, m)| m).unwrap_or(false);
     let target = if muted { "0" } else { "1" };
     if sdw_core::util::has("wpctl") {
@@ -63,7 +64,7 @@ pub fn toggle_mute() -> Result<bool, String> {
         sdw_core::util::run("pactl", &["set-sink-mute", "@DEFAULT_SINK@", target])?;
         return Ok(!muted);
     }
-    Err("Нет wpctl или pactl".into())
+    Err(t!(lang, "Нет wpctl или pactl", "no wpctl or pactl").into())
 }
 
 /// `Volume: 0.42` or `Volume: 0.42 [MUTED]` from `wpctl get-volume`.
@@ -143,7 +144,7 @@ pub fn brightness() -> Option<u8> {
 
 /// Set panel brightness in percent. Sysfs is tried first because it needs no
 /// extra tool; a udev rule or group membership makes it writable on handhelds.
-pub fn set_brightness(percent: u8) -> Result<(), String> {
+pub fn set_brightness(percent: u8, lang: Lang) -> Result<(), String> {
     let percent = percent.clamp(1, 100);
     if let Some((_, current, max)) = backlight() {
         let value = ((max as f32) * (percent as f32) / 100.0).round().max(1.0) as u32;
@@ -159,7 +160,7 @@ pub fn set_brightness(percent: u8) -> Result<(), String> {
         let value = percent.to_string();
         return sdw_core::util::run("light", &["-S", &value]).map(|_| ());
     }
-    Err("Нет доступа к подсветке".into())
+    Err(t!(lang, "нет доступа к подсветке", "no access to the backlight").into())
 }
 
 fn percent_of(value: u32, max: u32) -> u8 {
