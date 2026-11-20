@@ -253,12 +253,19 @@ The Clock page draws a full-screen clock and keeps the settings next to it:
 - four faces: **grid** (the big time on the house grid), **digital**, **analog**
   and **minimal**;
 - accent and two background colours, a font choice, size, animation (`drift`,
-  `pulse`, `off`), screen position and a caption;
+  `pulse`, `off`), screen position, a caption and one of twelve Material symbol
+  badges (time, sun, moon, star, music, games and more);
 - optional seconds, date, weekday, deck battery, headset battery and a one-line
   notification summary;
 - 12/24-hour time and a full-screen mode that exits on a tap or Escape;
+- clock presets from addons appear as buttons at the top of the page.
 
-Any configuration can be saved as a clock addon and then reused or shipped.
+The face is a constructor: every switch and slider is live. **Save clock** keeps
+the current face as an addon; **export clock** writes a ready `.sdwaddon`
+package into the Downloads folder — or `~/.local/share/sd-widgets/exports` when
+there is no Downloads — so the face can be moved to another Deck, sent to a
+friend or put into a store. Themes export the same way from the Clock page and
+from every card on the Addons page.
 
 ## PC audio
 

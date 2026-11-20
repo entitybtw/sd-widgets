@@ -180,6 +180,16 @@ impl Addon {
         }
     }
 
+    /// `major.minor.patch`, or `1.0.0` when the manifest is terse.
+    pub fn version(&self) -> String {
+        let v = self.manifest.version.trim();
+        if v.is_empty() {
+            "1.0.0".to_string()
+        } else {
+            v.to_string()
+        }
+    }
+
     pub fn clock(&self) -> Option<ClockCfg> {
         if self.manifest.deck.clock.trim().is_empty() {
             return None;
@@ -483,7 +493,7 @@ pub fn remove(id: &str) -> Result<(), String> {
 
 /// Save the current theme CSS as a small theme addon.
 pub fn create_theme(name: &str, css: &str) -> Result<Addon, String> {
-    let id = clean_id(name)?;
+    let id = safe_id(name, "theme");
     let dest = root().join(&id);
     if dest.exists() {
         std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
@@ -509,7 +519,7 @@ pub fn create_theme(name: &str, css: &str) -> Result<Addon, String> {
 
 /// Save the current clock as a clock addon.
 pub fn create_clock(name: &str, cfg: &ClockCfg) -> Result<Addon, String> {
-    let id = clean_id(name)?;
+    let id = safe_id(name, "clock");
     let dest = root().join(&id);
     if dest.exists() {
         std::fs::remove_dir_all(&dest).map_err(|e| e.to_string())?;
@@ -534,7 +544,179 @@ pub fn create_clock(name: &str, cfg: &ClockCfg) -> Result<Addon, String> {
     load_at(dest)
 }
 
-/// A complete example the user can copy, import and edit.
+/// The output folder for packages the user wants to carry elsewhere.
+pub fn export_dir() -> PathBuf {
+    dirs::download_dir()
+        .or_else(|| {
+            std::env::var_os("XDG_DESKTOP_DIR")
+                .map(PathBuf::from)
+                .filter(|p| p.is_dir())
+        })
+        .unwrap_or_else(|| util::data_dir().join("exports"))
+}
+
+/// Pack a saved package into one `.sdwaddon` zip so it can be moved to another
+/// Deck, sent to a friend or dropped into a store.
+pub fn export_zip(id: &str, to: &Path) -> Result<PathBuf, String> {
+    let addon = find(id).ok_or_else(|| format!("аддон {id} не найден"))?;
+    let name = clean_id(addon.id()).unwrap_or_else(|_| "addon".into());
+    let dest = destination(to, &format!("{name}-{}.sdwaddon", addon.version()));
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    write_zip(&addon.dir, &dest)?;
+    Ok(dest)
+}
+
+/// Export the clock the user just built, without keeping a second copy in the
+/// addons folder. The file is a normal package: drop it back in through import
+/// or a store and the face returns.
+pub fn export_clock(name: &str, cfg: &ClockCfg, to: &Path) -> Result<PathBuf, String> {
+    let id = safe_id(name, "clock");
+    let manifest = AddonManifest {
+        id: id.clone(),
+        name: name.to_string(),
+        version: "1.0.0".into(),
+        author: "you".into(),
+        description: "часы, экспортированные из приложения".into(),
+        scope: "deck".into(),
+        deck: DeckAddon {
+            clock: "clock.json".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let clock = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    let manifest = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    let dest = destination(to, &format!("{id}-1.0.0.sdwaddon"));
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    write_files(
+        &dest,
+        &[
+            (MANIFEST, manifest.as_bytes()),
+            ("clock.json", clock.as_bytes()),
+        ],
+    )?;
+    Ok(dest)
+}
+
+/// The same for a theme: a deck `.css` plus a manifest, as one package.
+pub fn export_theme(name: &str, css: &str, to: &Path) -> Result<PathBuf, String> {
+    let id = safe_id(name, "theme");
+    let manifest = AddonManifest {
+        id: id.clone(),
+        name: name.to_string(),
+        version: "1.0.0".into(),
+        author: "you".into(),
+        description: "тема, экспортированная из приложения".into(),
+        scope: "deck".into(),
+        deck: DeckAddon {
+            theme: "theme.css".into(),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let manifest = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    let dest = destination(to, &format!("{id}-1.0.0.sdwaddon"));
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    write_files(
+        &dest,
+        &[
+            (MANIFEST, manifest.as_bytes()),
+            ("theme.css", css.as_bytes()),
+        ],
+    )?;
+    Ok(dest)
+}
+
+/// A folder means "pick a name inside it"; anything else is the file path.
+fn destination(to: &Path, name: &str) -> PathBuf {
+    if to.is_dir() || to.extension().is_none() {
+        to.join(name)
+    } else {
+        to.to_path_buf()
+    }
+}
+
+/// Zip one folder, keeping paths relative to it. The manifest goes first so
+/// the archive can be recognised without unpacking it.
+fn write_zip(source: &Path, dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    let manifest = source.join(MANIFEST);
+    if manifest.is_file() {
+        writer
+            .start_file(MANIFEST, options)
+            .map_err(|e| e.to_string())?;
+        std::io::copy(
+            &mut std::fs::File::open(&manifest).map_err(|e| e.to_string())?,
+            &mut writer,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let mut stack = vec![source.to_path_buf()];
+    let mut files = 0usize;
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(source) else {
+                continue;
+            };
+            if rel == Path::new(MANIFEST) {
+                continue;
+            }
+            let Some(rel_text) = rel.to_str() else {
+                continue;
+            };
+            files += 1;
+            if files > 512 {
+                return Err("в пакете слишком много файлов".into());
+            }
+            writer
+                .start_file(rel_text.replace('\\', "/"), options)
+                .map_err(|e| e.to_string())?;
+            std::io::copy(
+                &mut std::fs::File::open(&path).map_err(|e| e.to_string())?,
+                &mut writer,
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Zip a small in-memory package: manifest first, then its assets.
+fn write_files(dest: &Path, files: &[(&str, &[u8])]) -> Result<(), String> {
+    let file = std::fs::File::create(dest).map_err(|e| e.to_string())?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for (name, body) in files {
+        writer
+            .start_file(*name, options)
+            .map_err(|e| e.to_string())?;
+        use std::io::Write;
+        writer.write_all(body).map_err(|e| e.to_string())?;
+    }
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A complete example the user can copy, import and edit./// A complete example the user can copy, import and edit.
 pub fn example_manifest() -> AddonManifest {
     AddonManifest {
         id: "example".into(),
@@ -579,6 +761,13 @@ pub fn example_manifest() -> AddonManifest {
             ..Default::default()
         }],
     }
+}
+
+/// A file-safe id, falling back to `prefix-<hex>` for names the filesystem
+/// cannot use (a caption in another script, for example). The manifest keeps
+/// the original name.
+fn safe_id(name: &str, prefix: &str) -> String {
+    clean_id(name).unwrap_or_else(|_| format!("{prefix}-{}", crate::model::random_id(4)))
 }
 
 fn clean_id(raw: &str) -> Result<String, String> {
@@ -1001,6 +1190,43 @@ mod tests {
         assert_eq!(back.deck.tiles.len(), 1);
         assert_eq!(back.daemon.actions.len(), 1);
         assert_eq!(back.settings.len(), 1);
+    }
+
+    #[test]
+    fn names_in_other_scripts_still_export() {
+        assert_eq!(safe_id("Москва", "clock").len() > 6, true);
+        assert!(clean_id("Москва").is_err());
+        assert_eq!(safe_id("Lamp", "theme"), "lamp");
+    }
+
+    #[test]
+    fn exported_clock_unpacks_back() {
+        let dir = std::env::temp_dir().join(format!("sdw-export-{}", crate::model::random_id(6)));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let cfg = ClockCfg {
+            caption: "Test".into(),
+            style: "digital".into(),
+            ..Default::default()
+        };
+        let path = export_clock("Test clock", &cfg, &dir).expect("export");
+        assert_eq!(path.extension().and_then(|e| e.to_str()), Some("sdwaddon"));
+
+        let bytes = std::fs::read(&path).expect("read");
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip");
+        let mut clock = String::new();
+        {
+            use std::io::Read;
+            archive
+                .by_name("clock.json")
+                .expect("clock.json")
+                .read_to_string(&mut clock)
+                .expect("read clock");
+        }
+        let back: ClockCfg = serde_json::from_str(&clock).expect("parse clock");
+        assert_eq!(back.caption, "Test");
+        assert_eq!(back.style, "digital");
+        assert!(archive.by_name(MANIFEST).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

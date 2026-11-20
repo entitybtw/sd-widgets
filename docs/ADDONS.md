@@ -307,9 +307,15 @@ store uses this to put a package with daemon actions on both machines.
   configuration.
 - **Addons → store** adds a repository base and installs any package it lists
   with one press.
+- **Clock → export clock** and **export theme** write a ready `.sdwaddon` into
+  the Downloads folder (`~/.local/share/sd-widgets/exports` when there is no
+  Downloads), without keeping a second copy in the addons folder.
+- **Addons → export** on any card zips that installed package.
 
 Saved presets are ordinary packages: edit the files, re-import, or ship the
-folder as a `.sdwaddon` (any zip with `addon.json` at the root).
+folder as a `.sdwaddon` (any zip with `addon.json` at the root). An exported
+package has the same layout, so it installs through **import**, a link or a
+store like any other.
 
 ## Security
 
