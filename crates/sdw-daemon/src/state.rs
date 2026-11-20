@@ -81,16 +81,29 @@ pub struct HaRuntime {
     pub status: HaStatus,
     pub entities: Vec<HaEntity>,
     pub areas: Vec<String>,
+    pub views: Vec<HaView>,
     pub categories: Vec<HaCategory>,
     pub presets: Vec<HaPreset>,
     pub client: Option<HaClient>,
+    /// Last successful sync and last attempt, both monotonic.
     pub last_sync: Instant,
+    pub last_attempt: Instant,
+    pub fetched_ms: u64,
+    /// A fetch is in flight; another one must not start.
+    pub refreshing: bool,
+    /// A command just ran, so the next fetch is due immediately.
+    pub dirty: bool,
+    pub area_map: Vec<(String, String)>,
+    pub areas_at: Instant,
+    pub views_at: Instant,
+    pub error: String,
 }
 
 impl HaRuntime {
     pub fn from_config(cfg: &DaemonConfig) -> Self {
         let configured = !cfg.ha.url.trim().is_empty() && !cfg.ha.token.trim().is_empty();
         let client = configured.then(|| HaClient::new(&cfg.ha.url, &cfg.ha.token));
+        let long_ago = Instant::now() - Duration::from_secs(3600);
         Self {
             status: HaStatus {
                 configured,
@@ -103,15 +116,122 @@ impl HaRuntime {
             },
             entities: Vec::new(),
             areas: Vec::new(),
+            views: Vec::new(),
             categories: cfg.ha.categories.clone(),
             presets: cfg.ha.presets.clone(),
             client,
-            last_sync: Instant::now() - Duration::from_secs(3600),
+            last_sync: long_ago,
+            last_attempt: long_ago,
+            fetched_ms: 0,
+            refreshing: false,
+            dirty: false,
+            area_map: Vec::new(),
+            areas_at: long_ago,
+            views_at: long_ago,
+            error: String::new(),
         }
     }
 
     pub fn reload(&mut self, cfg: &DaemonConfig) {
         *self = Self::from_config(cfg);
+    }
+
+    pub fn configured(&self) -> bool {
+        self.client.is_some()
+    }
+
+    /// Called with the lock held: decide whether a fetch is due and take
+    /// everything it needs. No I/O happens while the caller still holds the
+    /// lock, which is what used to freeze status, toggles and the whole UI.
+    pub fn begin(&mut self) -> Option<(HaClient, bool, bool)> {
+        let client = self.client.clone()?;
+        if self.refreshing {
+            return None;
+        }
+        let wait = if self.dirty || self.fetched_ms == 0 {
+            Duration::from_millis(500)
+        } else {
+            Duration::from_secs(3)
+        };
+        if self.last_attempt.elapsed() < wait {
+            return None;
+        }
+        self.refreshing = true;
+        self.dirty = false;
+        self.last_attempt = Instant::now();
+        let want_rooms =
+            self.area_map.is_empty() || self.areas_at.elapsed() > Duration::from_secs(600);
+        let want_views = self.views_at.elapsed() > Duration::from_secs(600);
+        Some((client, want_rooms, want_views))
+    }
+
+    pub fn apply(
+        &mut self,
+        entities: Result<Vec<HaEntity>, String>,
+        rooms: Option<Result<(Vec<String>, Vec<(String, String)>), String>>,
+        views: Option<Result<Vec<HaView>, String>>,
+    ) {
+        self.refreshing = false;
+        if let Some(result) = rooms {
+            match result {
+                Ok((areas, map)) => {
+                    self.areas = areas;
+                    self.area_map = map;
+                }
+                // Older builds or a restricted token: keep the old mapping
+                // instead of dropping every room.
+                Err(_) => {}
+            }
+            self.areas_at = Instant::now();
+        }
+        if let Some(result) = views {
+            match result {
+                Ok(list) => {
+                    if !list.is_empty() {
+                        self.views = list;
+                    }
+                }
+                Err(e) => {
+                    if self.views.is_empty() {
+                        self.status.error = e;
+                    }
+                }
+            }
+            self.views_at = Instant::now();
+        }
+        match entities {
+            Ok(mut list) => {
+                HaClient::apply_areas(&mut list, &self.area_map);
+                self.entities = list;
+                self.status.entities = self.entities.len();
+                self.status.connected = true;
+                self.status.error.clear();
+                self.status.last_sync_ms = now_ms();
+                self.fetched_ms = self.status.last_sync_ms;
+                self.error.clear();
+                self.last_sync = Instant::now();
+            }
+            Err(e) => {
+                self.status.connected = false;
+                self.status.error = e.clone();
+                self.error = e;
+            }
+        }
+    }
+
+    /// A service call changes something right now: fetch the new states as
+    /// soon as the worker can, without waiting for the next regular tick.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+        self.last_attempt = Instant::now() - Duration::from_secs(2);
+    }
+
+    pub fn age_ms(&self) -> u64 {
+        if self.fetched_ms == 0 {
+            0
+        } else {
+            self.last_sync.elapsed().as_millis() as u64
+        }
     }
 
     /// Clean up and store the categories. Returns what was actually kept.
@@ -162,20 +282,12 @@ impl HaRuntime {
             return Err("Home Assistant не настроен".into());
         };
         match client.states() {
-            Ok(states) => {
-                self.status.connected = true;
-                self.status.entities = states.entities.len();
-                self.status.last_sync_ms = states.fetched_ms;
-                self.status.error.clear();
-                self.entities = states.entities;
-                self.areas = states.areas;
-                self.last_sync = Instant::now();
+            Ok(entities) => {
+                self.apply(Ok(entities), Some(client.rooms()), None);
                 Ok(())
             }
             Err(e) => {
-                self.status.connected = false;
-                self.status.error = e.clone();
-                self.last_sync = Instant::now();
+                self.apply(Err(e.clone()), None, None);
                 Err(e)
             }
         }
@@ -206,26 +318,34 @@ impl HaRuntime {
         client.set_brightness(entity_id, brightness)
     }
 
-    pub fn set(
+    /// Install a client that has already answered `ping`, then let the worker
+    /// fetch states. The ping itself must happen outside this lock.
+    pub fn install(
         &mut self,
         cfg: &mut DaemonConfig,
-        url: &str,
-        token: &str,
+        client: HaClient,
+        message: &str,
         favorites: &[String],
-    ) -> Result<(), String> {
-        cfg.ha.url = url.trim().to_string();
-        cfg.ha.token = token.trim().to_string();
+    ) {
+        cfg.ha.url = client.base().to_string();
         cfg.ha.favorites = favorites.to_vec();
-        let client = HaClient::new(&cfg.ha.url, &cfg.ha.token);
-        let message = client.ping()?;
         self.client = Some(client);
         self.status.configured = true;
         self.status.connected = true;
         self.status.url = cfg.ha.url.clone();
         self.status.favorites = cfg.ha.favorites.clone();
         self.status.error = format!("Подключено: {message}");
-        let _ = self.refresh();
-        Ok(())
+        self.error.clear();
+        self.fetched_ms = 0;
+        self.entities.clear();
+        self.area_map.clear();
+        self.views.clear();
+        self.last_sync = Instant::now() - Duration::from_secs(3600);
+        self.last_attempt = self.last_sync;
+        self.areas_at = self.last_sync;
+        self.views_at = self.last_sync;
+        self.dirty = true;
+        self.refreshing = false;
     }
 }
 
@@ -496,30 +616,35 @@ impl AppState {
             .clone()
             .start(self.stop.clone(), own_service);
 
-        // Home Assistant polling
+        // Home Assistant: one worker owns every fetch. It takes the client,
+        // releases the lock, does the HTTP work, then stores the result. The
+        // lock is never held across a network call, so `/status`, a toggle or
+        // a state poll can answer immediately while a slow HA is timing out.
         let ha = self.ha.clone();
-        let cfg_arc = self.cfg.clone();
         let log = self.logger.clone();
         let stop = self.stop.clone();
-        std::thread::spawn(move || loop {
-            if stop.load(Ordering::Relaxed) {
-                break;
-            }
-            let configured = cfg_arc
-                .lock()
-                .map(|c| !c.ha.url.is_empty() && !c.ha.token.is_empty())
-                .unwrap_or(false);
-            if configured {
-                if let Ok(mut h) = ha.lock() {
-                    if h.last_sync.elapsed() > Duration::from_secs(10) {
-                        if let Err(e) = h.refresh() {
-                            log.warn(format!("Home Assistant: {e}"));
-                        }
-                    }
+        std::thread::Builder::new()
+            .name("sdw-ha".into())
+            .spawn(move || loop {
+                if stop.load(Ordering::Relaxed) {
+                    break;
                 }
-            }
-            std::thread::sleep(Duration::from_secs(2));
-        });
+                let job = ha.lock().ok().and_then(|mut h| h.begin());
+                let Some((client, want_rooms, want_views)) = job else {
+                    std::thread::sleep(Duration::from_millis(350));
+                    continue;
+                };
+                let entities = client.states();
+                if let Err(e) = &entities {
+                    log.warn(format!("Home Assistant: {e}"));
+                }
+                let rooms = want_rooms.then(|| client.rooms());
+                let views = want_views.then(|| fetch_views(&client));
+                if let Ok(mut h) = ha.lock() {
+                    h.apply(entities, rooms, views);
+                }
+            })
+            .ok();
 
         // UDP controller input
         let viiper = self.viiper.clone();
@@ -552,4 +677,8 @@ impl AppState {
         self.monitor.stop();
         self.viiper.stop();
     }
+}
+
+fn fetch_views(client: &HaClient) -> Result<Vec<HaView>, String> {
+    sdw_core::ha::views_guarded(client)
 }

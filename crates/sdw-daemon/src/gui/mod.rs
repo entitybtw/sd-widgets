@@ -2953,33 +2953,44 @@ impl App {
                         true,
                     );
                     self.spawn(move || {
+                        // Ping first, then install: no lock is held while the
+                        // server is being reached.
+                        let client = sdw_core::ha::HaClient::new(&url, &token);
+                        let message = match client.ping() {
+                            Ok(m) => m,
+                            Err(e) => return TaskResult::Msg(Err(e)),
+                        };
                         let mut cfg = state.cfg();
                         let fav = cfg.ha.favorites.clone();
-                        let res = state
-                            .ha
-                            .lock()
-                            .map(|mut h| h.set(&mut cfg, &url, &token, &fav))
-                            .unwrap_or(Err("home assistant lock".into()));
-                        if res.is_ok() {
-                            let url = cfg.ha.url.clone();
-                            let token = cfg.ha.token.clone();
-                            let _ = state.update_cfg(|c| {
-                                c.ha.url = url;
-                                c.ha.token = token;
-                            });
+                        if let Ok(mut h) = state.ha.lock() {
+                            h.install(&mut cfg, client, &message, &fav);
                         }
-                        TaskResult::Msg(res.map(|_| "home assistant подключён".into()))
+                        let _ = state.update_cfg(|c| {
+                            c.ha.url = url;
+                            c.ha.token = token;
+                        });
+                        TaskResult::Msg(Ok("home assistant подключён".into()))
                     });
                 }
                 if ghost(ui, t!(self.lang, "проверить", "test"), t).clicked() {
                     let state = self.state.clone();
                     self.spawn(move || {
-                        let res = state
-                            .ha
-                            .lock()
-                            .map(|mut h| h.refresh())
-                            .unwrap_or(Err("lock".into()));
-                        TaskResult::Msg(res.map(|_| "home assistant отвечает".into()))
+                        let client = state.ha.lock().ok().and_then(|h| h.client.clone());
+                        let Some(client) = client else {
+                            return TaskResult::Msg(Err("home assistant не настроен".into()));
+                        };
+                        let entities = client.states();
+                        let ok = entities.is_ok();
+                        let rooms = Some(client.rooms());
+                        let views = Some(sdw_core::ha::views_guarded(&client));
+                        if let Ok(mut h) = state.ha.lock() {
+                            h.apply(entities, rooms, views);
+                        }
+                        TaskResult::Msg(if ok {
+                            Ok("home assistant отвечает".into())
+                        } else {
+                            Err("home assistant не отвечает".into())
+                        })
                     });
                 }
                 if !s.ha.error.is_empty() {

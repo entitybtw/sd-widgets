@@ -15,6 +15,7 @@ sha2.workspace = true
 getrandom.workspace = true
 ureq.workspace = true
 dirs.workspace = true
+tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

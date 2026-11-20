@@ -721,16 +721,41 @@ pub struct HaCall {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HaStates {
     pub entities: Vec<HaEntity>,
+    /// Wall-clock time of the last successful sync, `0` when there was none.
     pub fetched_ms: u64,
+    /// Age of the data when the daemon answered, in milliseconds. The deck
+    /// uses it instead of comparing clocks with another machine.
+    #[serde(default)]
+    pub age_ms: u64,
+    /// Whether the last attempt to reach Home Assistant succeeded.
+    #[serde(default)]
+    pub connected: bool,
+    /// Last connection error, empty when everything is fine.
+    #[serde(default)]
+    pub error: String,
     /// Area names in Home Assistant order; used by the deck for room paging.
     #[serde(default)]
     pub areas: Vec<String>,
+    /// Tabs of the dashboard (Lovelace views), in dashboard order.
+    #[serde(default)]
+    pub views: Vec<HaView>,
     /// User-made categories, ordered, shared by the daemon and every deck.
     #[serde(default)]
     pub categories: Vec<HaCategory>,
     /// User-made light/scene presets, ordered, shared by everyone.
     #[serde(default)]
     pub presets: Vec<HaPreset>,
+}
+
+/// One tab of a Home Assistant dashboard. `entities` keeps the order the
+/// dashboard itself uses, so the deck reads like the browser page.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HaView {
+    pub title: String,
+    pub path: String,
+    pub icon: String,
+    pub entities: Vec<String>,
 }
 
 /// A custom group of Home Assistant entities. The order of `entities` is the

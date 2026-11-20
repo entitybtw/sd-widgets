@@ -2359,23 +2359,13 @@ fn ha_glyph(domain: &str) -> &'static str {
 }
 
 fn ha_state_text(e: &HaEntity, lang: Lang) -> String {
-    match e.state.as_str() {
-        "on" => t!(lang, "вкл", "on").to_string(),
-        "off" => t!(lang, "выкл", "off").to_string(),
-        "open" => t!(lang, "открыто", "open").to_string(),
-        "closed" => t!(lang, "закрыто", "closed").to_string(),
-        "opening" => t!(lang, "открывается", "opening").to_string(),
-        "closing" => t!(lang, "закрывается", "closing").to_string(),
-        "playing" => t!(lang, "играет", "playing").to_string(),
-        "paused" => t!(lang, "пауза", "paused").to_string(),
-        "idle" => t!(lang, "ожидание", "idle").to_string(),
-        "unavailable" => t!(lang, "недоступно", "unavailable").to_string(),
-        "unknown" => t!(lang, "неизвестно", "unknown").to_string(),
-        "home" => t!(lang, "дома", "home").to_string(),
-        "not_home" => t!(lang, "не дома", "away").to_string(),
-        "" => "—".into(),
-        other => other.to_string(),
-    }
+    sdw_core::ha::state_with_unit(e, lang)
+}
+
+/// The domain's own name without the unit; used where the unit has its own
+/// slot (climate, media player).
+fn ha_state_bare(e: &HaEntity, lang: Lang) -> String {
+    sdw_core::ha::state_text(e, lang)
 }
 
 /// A square, hairline icon button used inside Home Assistant tiles.
@@ -2442,6 +2432,8 @@ fn ha_service(e: &HaEntity, service: &str, data: serde_json::Value) -> HaCall {
 #[derive(Clone)]
 enum HaRoom {
     Favorites,
+    /// A tab of the Home Assistant Lovelace dashboard.
+    View(usize),
     Category(usize),
     Area(String),
     Unassigned,
@@ -2458,11 +2450,26 @@ struct HaAction {
 /// Sensors worth a tile. Everything else (updates, counters, diagnostics)
 /// would drown the page in 600 rows.
 fn ha_visible(e: &HaEntity) -> bool {
+    ha_visible_with(e, false)
+}
+
+/// Home Assistant installations grow hundreds of entities, many of them
+/// unavailable, diagnostics or update notices. By default the page keeps what
+/// a person can use and hides the dead weight; one switch brings it back.
+fn ha_visible_with(e: &HaEntity, show_all: bool) -> bool {
+    let offline = matches!(e.state.as_str(), "unavailable" | "unknown");
     if sdw_core::ha::is_controllable(e) {
         if e.domain() == "media_player" {
             return e.is_on() || e.media_title().is_some();
         }
+        // An update is interesting only while there is something to install.
+        if e.domain() == "update" {
+            return show_all || e.state == "on";
+        }
         return true;
+    }
+    if offline && !show_all {
+        return false;
     }
     let device_class = e
         .attributes
@@ -2476,8 +2483,9 @@ fn ha_visible(e: &HaEntity) -> bool {
         "sensor" => {
             !e.unit().is_empty() || e.state.parse::<f64>().is_ok() || !device_class.is_empty()
         }
-        "binary_sensor" => !matches!(device_class, "update"),
-        "weather" | "person" | "event" | "image" | "update" => true,
+        "binary_sensor" => show_all || !matches!(device_class, "update"),
+        "weather" | "person" | "image" | "update" => true,
+        "event" => show_all,
         _ => false,
     }
 }
@@ -2525,6 +2533,43 @@ fn ha_move_button(ui: &mut Ui, t: &Tokens, glyph: &str, tip: &str, enabled: bool
     resp.on_hover_text(tip).clicked()
 }
 
+/// Page switcher for rooms with more tiles than fit in one screen.
+fn ha_pager(ui: &mut Ui, t: &Tokens, page: &mut usize, pages: usize, total: usize, lang: Lang) {
+    if pages <= 1 {
+        return;
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        if theme::nav_arrow(ui, t, theme::icon::ARROW_LEFT, *page > 0).clicked() {
+            *page = page.saturating_sub(1);
+        }
+        ui.label(
+            RichText::new(format!("{} / {}", *page + 1, pages))
+                .family(FontFamily::Monospace)
+                .size(12.0)
+                .color(t.muted),
+        );
+        if theme::nav_arrow(ui, t, theme::icon::ARROW_RIGHT, *page + 1 < pages).clicked() {
+            *page = (*page + 1).min(pages - 1);
+        }
+        ui.label(
+            RichText::new(format!(
+                "{} {}",
+                total,
+                if lang == Lang::Ru {
+                    "плиток"
+                } else {
+                    "tiles"
+                }
+            ))
+            .family(FontFamily::Monospace)
+            .size(10.5)
+            .color(t.faint),
+        );
+    });
+    ui.add_space(2.0);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn ha_card(
     ui: &mut Ui,
@@ -2536,6 +2581,9 @@ fn ha_card(
     categories: &[HaCategory],
     current_category: Option<usize>,
     actions: &mut Vec<HaAction>,
+    // Entity id and the percentage of a slider that was just let go; kept
+    // apart so the slider never snaps back before Home Assistant answers.
+    bright: &mut Vec<(String, u8)>,
     star: &mut Option<String>,
     category_change: &mut Option<(String, Option<String>)>,
     move_entity: &mut Option<(usize, String, i32)>,
@@ -2678,33 +2726,51 @@ fn ha_card(
                                 state: Some(if on { "off" } else { "on" }.into()),
                             });
                         }
-                        let mut pct =
-                            i32::from(e.brightness_pct().unwrap_or(if on { 100 } else { 0 }));
-                        let slider_w = (width - 96.0).max(90.0);
-                        ui.spacing_mut().interact_size.y = 34.0;
-                        let r = ui.add_sized(
-                            [slider_w, 34.0],
-                            egui::Slider::new(&mut pct, 1..=100)
-                                .show_value(false)
-                                .trailing_fill(true),
-                        );
-                        if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                            actions.push(HaAction {
-                                call: ha_service(
-                                    e,
-                                    "turn_on",
-                                    json!({ "brightness_pct": pct.clamp(1, 100) }),
-                                ),
-                                entity: e.entity_id.clone(),
-                                state: Some("on".into()),
-                            });
-                        }
-                        ui.label(
-                            RichText::new(format!("{pct}%"))
+                        if e.supports_brightness() {
+                            let reported = e.brightness_pct().unwrap_or(if on { 100 } else { 0 });
+                            let mut pct = i32::from(reported.max(if on { 1 } else { 0 }));
+                            let slider_w = (width - 96.0).max(90.0);
+                            ui.spacing_mut().interact_size.y = 34.0;
+                            let r = ui.add_sized(
+                                [slider_w, 34.0],
+                                egui::Slider::new(&mut pct, 1..=100)
+                                    .step_by(1.0)
+                                    .show_value(false)
+                                    .trailing_fill(true),
+                            );
+                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                let pct = pct.clamp(1, 100) as u8;
+                                // Remember the value locally, then send it:
+                                // the slider must not snap back while HA is
+                                // still catching up with the service call.
+                                bright.push((e.entity_id.clone(), pct));
+                                actions.push(HaAction {
+                                    call: ha_service(
+                                        e,
+                                        "turn_on",
+                                        json!({ "brightness_pct": pct }),
+                                    ),
+                                    entity: e.entity_id.clone(),
+                                    state: Some("on".into()),
+                                });
+                            }
+                            ui.label(
+                                RichText::new(format!(
+                                    "{}%",
+                                    if on || reported > 0 { pct } else { 0 }
+                                ))
                                 .family(FontFamily::Monospace)
                                 .size(12.0)
                                 .color(t.faint),
-                        );
+                            );
+                        } else {
+                            // An on/off bulb has nothing to slide.
+                            ui.label(
+                                RichText::new(ha_state_text(e, lang))
+                                    .size(13.0)
+                                    .color(t.muted),
+                            );
+                        }
                     });
                     if e.supports_color_temp() {
                         let min = e.min_color_temp_kelvin().max(1000);
@@ -2713,13 +2779,16 @@ fn ha_card(
                             .color_temp_kelvin()
                             .unwrap_or((min + max) / 2)
                             .clamp(min, max) as i32;
+                        // 50 K steps: the whole range stays reachable while a
+                        // fingertip can still land on a wanted value.
+                        let step = if max - min > 2000 { 50 } else { 10 };
                         ui.horizontal(|ui| {
                             ui.label(theme::icon(theme::icon::THERMOSTAT, 17.0, t.faint));
                             ui.spacing_mut().interact_size.y = 30.0;
                             let r = ui.add_sized(
                                 [(width - 100.0).max(90.0), 30.0],
                                 egui::Slider::new(&mut k, min as i32..=max as i32)
-                                    .step_by(100.0)
+                                    .step_by(step as f64)
                                     .show_value(false)
                                     .trailing_fill(true),
                             );
@@ -2765,6 +2834,40 @@ fn ha_card(
                                         state: Some("on".into()),
                                     });
                                 }
+                            }
+                        });
+                        // Any colour, not only the eight presets. The draft
+                        // lives in egui memory per entity, so opening the
+                        // picker and choosing a shade survives frames; nothing
+                        // is sent until "применить" is pressed.
+                        let id = ui.make_persistent_id(("ha-light-colour", e.entity_id.as_str()));
+                        let fallback = e.rgb_color().unwrap_or([255, 196, 120]);
+                        let mut draft =
+                            ui.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || fallback));
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(t!(lang, "свой цвет", "custom colour"))
+                                    .size(12.0)
+                                    .color(t.muted),
+                            );
+                            egui::color_picker::color_edit_button_srgb(ui, &mut draft);
+                            ui.data_mut(|d| d.insert_temp(id, draft));
+                            ui.label(
+                                RichText::new(format!(
+                                    "#{:02X}{:02X}{:02X}",
+                                    draft[0], draft[1], draft[2]
+                                ))
+                                .family(FontFamily::Monospace)
+                                .size(10.5)
+                                .color(t.faint),
+                            );
+                            if theme::ghost(ui, t!(lang, "применить", "apply"), t).clicked()
+                            {
+                                actions.push(HaAction {
+                                    call: ha_service(e, "turn_on", json!({ "rgb_color": draft })),
+                                    entity: e.entity_id.clone(),
+                                    state: Some("on".into()),
+                                });
                             }
                         });
                     }
@@ -3290,20 +3393,23 @@ fn ha_card(
                     });
                 }
                 "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker" | "event" => {
-                    let unit = e.unit();
-                    ui.label(
-                        RichText::new(format!(
-                            "{}{}",
-                            ha_state_text(e, lang),
-                            if unit.is_empty() {
-                                String::new()
-                            } else {
-                                format!(" {unit}")
-                            }
-                        ))
-                        .size(22.0)
-                        .strong()
-                        .color(if on { t.accent } else { t.strong }),
+                    let text = ha_state_text(e, lang);
+                    // Long values (an uptime, a formatted timestamp) shrink
+                    // instead of running into the star and menu buttons.
+                    let size = if text.chars().count() > 13 {
+                        15.0
+                    } else if text.chars().count() > 8 {
+                        19.0
+                    } else {
+                        22.0
+                    };
+                    ui.add(
+                        egui::Label::new(RichText::new(text).size(size).strong().color(if on {
+                            t.accent
+                        } else {
+                            t.strong
+                        }))
+                        .truncate(),
                     );
                 }
                 _ => {
@@ -3774,13 +3880,14 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     // ---------------------------------------------------------------- rooms
 
+    let show_all = app.ha.show_offline;
     let mut area_counts: Vec<(String, usize)> = Vec::new();
     for area in &app.ha.areas {
         let count = app
             .ha
             .entities
             .iter()
-            .filter(|e| &e.area == area && ha_visible(e))
+            .filter(|e| &e.area == area && ha_visible_with(e, show_all))
             .count();
         area_counts.push((area.clone(), count));
     }
@@ -3793,7 +3900,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .ha
                 .entities
                 .iter()
-                .filter(|x| x.area == e.area && ha_visible(x))
+                .filter(|x| x.area == e.area && ha_visible_with(x, show_all))
                 .count();
             area_counts.push((e.area.clone(), count));
         }
@@ -3801,12 +3908,34 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     area_counts.retain(|(_, n)| *n > 0);
 
     let mut rooms: Vec<(HaRoom, String, usize)> = Vec::new();
-    let all_count = app.ha.entities.iter().filter(|e| ha_visible(e)).count();
+    let all_count = app
+        .ha
+        .entities
+        .iter()
+        .filter(|e| ha_visible_with(e, show_all))
+        .count();
     rooms.push((
         HaRoom::All,
         t!(app.lang, "весь дом", "whole home").to_string(),
         all_count,
     ));
+    // The dashboard's own tabs come first: this is the page the user built in
+    // Home Assistant, not a second opinion invented by the daemon.
+    for (i, view) in app.ha.views.iter().enumerate() {
+        let count = view
+            .entities
+            .iter()
+            .filter(|id| {
+                app.ha
+                    .entities
+                    .iter()
+                    .find(|e| &e.entity_id == *id)
+                    .map(|e| ha_visible_with(e, show_all))
+                    .unwrap_or(false)
+            })
+            .count();
+        rooms.push((HaRoom::View(i), view.title.clone(), count));
+    }
     if !favorites.is_empty() {
         rooms.push((
             HaRoom::Favorites,
@@ -3824,7 +3953,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         .ha
         .entities
         .iter()
-        .any(|e| e.area.is_empty() && ha_visible(e));
+        .any(|e| e.area.is_empty() && ha_visible_with(e, show_all));
     if !area_counts.is_empty() && has_unassigned {
         rooms.push((
             HaRoom::Unassigned,
@@ -3832,7 +3961,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             app.ha
                 .entities
                 .iter()
-                .filter(|e| e.area.is_empty() && ha_visible(e))
+                .filter(|e| e.area.is_empty() && ha_visible_with(e, show_all))
                 .count(),
         ));
     }
@@ -3924,9 +4053,63 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             {
                 app.ha.manage = !app.ha.manage;
             }
+            if theme::ghost(
+                ui,
+                if app.ha.show_offline {
+                    t!(app.lang, "скрыть недоступные", "hide unavailable")
+                } else {
+                    t!(app.lang, "недоступные", "unavailable")
+                },
+                t,
+            )
+            .clicked()
+            {
+                app.ha.show_offline = !app.ha.show_offline;
+                app.ha.page = 0;
+            }
         });
     });
     ui.add_space(6.0);
+
+    // Connection state belongs on the page, not in a hidden tooltip: data
+    // that stopped updating must never look live.
+    if app.ha.loaded && (!app.ha.connected || app.ha.age_ms > 20_000) {
+        let stale = app.ha.connected;
+        let message = if stale {
+            format!(
+                "{} {}",
+                t!(app.lang, "данные устарели:", "data is stale:"),
+                sdw_core::ha::human_duration(app.ha.age_ms as f64 / 1000.0, app.lang)
+            )
+        } else if app.ha.stale_error.is_empty() {
+            t!(
+                app.lang,
+                "нет связи с home assistant",
+                "no connection to home assistant"
+            )
+            .to_string()
+        } else {
+            util::truncate(&app.ha.stale_error, 140)
+        };
+        theme::card(ui, t, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(theme::icon(theme::icon::SENSORS, 17.0, t.warn));
+                ui.label(RichText::new(message).size(12.5).color(if stale {
+                    t.warn
+                } else {
+                    t.bad
+                }));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::ghost(ui, t!(app.lang, "обновить", "retry"), t).clicked() {
+                        app.ha.last_fetch =
+                            std::time::Instant::now() - std::time::Duration::from_secs(30);
+                        app.load_ha();
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
+    }
 
     // ---------------------------------------------------------------- entities
 
@@ -3969,25 +4152,39 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 }
                 out
             }
+            HaRoom::View(i) => {
+                let order = app
+                    .ha
+                    .views
+                    .get(*i)
+                    .map(|v| v.entities.clone())
+                    .unwrap_or_default();
+                order
+                    .iter()
+                    .filter_map(|id| app.ha.entities.iter().find(|e| &e.entity_id == id))
+                    .filter(|e| ha_visible_with(e, show_all))
+                    .cloned()
+                    .collect()
+            }
             HaRoom::Area(a) => app
                 .ha
                 .entities
                 .iter()
-                .filter(|e| &e.area == a && ha_visible(e))
+                .filter(|e| &e.area == a && ha_visible_with(e, show_all))
                 .cloned()
                 .collect(),
             HaRoom::Unassigned => app
                 .ha
                 .entities
                 .iter()
-                .filter(|e| e.area.is_empty() && ha_visible(e))
+                .filter(|e| e.area.is_empty() && ha_visible_with(e, show_all))
                 .cloned()
                 .collect(),
             HaRoom::All => app
                 .ha
                 .entities
                 .iter()
-                .filter(|e| ha_visible(e))
+                .filter(|e| ha_visible_with(e, show_all))
                 .cloned()
                 .collect(),
         }
@@ -3996,6 +4193,16 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         if let Some((state, at)) = optimistic.get(&e.entity_id) {
             if at.elapsed() < std::time::Duration::from_secs(6) {
                 e.state = state.clone();
+            }
+        }
+        // A slider just released: show its value until Home Assistant
+        // reports the same brightness, otherwise it jumps back and forth.
+        if let Some((pct, at)) = app.ha.optimistic_pct.get(&e.entity_id) {
+            if at.elapsed() < std::time::Duration::from_secs(8) {
+                let raw = ((u16::from(*pct) * 255 + 50) / 100).min(255) as u64;
+                if let Some(map) = e.attributes.as_object_mut() {
+                    map.insert("brightness".into(), serde_json::json!(raw));
+                }
             }
         }
     }
@@ -4036,10 +4243,32 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         return;
     }
 
+    // A whole home can hold hundreds of tiles. Rendering all of them at once
+    // costs frames and scrolls worse than a fixed page, so show one page and
+    // reset it whenever the room or the search changes.
+    if app.ha.page_room != app.ha.room || app.ha.page_needle != app.ha.search {
+        app.ha.page = 0;
+        app.ha.page_room = app.ha.room;
+        app.ha.page_needle = app.ha.search.clone();
+    }
+    let total_found = entities.len();
+    let page_size = 48usize;
+    let pages = total_found.div_ceil(page_size).max(1);
+    if app.ha.page >= pages {
+        app.ha.page = pages - 1;
+    }
+    let page = app.ha.page;
+    let from = page * page_size;
+    let to = (from + page_size).min(total_found);
+    entities = entities[from..to].to_vec();
+
     let mut actions: Vec<HaAction> = Vec::new();
+    let mut bright: Vec<(String, u8)> = Vec::new();
     let mut star: Option<String> = None;
     let mut category_change: Option<(String, Option<String>)> = None;
     let mut move_entity: Option<(usize, String, i32)> = None;
+
+    ha_pager(ui, t, &mut app.ha.page, pages, total_found, app.lang);
 
     // Group tiles by domain so the page reads in sections.
     let mut groups: Vec<(&str, Vec<&HaEntity>)> = Vec::new();
@@ -4092,6 +4321,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             &categories,
                             current_category,
                             &mut actions,
+                            &mut bright,
                             &mut star,
                             &mut category_change,
                             &mut move_entity,
@@ -4102,6 +4332,11 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         }
     }
 
+    for (id, pct) in bright {
+        app.ha
+            .optimistic_pct
+            .insert(id, (pct, std::time::Instant::now()));
+    }
     let acted = !actions.is_empty();
     for a in actions {
         if let Some(state) = a.state {

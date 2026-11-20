@@ -1,6 +1,6 @@
 //! Home Assistant REST client and entity helpers.
 
-use crate::model::{HaCall, HaEntity, HaPresetAction, HaStates};
+use crate::model::{HaCall, HaEntity, HaPresetAction, HaStates, HaView};
 use serde_json::Value;
 use std::time::Duration;
 
@@ -31,6 +31,7 @@ pub fn capture_light_preset(entities: &[HaEntity]) -> Vec<HaPresetAction> {
     actions
 }
 
+#[derive(Clone)]
 pub struct HaClient {
     base: String,
     token: String,
@@ -142,32 +143,107 @@ impl HaClient {
         Ok((areas, entities))
     }
 
-    pub fn states(&self) -> Result<HaStates, String> {
+    /// Every state, without the area lookup: this is the cheap call the daemon
+    /// polls. `rooms` is a separate template that is worth caching.
+    pub fn states(&self) -> Result<Vec<HaEntity>, String> {
         let v = self.get("/api/states")?;
-        let mut entities: Vec<HaEntity> = serde_json::from_value(v).map_err(|e| e.to_string())?;
-        let mut areas = Vec::new();
-        match self.rooms() {
-            Ok((list, map)) => {
-                areas = list;
-                if !map.is_empty() {
-                    for e in &mut entities {
-                        if let Some((_, area)) = map.iter().find(|(id, _)| id == &e.entity_id) {
-                            e.area = area.clone();
-                        }
-                    }
-                }
-            }
-            Err(_) => {
-                // Older Home Assistant builds or a restricted token: ignore.
+        serde_json::from_value(v).map_err(|e| e.to_string())
+    }
+
+    /// Apply a cached entity → area map to a fresh state list.
+    pub fn apply_areas(entities: &mut [HaEntity], map: &[(String, String)]) {
+        for e in entities {
+            if let Some((_, area)) = map.iter().find(|(id, _)| id == &e.entity_id) {
+                e.area = area.clone();
             }
         }
+    }
+
+    pub fn snapshot(&self) -> Result<HaStates, String> {
+        let entities = self.states()?;
+        let (areas, _) = self.rooms().unwrap_or_default();
         Ok(HaStates {
             entities,
             fetched_ms: crate::model::now_ms(),
             areas,
-            categories: Vec::new(),
-            presets: Vec::new(),
+            ..HaStates::default()
         })
+    }
+
+    /// Tabs of the Lovelace dashboard, read through the WebSocket API: the
+    /// plain REST API does not expose them. A dashboard that is generated from
+    /// areas has no stored views, which is a normal answer, not an error.
+    pub fn views(&self) -> Result<Vec<HaView>, String> {
+        let ws = if let Some(rest) = self.base.strip_prefix("https://") {
+            format!("wss://{rest}/api/websocket")
+        } else if let Some(rest) = self.base.strip_prefix("http://") {
+            format!("ws://{rest}/api/websocket")
+        } else {
+            return Err("Home Assistant: неподдерживаемый адрес".into());
+        };
+        let (mut socket, _) = tungstenite::connect(&ws).map_err(|e| e.to_string())?;
+        let first = read_json(&mut socket)?;
+        if first.get("type").and_then(Value::as_str) != Some("auth_required") {
+            return Err("Home Assistant: неожиданный ответ WebSocket".into());
+        }
+        socket
+            .send(tungstenite::Message::text(
+                serde_json::json!({ "type": "auth", "access_token": self.token }).to_string(),
+            ))
+            .map_err(|e| e.to_string())?;
+        let auth = read_json(&mut socket)?;
+        match auth.get("type").and_then(Value::as_str) {
+            Some("auth_ok") => {}
+            Some("auth_invalid") => return Err("Home Assistant: токен отклонён".into()),
+            _ => return Err("Home Assistant: не удалось авторизоваться".into()),
+        }
+        socket
+            .send(tungstenite::Message::text(
+                serde_json::json!({ "id": 1, "type": "lovelace/config" }).to_string(),
+            ))
+            .map_err(|e| e.to_string())?;
+        let reply = read_json(&mut socket)?;
+        let _ = socket.close(None);
+        if reply.get("success").and_then(Value::as_bool) != Some(true) {
+            let msg = reply
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("дашборд недоступен");
+            return Err(format!("Home Assistant: {msg}"));
+        }
+        let result = reply.get("result").cloned().unwrap_or(Value::Null);
+        let views = result
+            .get("views")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let mut out = Vec::new();
+        for (i, v) in views.iter().enumerate() {
+            let mut entities = Vec::new();
+            collect_entities(v.get("cards").unwrap_or(&Value::Null), &mut entities);
+            let title = v
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| v.get("path").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_else(|| format!("{}", i + 1));
+            out.push(HaView {
+                title,
+                path: v
+                    .get("path")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                icon: v
+                    .get("icon")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                entities,
+            });
+        }
+        Ok(out)
     }
 
     pub fn call(&self, call: &HaCall) -> Result<Value, String> {
@@ -252,6 +328,69 @@ impl HaClient {
     }
 }
 
+/// The Lovelace WebSocket can block on a half-dead server. Run it in a thread
+/// of its own and stop waiting after a few seconds so a caller never hangs.
+pub fn views_guarded(client: &HaClient) -> Result<Vec<HaView>, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let client = client.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(client.views());
+    });
+    match rx.recv_timeout(Duration::from_secs(8)) {
+        Ok(result) => result,
+        Err(_) => Err("Home Assistant: дашборд не ответил".into()),
+    }
+}
+
+fn read_json(
+    socket: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+) -> Result<Value, String> {
+    loop {
+        let msg = socket.read().map_err(|e| e.to_string())?;
+        if msg.is_text() {
+            let text = msg.into_text().map_err(|e| e.to_string())?;
+            return serde_json::from_str(text.as_str()).map_err(|e| e.to_string());
+        }
+    }
+}
+
+/// Walk a dashboard card tree and keep entity ids in the order they appear.
+fn collect_entities(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Array(list) => {
+            for v in list {
+                collect_entities(v, out);
+            }
+        }
+        Value::Object(map) => {
+            if let Some(id) = map.get("entity").and_then(Value::as_str) {
+                push_id(id, out);
+            }
+            if let Some(id) = map.get("entity_id").and_then(Value::as_str) {
+                push_id(id, out);
+            }
+            for key in ["entities", "cards", "sections", "badges", "rows"] {
+                if let Some(v) = map.get(key) {
+                    collect_entities(v, out);
+                }
+            }
+        }
+        Value::String(s) => push_id(s, out),
+        _ => {}
+    }
+}
+
+fn push_id(id: &str, out: &mut Vec<String>) {
+    let id = id.trim();
+    let ok = id
+        .split_once('.')
+        .map(|(d, _)| !d.is_empty() && !d.contains(' '))
+        .unwrap_or(false);
+    if ok && !out.iter().any(|x| x == id) {
+        out.push(id.to_string());
+    }
+}
+
 pub fn is_controllable(e: &HaEntity) -> bool {
     matches!(
         e.domain(),
@@ -311,5 +450,262 @@ pub fn domain_label(domain: &str, lang: crate::i18n::Lang) -> &'static str {
         ("binary_sensor", Lang::En) => "Sensors",
         (_, Lang::Ru) => "Другое",
         (_, Lang::En) => "Other",
+    }
+}
+
+// ---------------------------------------------------------------- state text
+
+fn word(lang: crate::i18n::Lang, ru: &'static str, en: &'static str) -> &'static str {
+    match lang {
+        crate::i18n::Lang::Ru => ru,
+        crate::i18n::Lang::En => en,
+    }
+}
+
+/// `8589.934592` in a 22 px tile is noise. Round it to something a person can
+/// read, group thousands and keep at most three significant decimals.
+pub fn human_number(v: f64) -> String {
+    if !v.is_finite() {
+        return v.to_string();
+    }
+    let a = v.abs();
+    if a == 0.0 {
+        return "0".into();
+    }
+    if a >= 1000.0 {
+        let n = v.round() as i64;
+        let digits = n.unsigned_abs().to_string();
+        let mut out = String::new();
+        for (i, ch) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i) % 3 == 0 {
+                out.push(' ');
+            }
+            out.push(ch);
+        }
+        return if n < 0 { format!("-{out}") } else { out };
+    }
+    let s = if a >= 100.0 {
+        format!("{v:.1}")
+    } else if a >= 1.0 {
+        format!("{v:.2}")
+    } else {
+        format!("{v:.3}")
+    };
+    trim_zeros(s)
+}
+
+fn trim_zeros(s: String) -> String {
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
+/// `15453340 s` becomes `178 д 20 ч`: an uptime in seconds is unreadable.
+pub fn human_duration(seconds: f64, lang: crate::i18n::Lang) -> String {
+    let total = seconds.abs().round() as u64;
+    let (d, h, m) = (total / 86400, (total % 86400) / 3600, (total % 3600) / 60);
+    let unit = |n: u64, ru: &'static str, en: &'static str| format!("{n} {}", word(lang, ru, en));
+    if d > 0 {
+        if h > 0 {
+            format!("{} {}", unit(d, "д", "d"), unit(h, "ч", "h"))
+        } else {
+            unit(d, "д", "d")
+        }
+    } else if h > 0 {
+        if m > 0 && h < 10 {
+            format!("{} {}", unit(h, "ч", "h"), unit(m, "мин", "min"))
+        } else {
+            unit(h, "ч", "h")
+        }
+    } else {
+        unit(m.max(1), "мин", "min")
+    }
+}
+
+/// A binary sensor reads "вкл", which is wrong for a door or a leak. Use the
+/// words the device class implies; fall back to on/off.
+fn binary_text(e: &HaEntity, on: bool, lang: crate::i18n::Lang) -> String {
+    let class = e
+        .attributes
+        .get("device_class")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let ru = match class {
+        "door" | "window" | "opening" | "garage_door" => ("открыто", "закрыто"),
+        "motion" | "moving" => ("движение", "тихо"),
+        "occupancy" | "presence" => ("есть", "нет"),
+        "moisture" | "water" => ("протечка", "сухо"),
+        "smoke" | "gas" | "carbon_monoxide" | "heat" => ("тревога", "спокойно"),
+        "connectivity" | "plug" => ("онлайн", "офлайн"),
+        "problem" => ("проблема", "ок"),
+        "update" => ("есть обновление", "актуально"),
+        "battery" | "battery_charging" => ("да", "нет"),
+        "power" => ("есть", "нет"),
+        _ => ("вкл", "выкл"),
+    };
+    let en = match class {
+        "door" | "window" | "opening" | "garage_door" => ("open", "closed"),
+        "motion" | "moving" => ("motion", "clear"),
+        "occupancy" | "presence" => ("present", "away"),
+        "moisture" | "water" => ("wet", "dry"),
+        "smoke" | "gas" | "carbon_monoxide" | "heat" => ("alert", "clear"),
+        "connectivity" | "plug" => ("online", "offline"),
+        "problem" => ("problem", "ok"),
+        "update" => ("update available", "up to date"),
+        "battery" | "battery_charging" => ("yes", "no"),
+        "power" => ("on", "off"),
+        _ => ("on", "off"),
+    };
+    if on {
+        word(lang, ru.0, en.0).to_string()
+    } else {
+        word(lang, ru.1, en.1).to_string()
+    }
+}
+
+/// State plus its unit, ready for a big value label. Numbers, durations and
+/// binary sensors are translated; everything else keeps Home Assistant's text.
+pub fn state_with_unit(e: &HaEntity, lang: crate::i18n::Lang) -> String {
+    let (text, has_unit) = value_text(e, lang);
+    let unit = e.unit();
+    if has_unit || unit.is_empty() || text == "—" {
+        text
+    } else {
+        format!("{text} {unit}")
+    }
+}
+
+/// State without the unit, for subtitles and menus.
+pub fn state_text(e: &HaEntity, lang: crate::i18n::Lang) -> String {
+    value_text(e, lang).0
+}
+
+fn value_text(e: &HaEntity, lang: crate::i18n::Lang) -> (String, bool) {
+    let raw = e.state.trim();
+    if raw.is_empty() {
+        return ("—".into(), true);
+    }
+    match raw {
+        "unavailable" => return (word(lang, "недоступно", "unavailable").into(), true),
+        "unknown" => return (word(lang, "неизвестно", "unknown").into(), true),
+        "open" => return (word(lang, "открыто", "open").into(), true),
+        "closed" => return (word(lang, "закрыто", "closed").into(), true),
+        "opening" => return (word(lang, "открывается", "opening").into(), true),
+        "closing" => return (word(lang, "закрывается", "closing").into(), true),
+        "playing" => return (word(lang, "играет", "playing").into(), true),
+        "paused" => return (word(lang, "пауза", "paused").into(), true),
+        "idle" => return (word(lang, "ожидание", "idle").into(), true),
+        "home" => return (word(lang, "дома", "home").into(), true),
+        "not_home" => return (word(lang, "не дома", "away").into(), true),
+        "on" | "off" => {
+            let on = raw == "on";
+            if e.domain() == "binary_sensor" {
+                return (binary_text(e, on, lang), true);
+            }
+            if e.domain() == "update" {
+                return (
+                    word(
+                        lang,
+                        if on {
+                            "есть обновление"
+                        } else {
+                            "актуально"
+                        },
+                        if on { "update available" } else { "up to date" },
+                    )
+                    .into(),
+                    true,
+                );
+            }
+            return (
+                word(
+                    lang,
+                    if on { "вкл" } else { "выкл" },
+                    if on { "on" } else { "off" },
+                )
+                .into(),
+                true,
+            );
+        }
+        _ => {}
+    }
+    if let Ok(v) = raw.parse::<f64>() {
+        let unit = e.unit();
+        if unit == "s" && v.abs() >= 60.0 {
+            return (human_duration(v, lang), true);
+        }
+        return (human_number(v), false);
+    }
+    // ISO timestamps (sun, next alarm, …) are 25 characters wide and do not
+    // fit a tile. Keep the date and time, say UTC when it is UTC.
+    if let Some((date, rest)) = raw.split_once('T') {
+        if date.len() == 10 && rest.len() >= 5 {
+            let hm = &rest[..5];
+            let bytes = date.as_bytes();
+            if bytes.get(4) == Some(&b'-') && bytes.get(7) == Some(&b'-') {
+                let stamp = format!("{}.{} {}", &date[8..10], &date[5..7], hm);
+                return if rest.ends_with("+00:00") || rest.ends_with('Z') {
+                    (format!("{stamp} UTC"), true)
+                } else {
+                    (stamp, true)
+                };
+            }
+        }
+    }
+    (raw.to_string(), false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::HaEntity;
+    use serde_json::json;
+
+    fn entity(domain: &str, state: &str, attrs: serde_json::Value) -> HaEntity {
+        HaEntity {
+            entity_id: format!("{domain}.x"),
+            state: state.into(),
+            attributes: attrs,
+            last_changed: String::new(),
+            last_updated: String::new(),
+            area: String::new(),
+        }
+    }
+
+    #[test]
+    fn numbers_lose_the_noise() {
+        assert_eq!(human_number(8589.934592), "8 590");
+        assert_eq!(human_number(4294.967296), "4 295");
+        assert_eq!(human_number(21.7000), "21.7");
+        assert_eq!(human_number(0.0), "0");
+        assert_eq!(human_number(-1234.6), "-1 235");
+    }
+
+    #[test]
+    fn durations_read_like_durations() {
+        use crate::i18n::Lang;
+        assert_eq!(human_duration(15_453_340.0, Lang::Ru), "178 д 20 ч");
+        assert_eq!(human_duration(3900.0, Lang::En), "1 h 5 min");
+        assert_eq!(human_duration(90.0, Lang::Ru), "1 мин");
+    }
+
+    #[test]
+    fn binary_sensors_use_their_device_class() {
+        use crate::i18n::Lang;
+        let door = entity("binary_sensor", "on", json!({"device_class": "door"}));
+        assert_eq!(state_text(&door, Lang::Ru), "открыто");
+        let leak = entity("binary_sensor", "off", json!({"device_class": "moisture"}));
+        assert_eq!(state_text(&leak, Lang::En), "dry");
+    }
+
+    #[test]
+    fn units_are_added_once() {
+        use crate::i18n::Lang;
+        let temp = entity("sensor", "21.75", json!({"unit_of_measurement": "°C"}));
+        assert_eq!(state_with_unit(&temp, Lang::Ru), "21.75 °C");
+        let uptime = entity("sensor", "15453340", json!({"unit_of_measurement": "s"}));
+        assert_eq!(state_with_unit(&uptime, Lang::Ru), "178 д 20 ч");
     }
 }

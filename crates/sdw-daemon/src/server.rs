@@ -773,17 +773,23 @@ fn volume_mute() -> Result<String, String> {
 // ---------------------------------------------------------------- notifications & HA
 
 fn ha_states(state: Arc<AppState>, req: Request) {
+    // Never fetch here: the worker does the I/O, this returns what it has plus
+    // the age of the data. A slow Home Assistant must not stall the deck.
     let mut ha = match state.ha.lock() {
         Ok(h) => h,
         Err(_) => return error(req, 500, "Home Assistant lock"),
     };
-    if ha.entities.is_empty() || ha.last_sync.elapsed() > Duration::from_secs(10) {
-        let _ = ha.refresh();
+    if ha.fetched_ms == 0 && ha.last_attempt.elapsed() > Duration::from_secs(15) {
+        ha.mark_dirty();
     }
     let states = HaStates {
         entities: ha.entities.clone(),
-        fetched_ms: ha.status.last_sync_ms,
+        fetched_ms: ha.fetched_ms,
+        age_ms: ha.age_ms(),
+        connected: ha.status.connected,
+        error: ha.error.clone(),
         areas: ha.areas.clone(),
+        views: ha.views.clone(),
         categories: ha.categories.clone(),
         presets: ha.presets.clone(),
     };
@@ -796,51 +802,71 @@ fn ha_config(state: Arc<AppState>, mut req: Request) {
         Ok(b) => b,
         Err(e) => return error(req, 400, &e),
     };
+    let client = sdw_core::ha::HaClient::new(&body.url, &body.token);
+    // The ping runs before any lock is taken: a wrong address times out here,
+    // and the daemon keeps answering everything else meanwhile.
+    let message = match client.ping() {
+        Ok(m) => m,
+        Err(e) => return error(req, 400, &e),
+    };
     let mut cfg = state.cfg();
     let mut ha = match state.ha.lock() {
         Ok(h) => h,
         Err(_) => return error(req, 500, "Home Assistant lock"),
     };
-    match ha.set(&mut cfg, &body.url, &body.token, &body.favorites) {
-        Ok(()) => {
-            let favorites = cfg.ha.favorites.clone();
-            let url = cfg.ha.url.clone();
-            let token = cfg.ha.token.clone();
-            drop(ha);
-            let _ = state.update_cfg(|c| {
-                c.ha.url = url;
-                c.ha.token = token;
-                c.ha.favorites = favorites;
-            });
-            respond_json(
-                req,
-                200,
-                &state
-                    .ha
-                    .lock()
-                    .map(|h| h.status.clone())
-                    .unwrap_or_default(),
-            )
-        }
-        Err(e) => error(req, 400, &e),
-    }
+    ha.install(&mut cfg, client, &message, &body.favorites);
+    let favorites = cfg.ha.favorites.clone();
+    let url = cfg.ha.url.clone();
+    let token = body.token.trim().to_string();
+    drop(ha);
+    let _ = state.update_cfg(|c| {
+        c.ha.url = url;
+        c.ha.token = token;
+        c.ha.favorites = favorites;
+    });
+    respond_json(
+        req,
+        200,
+        &state
+            .ha
+            .lock()
+            .map(|h| h.status.clone())
+            .unwrap_or_default(),
+    )
 }
 
+/// Reach Home Assistant now and report the result. Used by "проверить".
 fn ha_test(state: Arc<AppState>, req: Request) {
-    let result = state.ha.lock().map(|mut h| h.refresh());
-    match result {
-        Ok(Ok(())) => respond_json(
-            req,
-            200,
-            &state
-                .ha
-                .lock()
-                .map(|h| h.status.clone())
-                .unwrap_or_default(),
-        ),
-        Ok(Err(e)) => error(req, 400, &e),
-        Err(_) => error(req, 500, "Home Assistant lock"),
+    let client = match state.ha.lock() {
+        Ok(h) => h.client.clone(),
+        Err(_) => return error(req, 500, "Home Assistant lock"),
+    };
+    let Some(client) = client else {
+        return error(req, 400, "Home Assistant не настроен");
+    };
+    let entities = match client.states() {
+        Ok(list) => list,
+        Err(e) => {
+            if let Ok(mut h) = state.ha.lock() {
+                h.apply(Err(e.clone()), None, None);
+            }
+            return error(req, 400, &e);
+        }
+    };
+    let rooms = Some(client.rooms());
+    let views = Some(sdw_core::ha::views_guarded(&client));
+    if let Ok(mut h) = state.ha.lock() {
+        h.apply(Ok(entities), rooms, views);
     }
+    respond_json(
+        req,
+        200,
+        &state
+            .ha
+            .lock()
+            .map(|h| h.status.clone())
+            .unwrap_or_default(),
+    )
 }
 
 fn ha_call(state: Arc<AppState>, mut req: Request) {
@@ -848,11 +874,22 @@ fn ha_call(state: Arc<AppState>, mut req: Request) {
         Ok(b) => b,
         Err(e) => return error(req, 400, &e),
     };
-    let result = state.ha.lock().map(|h| h.call(&body));
-    match result {
-        Ok(Ok(v)) => respond_json(req, 200, &v),
-        Ok(Err(e)) => error(req, 400, &e),
-        Err(_) => error(req, 500, "Home Assistant lock"),
+    let client = match state.ha.lock() {
+        Ok(h) => h.client.clone(),
+        Err(_) => return error(req, 500, "Home Assistant lock"),
+    };
+    let Some(client) = client else {
+        return error(req, 400, "Home Assistant не настроен");
+    };
+    match client.call(&body) {
+        Ok(v) => {
+            // Show the new state right away instead of up to three seconds later.
+            if let Ok(mut h) = state.ha.lock() {
+                h.mark_dirty();
+            }
+            respond_json(req, 200, &v)
+        }
+        Err(e) => error(req, 400, &e),
     }
 }
 

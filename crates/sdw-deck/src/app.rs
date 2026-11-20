@@ -168,12 +168,28 @@ impl Drop for StreamFeed {
 pub struct HaState {
     pub entities: Vec<HaEntity>,
     pub areas: Vec<String>,
+    /// Tabs of the Lovelace dashboard, in dashboard order.
+    pub views: Vec<HaView>,
     pub categories: Vec<HaCategory>,
     /// Named presets shared with the daemon and every other deck.
     pub presets: Vec<HaPreset>,
     /// Local state right after a tap, until Home Assistant confirms it.
     pub optimistic: HashMap<String, (String, Instant)>,
+    /// Brightness right after a slider release, until the next real state is
+    /// different from it. Without this the slider snaps back for a second.
+    pub optimistic_pct: HashMap<String, (u8, Instant)>,
     pub room: usize,
+    /// Page of the current room; a room can hold hundreds of entities.
+    pub page: usize,
+    /// The room and search the current page belongs to, so switching resets it.
+    pub page_room: usize,
+    pub page_needle: String,
+    /// Show unavailable/unknown tiles and integration noise.
+    pub show_offline: bool,
+    /// Last successful answer: connection flag, data age and error text.
+    pub connected: bool,
+    pub age_ms: u64,
+    pub stale_error: String,
     pub search: String,
     pub url: String,
     pub token: String,
@@ -617,10 +633,19 @@ impl App {
             ha: HaState {
                 entities: Vec::new(),
                 areas: Vec::new(),
+                views: Vec::new(),
                 categories: Vec::new(),
                 presets: Vec::new(),
                 optimistic: HashMap::new(),
+                optimistic_pct: HashMap::new(),
                 room: 0,
+                page: 0,
+                page_room: 0,
+                page_needle: String::new(),
+                show_offline: false,
+                connected: false,
+                age_ms: 0,
+                stale_error: String::new(),
                 search: String::new(),
                 url: String::new(),
                 token: String::new(),
@@ -2240,7 +2265,7 @@ impl App {
 
         self.poll_status();
         self.poll_notifications();
-        if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(6)
+        if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(4)
         {
             self.load_ha();
         }
@@ -2291,6 +2316,27 @@ impl App {
             Task::Status(Ok(status)) => {
                 self.status_pending = false;
                 self.status_err.clear();
+                // A daemon that restarted has no Home Assistant state at all.
+                // Dropping ours beats showing values from the previous run as
+                // if they were live; the page shows "обновляю…" until the
+                // first fresh answer.
+                let restarted = self
+                    .status
+                    .as_ref()
+                    .map(|old| status.uptime_secs + 2 < old.uptime_secs)
+                    .unwrap_or(false);
+                if restarted {
+                    self.ha.entities.clear();
+                    self.ha.views.clear();
+                    self.ha.optimistic.clear();
+                    self.ha.optimistic_pct.clear();
+                    self.ha.loaded = false;
+                    self.ha.age_ms = 0;
+                    self.ha.connected = false;
+                    self.ha.error.clear();
+                    self.ha.stale_error.clear();
+                    self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
+                }
                 if let Some(host) = self
                     .cfg
                     .hosts
@@ -2516,11 +2562,20 @@ impl App {
             Task::Ha(Ok(states)) => {
                 self.ha.pending = false;
                 self.ha.loaded = true;
+                self.ha.connected = states.connected;
+                self.ha.age_ms = states.age_ms;
+                self.ha.stale_error = states.error.clone();
                 self.ha.error.clear();
-                self.ha.entities = states.entities;
-                self.ha.areas = states.areas;
-                self.ha.categories = states.categories;
-                self.ha.presets = states.presets;
+                // A failed fetch keeps the last entities on purpose: the page
+                // then says how old they are instead of going blank.
+                if !states.entities.is_empty() || states.fetched_ms > 0 {
+                    self.ha.entities = states.entities;
+                    self.ha.areas = states.areas;
+                    self.ha.views = states.views;
+                    self.ha.categories = states.categories;
+                    self.ha.presets = states.presets;
+                    self.ha.last_fetch = Instant::now();
+                }
                 self.ha.optimistic.retain(|id, (state, at)| {
                     at.elapsed() < Duration::from_secs(6)
                         && self
@@ -2529,6 +2584,17 @@ impl App {
                             .iter()
                             .find(|e| &e.entity_id == id)
                             .map(|e| &e.state != state)
+                            .unwrap_or(false)
+                });
+                self.ha.optimistic_pct.retain(|id, (pct, at)| {
+                    at.elapsed() < Duration::from_secs(8)
+                        && self
+                            .ha
+                            .entities
+                            .iter()
+                            .find(|e| &e.entity_id == id)
+                            .and_then(|e| e.brightness_pct())
+                            .map(|real| real.abs_diff(*pct) > 2)
                             .unwrap_or(false)
                 });
             }
