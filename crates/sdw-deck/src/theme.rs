@@ -537,7 +537,9 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         s.spacing.item_spacing = Vec2::new(12.0, 10.0) * density;
         s.spacing.button_padding = Vec2::new(18.0, 10.0) * density;
         s.spacing.interact_size.y = 42.0 * density;
-        s.spacing.slider_width = 180.0;
+        // A sensible default for a slider that shares its row; the full-width
+        // ones set `slider_len` themselves.
+        s.spacing.slider_width = 220.0;
         s.text_styles = [
             (
                 TextStyle::Heading,
@@ -822,7 +824,7 @@ pub fn hud(text: &str, color: Color32) -> RichText {
 }
 
 pub fn card<R>(ui: &mut Ui, t: &Tokens, add: impl FnOnce(&mut Ui) -> R) -> R {
-    egui::Frame::new()
+    let r = egui::Frame::new()
         .fill(t.card)
         .stroke(t.hairline())
         .corner_radius(t.corner(0))
@@ -830,8 +832,55 @@ pub fn card<R>(ui: &mut Ui, t: &Tokens, add: impl FnOnce(&mut Ui) -> R) -> R {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui)
-        })
-        .inner
+        });
+    r.inner
+}
+
+/// A row that ends at the card edge: the slider takes the given width, the
+/// trailing group is a child laid out right-to-left, and the row grows only to
+/// that child's right edge.
+///
+/// A plain `Slider` inside `ui.horizontal` reports itself as a layout row, and
+/// egui then charges item spacing twice; the extra dozen pixels land outside
+/// the card and widen it. Adding the trailing label as a child keeps the
+/// spacing at the right edge, where it fits.
+pub fn slider_row(
+    ui: &mut Ui,
+    _width: f32,
+    height: f32,
+    add_slider: impl FnOnce(&mut Ui),
+    add_right: impl FnOnce(&mut Ui),
+) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().interact_size.y = height;
+        add_slider(ui);
+        let mut child = ui.new_child(
+            egui::UiBuilder::new().layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        add_right(&mut child);
+        let rect = child.min_rect();
+        ui.expand_to_include_rect(rect);
+    });
+}
+
+/// A row with a group on the left and a group pushed to the right edge.
+///
+/// A plain `with_layout(right_to_left)` inside a row leaves egui charging item
+/// spacing after the right group; that trailing bit lands outside the card and
+/// widens it by a dozen pixels. The right group is therefore added as a child
+/// placed by hand: it reports its rect without moving the row cursor.
+pub fn row_ends<R>(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.horizontal(|ui| {
+        left(ui);
+        let mut child = ui.new_child(
+            egui::UiBuilder::new().layout(egui::Layout::right_to_left(egui::Align::Center)),
+        );
+        let inner = right(&mut child);
+        let rect = child.min_rect();
+        ui.expand_to_include_rect(rect);
+        inner
+    })
+    .inner
 }
 
 pub fn primary(ui: &mut Ui, text: &str, t: &Tokens) -> Response {
@@ -1125,6 +1174,13 @@ pub fn slider(
     slider_ex(ui, t, label, value, range, fmt).0
 }
 
+/// egui's own `Slider` takes its length from `spacing.slider_width`, not from
+/// `add_sized`, so a wide row would leave a stubby 180 px track in the middle.
+/// Set the spacing before adding one.
+pub fn slider_len(ui: &mut Ui, width: f32) {
+    ui.spacing_mut().slider_width = width.max(90.0);
+}
+
 /// The slider with a second flag: `true` when the finger or mouse was let go,
 /// which is the moment to send a value to a remote device.
 pub fn slider_ex(
@@ -1135,10 +1191,39 @@ pub fn slider_ex(
     range: std::ops::RangeInclusive<f32>,
     fmt: impl Fn(f32) -> String,
 ) -> (bool, bool) {
+    let width = ui.available_width();
+    slider_ex_width(ui, t, width, label, value, range, fmt)
+}
+
+/// A slider that occupies a given width. Use it when another widget shares the
+/// row: a full-width slider would widen the whole card.
+pub fn slider_with_width(
+    ui: &mut Ui,
+    t: &Tokens,
+    width: f32,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    fmt: impl Fn(f32) -> String,
+) -> bool {
+    slider_ex_width(ui, t, width, label, value, range, fmt).0
+}
+
+/// [`slider_ex`] at an explicit width.
+pub fn slider_ex_width(
+    ui: &mut Ui,
+    t: &Tokens,
+    width: f32,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    fmt: impl Fn(f32) -> String,
+) -> (bool, bool) {
     let (lo, hi) = (*range.start(), *range.end());
     let span = (hi - lo).max(f32::EPSILON);
     let height = 40.0;
-    let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), height), Sense::hover());
+    let width = width.max(160.0);
+    let (row, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let label_w = (row.width() * 0.34).clamp(64.0, 200.0);
     let value_w = 66.0;
     let track = egui::Rect::from_min_max(

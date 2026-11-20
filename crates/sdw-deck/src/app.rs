@@ -177,6 +177,16 @@ impl Drop for StreamFeed {
     }
 }
 
+/// A colour the user just asked for, held until the lamp reports it back. A
+/// temperature tap also has to hide the old kelvin reading, otherwise the tick
+/// stays on the previous preset.
+#[derive(Clone, Copy, Debug)]
+pub struct OptimisticColor {
+    pub rgb: [u8; 3],
+    pub kelvin: bool,
+    pub at: Instant,
+}
+
 pub struct HaState {
     pub entities: Vec<HaEntity>,
     pub areas: Vec<String>,
@@ -192,7 +202,7 @@ pub struct HaState {
     pub optimistic_pct: HashMap<String, (u8, Instant)>,
     /// Colour right after a swatch tap, so the tick lands on the pressed
     /// swatch immediately instead of after a Home Assistant round-trip.
-    pub optimistic_rgb: HashMap<String, ([u8; 3], Instant)>,
+    pub optimistic_rgb: HashMap<String, OptimisticColor>,
     pub room: usize,
     /// Page of the current room; a room can hold hundreds of entities.
     pub page: usize,
@@ -3109,12 +3119,15 @@ impl App {
                 // the real value win again.
                 self.ha
                     .optimistic_rgb
-                    .retain(|_, (_, at)| at.elapsed() < Duration::from_secs(8));
+                    .retain(|_, c| c.at.elapsed() < Duration::from_secs(8));
                 for e in &mut self.ha.entities {
-                    if let Some((rgb, _)) = self.ha.optimistic_rgb.get(&e.entity_id) {
+                    if let Some(c) = self.ha.optimistic_rgb.get(&e.entity_id) {
                         if let Some(map) = e.attributes.as_object_mut() {
-                            map.insert("rgb_color".into(), serde_json::json!(rgb));
+                            map.insert("rgb_color".into(), serde_json::json!(c.rgb));
                             map.insert("color_mode".into(), serde_json::json!("hs"));
+                            if c.kelvin {
+                                map.remove("color_temp_kelvin");
+                            }
                         }
                     }
                 }

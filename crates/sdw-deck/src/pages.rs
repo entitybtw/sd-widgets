@@ -2300,6 +2300,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(13.0)
                     .color(t.muted),
             );
+            theme::slider_len(ui, 150.0);
             let r = ui
                 .add(egui::Slider::new(&mut app.deck_view.cfg.scale, 0.6..=1.4).show_value(false));
             if r.drag_stopped() || r.lost_focus() {
@@ -3053,6 +3054,7 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 let length = if st.length > 1.0 { st.length } else { 1.0 };
                 let mut pos = app.media.seeking.unwrap_or(st.position).clamp(0.0, length);
                 ui.spacing_mut().interact_size.y = 30.0;
+                theme::slider_len(ui, ui.available_width());
                 let r = ui.add_sized(
                     [ui.available_width(), 30.0],
                     egui::Slider::new(&mut pos, 0.0..=length)
@@ -3170,32 +3172,50 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
             });
         });
         ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            let mut vol = st.volume.min(100) as i32;
-            ui.spacing_mut().interact_size.y = 34.0;
-            let r = ui.add_sized(
-                [(ui.available_width() - 150.0).max(120.0), 34.0],
-                egui::Slider::new(&mut vol, 0..=100)
-                    .show_value(false)
-                    .trailing_fill(true),
-            );
-            if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                app.media_command("volume", vol as f64);
-            }
-            ui.label(
-                RichText::new(format!("{vol}%"))
-                    .family(FontFamily::Monospace)
-                    .size(14.0)
-                    .strong()
-                    .color(t.strong),
-            );
-            if media_button(ui, t, theme::icon::VOLUME_DOWN, 38.0, false) {
-                app.media_command("volume_down", 0.0);
-            }
-            if media_button(ui, t, theme::icon::VOLUME_UP, 38.0, false) {
-                app.media_command("volume_up", 0.0);
-            }
-        });
+        let mut volume_call: Option<f64> = None;
+        let mut busy: Option<(u8, bool)> = None;
+        let row = ui.available_width();
+        theme::slider_row(
+            ui,
+            row,
+            34.0,
+            |ui| {
+                let mut vol = st.volume.min(100) as i32;
+                // The value and the two buttons sit to the right of the
+                // slider; it must not take their room.
+                theme::slider_len(ui, row - 196.0);
+                let r = ui.add_sized(
+                    [(row - 196.0).max(120.0), 34.0],
+                    egui::Slider::new(&mut vol, 0..=100)
+                        .show_value(false)
+                        .trailing_fill(true),
+                );
+                if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                    volume_call = Some(vol as f64);
+                }
+                ui.label(
+                    RichText::new(format!("{vol}%"))
+                        .family(FontFamily::Monospace)
+                        .size(14.0)
+                        .strong()
+                        .color(t.strong),
+                );
+            },
+            |ui| {
+                if media_button(ui, t, theme::icon::VOLUME_UP, 38.0, false) {
+                    busy = Some((2, true));
+                }
+                if media_button(ui, t, theme::icon::VOLUME_DOWN, 38.0, false) {
+                    busy = Some((1, false));
+                }
+            },
+        );
+        if let Some(v) = volume_call {
+            app.media_command("volume", v);
+        }
+        if let Some((_, up)) = busy {
+            app.media_command(if up { "volume_up" } else { "volume_down" }, 0.0);
+        }
         if st.sinks.len() > 1 {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -3265,19 +3285,102 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
 // ---------------------------------------------------------------- home assistant
 
-/// Built-in quick colours for RGB lamps: warm white through the usual
-/// saturated ones. Names are bilingual because the Deck is. `light.turn_on`
-/// takes the array as-is, and the very warm shade matches a cosy 2292 K lamp.
-const LIGHT_COLORS: &[(&str, &str, [u8; 3])] = &[
-    ("очень тёплый", "very warm", [255, 150, 49]),
-    ("тёплый", "warm", [255, 180, 110]),
-    ("нейтральный", "neutral", [255, 235, 210]),
-    ("холодный", "cool", [205, 225, 255]),
-    ("красный", "red", [255, 70, 60]),
-    ("зелёный", "green", [80, 220, 120]),
-    ("синий", "blue", [70, 120, 255]),
-    ("фиолетовый", "violet", [170, 90, 255]),
+/// Built-in quick colours for lamps: warm white through the usual saturated
+/// ones. Names are bilingual because the Deck is.
+///
+/// The four whites carry the kelvin they stand for. A lamp that can take a
+/// temperature gets `color_temp_kelvin` instead of an RGB guess, which is what
+/// makes "very warm" actually warm instead of a dim orange; the swatch keeps a
+/// representative RGB so the row still reads as a palette. Saturated shades
+/// stay RGB.
+struct LightPreset {
+    ru: &'static str,
+    en: &'static str,
+    rgb: [u8; 3],
+    kelvin: Option<u32>,
+}
+
+const LIGHT_PRESETS: &[LightPreset] = &[
+    LightPreset {
+        ru: "очень тёплый",
+        en: "very warm",
+        rgb: [255, 146, 39],
+        kelvin: Some(2200),
+    },
+    LightPreset {
+        ru: "тёплый",
+        en: "warm",
+        rgb: [255, 167, 88],
+        kelvin: Some(2700),
+    },
+    LightPreset {
+        ru: "нейтральный",
+        en: "neutral",
+        rgb: [255, 206, 166],
+        kelvin: Some(4000),
+    },
+    LightPreset {
+        ru: "холодный",
+        en: "cool",
+        rgb: [214, 230, 255],
+        kelvin: Some(6500),
+    },
+    LightPreset {
+        ru: "красный",
+        en: "red",
+        rgb: [255, 70, 60],
+        kelvin: None,
+    },
+    LightPreset {
+        ru: "зелёный",
+        en: "green",
+        rgb: [80, 220, 120],
+        kelvin: None,
+    },
+    LightPreset {
+        ru: "синий",
+        en: "blue",
+        rgb: [70, 120, 255],
+        kelvin: None,
+    },
+    LightPreset {
+        ru: "фиолетовый",
+        en: "violet",
+        rgb: [170, 90, 255],
+        kelvin: None,
+    },
 ];
+
+/// Two shades that a person would call the same, allowing for the colour
+/// shift a bulb reports.
+fn rgb_near(a: [u8; 3], b: [u8; 3]) -> bool {
+    a.iter().zip(b.iter()).all(|(x, y)| x.abs_diff(*y) <= 14)
+}
+
+/// Whether the lamp is showing this preset. Kelvin wins when both sides have
+/// it, with a generous window: a 2700 K bulb reads back as 2650 or 2800, and
+/// the tick must stay on "warm" rather than hop between swatches.
+fn preset_shown(p: &LightPreset, e: &HaEntity, current: Option<[u8; 3]>) -> bool {
+    if let (Some(want), Some(have)) = (p.kelvin, e.color_temp_kelvin()) {
+        if want.abs_diff(have) <= 200 {
+            return true;
+        }
+    }
+    current.is_some_and(|c| rgb_near(c, p.rgb))
+}
+
+/// The service data for a preset tap. A lamp that can take a temperature gets
+/// one, clamped to its own range; everything else gets the RGB shade.
+fn light_preset_call(e: &HaEntity, p: &LightPreset) -> serde_json::Value {
+    match p.kelvin {
+        Some(k) if e.supports_color_temp() => {
+            let min = e.min_color_temp_kelvin().max(1000);
+            let max = e.max_color_temp_kelvin().max(min + 100);
+            json!({ "color_temp_kelvin": k.clamp(min, max) })
+        }
+        _ => json!({ "rgb_color": p.rgb }),
+    }
+}
 
 /// One square colour button. A selected swatch gets a thicker ink border and a
 /// tick drawn in the contrasting shade, so a tap is visible at arm's length.
@@ -3725,17 +3828,55 @@ fn ha_card(
                             // never as an invented 100 %.
                             let reported = e.brightness_pct();
                             let mut pct = i32::from(reported.unwrap_or(0));
-                            let slider_w = (width - 96.0).max(90.0);
-                            ui.spacing_mut().interact_size.y = 34.0;
-                            let r = ui.add_sized(
-                                [slider_w, 34.0],
-                                egui::Slider::new(&mut pct, 1..=100)
-                                    .step_by(1.0)
-                                    .show_value(false)
-                                    .trailing_fill(true),
+                            // The slider's size is `spacing.slider_width`, and
+                            // the percentage sits to its right: the two share
+                            // the card's content width.
+                            let slider_w = (width - 104.0).max(90.0);
+                            let mut send: Option<u8> = None;
+                            // The right group runs after the slider, so the
+                            // live value and the drag flag travel in cells.
+                            let shown = std::cell::Cell::new(pct);
+                            let dragging = std::cell::Cell::new(false);
+                            theme::slider_row(
+                                ui,
+                                width - 60.0,
+                                34.0,
+                                |ui| {
+                                    theme::slider_len(ui, slider_w);
+                                    let r = ui.add_sized(
+                                        [slider_w, 34.0],
+                                        egui::Slider::new(&mut pct, 1..=100)
+                                            .step_by(1.0)
+                                            .show_value(false)
+                                            .trailing_fill(true),
+                                    );
+                                    if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                        send = Some(pct.clamp(1, 100) as u8);
+                                    }
+                                    shown.set(pct);
+                                    dragging.set(r.dragged());
+                                },
+                                |ui| {
+                                    // While the finger moves, follow it;
+                                    // otherwise the number is exactly what
+                                    // Home Assistant reports.
+                                    let value = if dragging.get() {
+                                        Some(shown.get())
+                                    } else {
+                                        reported.map(i32::from)
+                                    };
+                                    ui.label(
+                                        RichText::new(match value {
+                                            Some(p) => format!("{p}%"),
+                                            None => "—".to_string(),
+                                        })
+                                        .family(FontFamily::Monospace)
+                                        .size(12.0)
+                                        .color(t.faint),
+                                    );
+                                },
                             );
-                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
-                                let pct = pct.clamp(1, 100) as u8;
+                            if let Some(pct) = send {
                                 // Remember the value locally, then send it:
                                 // the slider must not snap back while HA is
                                 // still catching up with the service call.
@@ -3750,22 +3891,6 @@ fn ha_card(
                                     state: Some("on".into()),
                                 });
                             }
-                            // While the finger moves, follow it; otherwise the
-                            // number is exactly what Home Assistant reports.
-                            let shown = if r.dragged() {
-                                Some(pct)
-                            } else {
-                                reported.map(i32::from)
-                            };
-                            ui.label(
-                                RichText::new(match shown {
-                                    Some(p) => format!("{p}%"),
-                                    None => "—".to_string(),
-                                })
-                                .family(FontFamily::Monospace)
-                                .size(12.0)
-                                .color(t.faint),
-                            );
                         } else {
                             // An on/off bulb has nothing to slide.
                             ui.label(
@@ -3788,6 +3913,7 @@ fn ha_card(
                         ui.horizontal(|ui| {
                             ui.label(theme::icon(theme::icon::THERMOSTAT, 17.0, t.faint));
                             ui.spacing_mut().interact_size.y = 30.0;
+                            theme::slider_len(ui, width - 100.0);
                             let r = ui.add_sized(
                                 [(width - 100.0).max(90.0), 30.0],
                                 egui::Slider::new(&mut k, min as i32..=max as i32)
@@ -3822,17 +3948,17 @@ fn ha_card(
                             ui.spacing_mut().item_spacing.y = 8.0;
                             ui.label(theme::icon(theme::icon::LOOK, 17.0, t.faint));
                             // Built-in shades first.
-                            for (ru, en, rgb) in LIGHT_COLORS {
+                            for p in LIGHT_PRESETS {
                                 let resp = light_swatch(
                                     ui,
                                     t,
-                                    *rgb,
-                                    current == Some(*rgb),
-                                    t!(lang, *ru, *en),
+                                    p.rgb,
+                                    preset_shown(p, e, current),
+                                    t!(lang, p.ru, p.en),
                                 );
                                 if resp.clicked() {
                                     actions.push(HaAction {
-                                        call: ha_service(e, "turn_on", json!({ "rgb_color": rgb })),
+                                        call: ha_service(e, "turn_on", light_preset_call(e, p)),
                                         entity: e.entity_id.clone(),
                                         state: Some("on".into()),
                                     });
@@ -3842,8 +3968,9 @@ fn ha_card(
                             // swatch already shows it: the tick then means
                             // "this is what the lamp is doing right now".
                             if let Some(cur) = current {
-                                let known = LIGHT_COLORS.iter().any(|(_, _, p)| *p == cur)
-                                    || light_colors.contains(&cur);
+                                let known =
+                                    LIGHT_PRESETS.iter().any(|p| preset_shown(p, e, Some(cur)))
+                                        || light_colors.iter().any(|c| rgb_near(*c, cur));
                                 if !known {
                                     // A plain button, not the palette helper:
                                     // this shade must not be removable, it is
@@ -3891,7 +4018,7 @@ fn ha_card(
                                     ui,
                                     t,
                                     *rgb,
-                                    current == Some(*rgb),
+                                    current.is_some_and(|c| rgb_near(c, *rgb)),
                                     format!(
                                         "{} · {}",
                                         light_hex(*rgb),
@@ -4033,9 +4160,13 @@ fn ha_card(
                         }
                         if let Some(current) = position {
                             let mut pos = i32::from(current);
+                            // The slider keeps some room for the percentage
+                            // label that follows it in this row.
+                            let used = (width - 220.0).max(90.0);
                             ui.spacing_mut().interact_size.y = 30.0;
+                            theme::slider_len(ui, used - 60.0);
                             let r = ui.add_sized(
-                                [(width - 220.0).max(90.0), 30.0],
+                                [used - 60.0, 30.0],
                                 egui::Slider::new(&mut pos, 0..=100)
                                     .show_value(false)
                                     .trailing_fill(true),
@@ -4229,6 +4360,7 @@ fn ha_card(
                         if let Some(vol) = e.attributes.get("volume_level").and_then(|v| v.as_f64())
                         {
                             let mut pct = (vol * 100.0).round() as i32;
+                            theme::slider_len(ui, width - 80.0);
                             let r = ui.add(
                                 egui::Slider::new(&mut pct, 0..=100)
                                     .show_value(false)
@@ -4314,6 +4446,7 @@ fn ha_card(
                             .map(|v| v.round() as i32)
                             .unwrap_or(if on { 100 } else { 0 });
                         ui.spacing_mut().interact_size.y = 34.0;
+                        theme::slider_len(ui, width - 130.0);
                         let r = ui.add_sized(
                             [(width - 130.0).max(90.0), 34.0],
                             egui::Slider::new(&mut pct, 0..=100)
@@ -5355,10 +5488,14 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             }
         }
         // A just-pressed swatch keeps its tick until the lamp answers.
-        if let Some((rgb, at)) = app.ha.optimistic_rgb.get(&e.entity_id) {
-            if at.elapsed() < std::time::Duration::from_secs(8) {
+        if let Some(c) = app.ha.optimistic_rgb.get(&e.entity_id) {
+            if c.at.elapsed() < std::time::Duration::from_secs(8) {
                 if let Some(map) = e.attributes.as_object_mut() {
-                    map.insert("rgb_color".into(), serde_json::json!(rgb));
+                    map.insert("rgb_color".into(), serde_json::json!(c.rgb));
+                    map.insert("color_mode".into(), serde_json::json!("hs"));
+                    if c.kelvin {
+                        map.remove("color_temp_kelvin");
+                    }
                 }
             }
         }
@@ -5527,11 +5664,34 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 let c = |i: usize| arr[i].as_u64().map(|n| n.min(255) as u8).unwrap_or(0);
                 Some([c(0), c(1), c(2)])
             });
-        if let Some(rgb) = rgb {
-            app.ha
-                .optimistic_rgb
-                .insert(a.entity.clone(), (rgb, std::time::Instant::now()));
-        } else if a.call.data.get("color_temp_kelvin").is_some() {
+        // A white preset is sent as a temperature: its swatch still has to
+        // tick at once, so borrow the RGB the preset stands for. The window is
+        // wider than the matching one because the value may have been clamped
+        // to the lamp's own range (a 6500 K preset on a 6000 K bulb).
+        let kelvin = a
+            .call
+            .data
+            .get("color_temp_kelvin")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+        let kelvin_rgb = kelvin.and_then(|k| {
+            LIGHT_PRESETS
+                .iter()
+                .find(|p| p.kelvin.is_some_and(|pk| pk.abs_diff(k) <= 600))
+                .map(|p| p.rgb)
+        });
+        if let Some(rgb) = rgb.or(kelvin_rgb) {
+            app.ha.optimistic_rgb.insert(
+                a.entity.clone(),
+                crate::app::OptimisticColor {
+                    rgb,
+                    kelvin: kelvin.is_some(),
+                    at: std::time::Instant::now(),
+                },
+            );
+        } else if kelvin.is_some() {
+            // The temperature slider: it has no swatch of its own, and the
+            // lamp answers in a moment anyway.
             app.ha.optimistic_rgb.remove(&a.entity);
         }
         app.ha_call(a.call);
@@ -6869,5 +7029,81 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
     if snd_dirty {
         app.cfg.sound = snd;
         app.save();
+    }
+}
+
+#[cfg(test)]
+mod light_tests {
+    use super::*;
+
+    fn lamp(modes: &[&str], extra: serde_json::Value) -> HaEntity {
+        let mut attrs = serde_json::json!({ "supported_color_modes": modes });
+        if let (Some(map), Some(add)) = (attrs.as_object_mut(), extra.as_object()) {
+            for (k, v) in add {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+        HaEntity {
+            entity_id: "light.lamp".into(),
+            state: "on".into(),
+            attributes: attrs,
+            last_changed: String::new(),
+            last_updated: String::new(),
+            area: String::new(),
+        }
+    }
+
+    fn preset(en: &str) -> &'static LightPreset {
+        LIGHT_PRESETS
+            .iter()
+            .find(|p| p.en == en)
+            .expect("preset exists")
+    }
+
+    #[test]
+    fn a_warm_preset_is_sent_as_a_temperature() {
+        let e = lamp(&["color_temp", "hs"], json!({}));
+        let call = light_preset_call(&e, preset("very warm"));
+        assert_eq!(call, json!({ "color_temp_kelvin": 2200 }));
+    }
+
+    #[test]
+    fn a_temperature_is_clamped_to_the_lamp() {
+        let e = lamp(&["color_temp"], json!({ "max_color_temp_kelvin": 6000 }));
+        let call = light_preset_call(&e, preset("cool"));
+        assert_eq!(call, json!({ "color_temp_kelvin": 6000 }));
+    }
+
+    #[test]
+    fn an_rgb_only_lamp_gets_the_shade() {
+        let e = lamp(&["hs"], json!({ "color_temp_kelvin": 2292 }));
+        let call = light_preset_call(&e, preset("very warm"));
+        assert_eq!(call, json!({ "rgb_color": [255, 146, 39] }));
+    }
+
+    #[test]
+    fn a_saturated_preset_is_always_rgb() {
+        let e = lamp(&["color_temp", "hs"], json!({}));
+        let call = light_preset_call(&e, preset("blue"));
+        assert_eq!(call, json!({ "rgb_color": [70, 120, 255] }));
+    }
+
+    #[test]
+    fn the_tick_follows_a_slightly_off_temperature() {
+        // 2292 K is what the bulb really reports for "very warm".
+        let e = lamp(&["color_temp", "hs"], json!({ "color_temp_kelvin": 2292 }));
+        assert!(preset_shown(preset("very warm"), &e, None));
+        assert!(!preset_shown(preset("warm"), &e, None));
+        assert!(!preset_shown(preset("neutral"), &e, None));
+    }
+
+    #[test]
+    fn the_tick_uses_the_shade_when_the_temperature_is_gone() {
+        // After a tap the optimistic colour hides the old kelvin reading, so
+        // only the RGB is left: the deviation a bulb reports must still tick.
+        let e = lamp(&["color_temp", "hs"], json!({}));
+        assert!(preset_shown(preset("very warm"), &e, Some([255, 150, 49])));
+        assert!(preset_shown(preset("blue"), &e, Some([68, 122, 250])));
+        assert!(!preset_shown(preset("warm"), &e, Some([255, 150, 49])));
     }
 }
