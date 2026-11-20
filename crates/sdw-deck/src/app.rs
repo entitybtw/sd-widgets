@@ -325,7 +325,7 @@ pub enum Task {
 ///
 /// The compositor may deliver the touchscreen either as native touch events or
 /// as a plain mouse. This tracks the native case; the mouse fallback lives in
-/// [`App::swipe_tick`]. A single finger is still a tap or a vertical scroll for
+/// [`App::swipe_raw`]. A single finger is still a tap or a vertical scroll for
 /// egui, but a clearly horizontal flick becomes "previous/next page"; two or
 /// more fingers keep their own gestures.
 #[derive(Default)]
@@ -533,6 +533,10 @@ pub struct App {
     /// Id of the page ScrollArea in the last frame. It always claims drags to
     /// scroll; that must not be mistaken for a control that owns the pointer.
     pub page_scroll_id: Option<egui::Id>,
+    /// How far the current page is scrolled down, in points. Pulling the
+    /// control centre open is only allowed at the very top, so an ordinary
+    /// downward scroll can never open it by accident.
+    pub page_scroll_offset: f32,
     /// Raw multi-touch gestures from egui's touch events.
     pub touch: TouchTrack,
 
@@ -702,6 +706,7 @@ impl App {
             swipe_blocked: false,
             touch_blocked: false,
             page_scroll_id: None,
+            page_scroll_offset: 0.0,
             touch: TouchTrack::default(),
             stream: StreamState {
                 feed: None,
@@ -984,7 +989,7 @@ impl App {
     ///
     /// Native touch events are turned into `GestureSpec`s here (multi-finger
     /// swipes, pinches). When the compositor instead reports the touchscreen as
-    /// a plain mouse, [`Self::swipe_tick`] covers the single-finger case.
+    /// a plain mouse, [`Self::swipe_raw`] covers the single-finger case.
     fn touch_gesture_tick(&mut self, ctx: &egui::Context, raw: &egui::RawInput) {
         if self.gamepad_on || self.binds.capture {
             self.touch.reset();
@@ -1029,7 +1034,7 @@ impl App {
             && self.touch.max >= 1
         {
             if let Some(delta) = self.touch.drag_px(rect) {
-                if delta.x.abs() > delta.y.abs() {
+                if delta.x.abs() > 24.0 && delta.x.abs() > delta.y.abs() * 1.6 {
                     let w = rect.width().max(1.0);
                     self.page_slide = delta.x.clamp(-w * 0.6, w * 0.6);
                 }
@@ -1038,6 +1043,10 @@ impl App {
         if let Some(spec) = finished {
             self.page_slide = 0.0;
             if spec.fingers == 1 && spec.kind == GestureKind::Swipe && !self.touch_blocked {
+                // egui-winit also turns the touch into a mouse drag, and the
+                // raw swipe below would turn the page a second time. Remember
+                // the gesture so that fallback stands down for this release.
+                self.last_gesture = Some((spec.clone(), Instant::now()));
                 self.nav_step(if spec.dir == Some(SwipeDir::Left) {
                     1
                 } else {
@@ -1053,7 +1062,11 @@ impl App {
     /// starts at an edge. This is the fallback for a touchscreen that the
     /// compositor (or Steam Input) delivers as a mouse: there are no touch
     /// events to count fingers with, but a horizontal drag still works.
-    fn swipe_tick(&mut self, ctx: &egui::Context) {
+    ///
+    /// Runs on the raw input, before egui turns the release into a click. A
+    /// real drag is announced with a `PointerMoved` event first, so the tile
+    /// under the finger can never activate after a swipe.
+    fn swipe_raw(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         if !deck_mode()
             || self.gamepad_on
             || self.binds.capture
@@ -1063,120 +1076,166 @@ impl App {
             self.edge_swipe = None;
             return;
         }
-        let (pressed, down, released, pos) = ctx.input(|i| {
-            (
-                i.pointer.any_pressed(),
-                i.pointer.any_down(),
-                i.pointer.any_released(),
-                i.pointer.interact_pos().or_else(|| i.pointer.latest_pos()),
-            )
-        });
         let rect = ctx.content_rect();
-
-        // An open panel is dismissed by a pull up rather than a page swipe.
-        if self.quick_open {
-            if pressed {
-                if let Some(p) = pos {
-                    self.edge_swipe = Some((p, p, Instant::now()));
+        let events = std::mem::take(&mut raw.events);
+        let mut out = Vec::with_capacity(events.len() + 4);
+        for event in events {
+            match event {
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers,
+                } => {
+                    self.swipe_blocked = false;
+                    self.edge_swipe = Some((pos, pos, Instant::now()));
+                    out.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers,
+                    });
                 }
-            }
-            if let Some((start, _, at)) = self.edge_swipe {
-                if down {
-                    if let Some(p) = pos {
-                        self.edge_swipe = Some((start, p, at));
-                    }
-                } else if released {
-                    if let Some(p) = pos {
-                        let dy = p.y - start.y;
-                        let dx = p.x - start.x;
-                        if dy < -70.0 && dy.abs() > dx.abs() * 1.2 {
-                            self.set_quick(false);
+                egui::Event::PointerMoved(pos) => {
+                    if let Some(id) = ctx.dragged_id() {
+                        // The page ScrollArea claims every drag so it can
+                        // scroll. A slider or a tile drag is a different id
+                        // and must keep the page swipe away.
+                        if Some(id) != self.page_scroll_id {
+                            self.swipe_blocked = true;
                         }
                     }
-                    self.edge_swipe = None;
-                } else {
-                    self.edge_swipe = None;
+                    if let Some((start, _, at)) = self.edge_swipe {
+                        if !self.swipe_blocked {
+                            let dx = pos.x - start.x;
+                            let dy = pos.y - start.y;
+                            // Opening the panel is a deliberate pull from the
+                            // very top edge while the page is already at its
+                            // top. An ordinary scroll starts anywhere and
+                            // scrolls the page, never the panel.
+                            let from_top = start.y <= rect.top() + 52.0;
+                            let at_top = self.clock_full || self.page_scroll_offset <= 1.0;
+                            if !self.quick_open
+                                && from_top
+                                && at_top
+                                && dy > 10.0
+                                && dy > dx.abs() * 2.0
+                            {
+                                self.quick_pull = dy;
+                                self.page_slide = 0.0;
+                            } else if theme::style().animations
+                                && dx.abs() > 24.0
+                                && dx.abs() > dy.abs() * 1.6
+                            {
+                                // Only a clearly horizontal drag previews the
+                                // next page; vertical scrolling stays intact.
+                                let w = rect.width().max(1.0);
+                                self.page_slide = dx.clamp(-w * 0.6, w * 0.6);
+                            } else if self.page_slide != 0.0 {
+                                self.page_slide = 0.0;
+                            }
+                        }
+                        self.edge_swipe = Some((start, pos, at));
+                    }
+                    out.push(egui::Event::PointerMoved(pos));
                 }
-            }
-            return;
-        }
-
-        if pressed {
-            if let Some(p) = pos {
-                self.swipe_blocked = false;
-                self.edge_swipe = Some((p, p, Instant::now()));
-            }
-        }
-        if down {
-            if let Some(id) = ctx.dragged_id() {
-                // The page ScrollArea claims every drag so it can scroll. That
-                // is not a widget owning the pointer; a slider or a tile drag
-                // is, and must keep the swipe away.
-                if Some(id) != self.page_scroll_id {
-                    self.swipe_blocked = true;
-                }
-            }
-        }
-        if let Some((start, _, at)) = self.edge_swipe {
-            if down {
-                if let Some(p) = pos {
-                    self.edge_swipe = Some((start, p, at));
-                    let dx = p.x - start.x;
-                    let dy = p.y - start.y;
-                    let from_top = start.y <= rect.top() + 96.0;
-                    if from_top && dy > 8.0 && dy > dx.abs() * 1.2 {
-                        // A pull down from the top edge shows the panel; the
-                        // handle grows under the finger as feedback.
-                        self.quick_pull = dy;
-                        self.page_slide = 0.0;
-                    } else if theme::style().animations
-                        && !self.swipe_blocked
-                        && dx.abs() > 6.0
-                        && dx.abs() > dy.abs() * 1.2
-                    {
-                        let w = rect.width().max(1.0);
-                        self.page_slide = dx.clamp(-w * 0.6, w * 0.6);
-                    } else if !self.swipe_blocked {
-                        self.page_slide = 0.0;
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                } => {
+                    if let Some((start, _, at)) = self.edge_swipe.take() {
+                        let dx = pos.x - start.x;
+                        let dy = pos.y - start.y;
+                        // A drag is not a click: announce movement before the
+                        // release so egui refuses to synthesise one.
+                        if dx.abs() > 6.0 || dy.abs() > 6.0 {
+                            out.push(egui::Event::PointerMoved(pos));
+                        }
+                        // A stationary long press is the touch equivalent of a
+                        // right click. The Deck's compositor often reports its
+                        // touchscreen as a mouse, where egui never flags
+                        // `long_touched`; synthesising one button makes "hold
+                        // to remove" work there too. The primary release is
+                        // already too late to count as a click, so nothing
+                        // fires twice.
+                        if !self.swipe_blocked
+                            && at.elapsed() > Duration::from_millis(850)
+                            && dx.abs() < 12.0
+                            && dy.abs() < 12.0
+                        {
+                            out.push(egui::Event::PointerMoved(pos));
+                            out.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Secondary,
+                                pressed: true,
+                                modifiers,
+                            });
+                            out.push(egui::Event::PointerButton {
+                                pos,
+                                button: egui::PointerButton::Secondary,
+                                pressed: false,
+                                modifiers,
+                            });
+                        }
+                        let pull = self.quick_pull;
                         self.quick_pull = 0.0;
+                        if self.quick_open {
+                            // An open panel is dismissed by a pull up, never
+                            // by turning the page underneath it.
+                            self.page_slide = 0.0;
+                            if !self.swipe_blocked && dy < -70.0 && dy.abs() > dx.abs() * 1.2 {
+                                self.set_quick(false);
+                            }
+                        } else if !self.swipe_blocked
+                            && at.elapsed() < Duration::from_millis(900)
+                            && pull > 90.0
+                            && (self.clock_full || self.page_scroll_offset <= 4.0)
+                            && dy > dx.abs() * 2.0
+                        {
+                            self.page_slide = 0.0;
+                            self.set_quick(true);
+                        } else {
+                            let edge =
+                                start.x <= rect.left() + 64.0 || start.x >= rect.right() - 64.0;
+                            let min = if edge { 110.0 } else { 160.0 };
+                            let gesture_recent =
+                                self.last_gesture.as_ref().is_some_and(|(_, when)| {
+                                    when.elapsed() < Duration::from_millis(450)
+                                });
+                            if !self.swipe_blocked
+                                && !gesture_recent
+                                && at.elapsed() < Duration::from_millis(900)
+                                && dx.abs() > min
+                                && dx.abs() > dy.abs() * 2.0
+                            {
+                                self.page_slide = 0.0;
+                                self.nav_step(if dx < 0.0 { 1 } else { -1 });
+                            } else if !self.swipe_blocked {
+                                self.page_slide = 0.0;
+                            }
+                        }
                     }
+                    // Keep the release either way: it ends the pointer state.
+                    out.push(egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed: false,
+                        modifiers,
+                    });
                 }
-            } else if released {
-                if let Some(p) = pos {
-                    let dx = p.x - start.x;
-                    let dy = p.y - start.y;
-                    let edge = start.x <= rect.left() + 64.0 || start.x >= rect.right() - 64.0;
-                    let min = if edge { 80.0 } else { 140.0 };
-                    let pull = self.quick_pull;
+                egui::Event::PointerGone => {
+                    // The finger or mouse left the window mid-gesture: forget
+                    // the gesture instead of committing it on the next press.
+                    self.edge_swipe = None;
                     self.quick_pull = 0.0;
-                    if !self.swipe_blocked
-                        && pull > 70.0
-                        && at.elapsed() < Duration::from_millis(900)
-                    {
-                        self.page_slide = 0.0;
-                        self.set_quick(true);
-                        self.edge_swipe = None;
-                        return;
-                    }
-                    let gesture_recent = self
-                        .last_gesture
-                        .as_ref()
-                        .is_some_and(|(_, when)| when.elapsed() < Duration::from_millis(450));
-                    if !self.swipe_blocked
-                        && !gesture_recent
-                        && at.elapsed() < Duration::from_millis(900)
-                        && dx.abs() > min
-                        && dx.abs() > dy.abs() * 1.4
-                    {
-                        self.page_slide = 0.0;
-                        self.nav_step(if dx < 0.0 { 1 } else { -1 });
-                    }
+                    out.push(egui::Event::PointerGone);
                 }
-                self.edge_swipe = None;
-            } else {
-                self.edge_swipe = None;
+                other => out.push(other),
             }
         }
+        raw.events = out;
     }
 
     fn go_back(&mut self, ctx: &egui::Context) {
@@ -2749,8 +2808,6 @@ impl App {
             );
         }
 
-        self.swipe_tick(ctx);
-
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.go_back(ctx);
         }
@@ -3223,12 +3280,10 @@ impl App {
                 theme::backdrop(ui, &t);
                 ui.set_opacity(ease * drag_fade);
                 ui.add_space((1.0 - ease) * 14.0);
-                self.page_scroll_id = Some(
-                    ui.make_persistent_id(egui::IdSalt::new("deck-page"))
-                        .with("area"),
-                );
-                ScrollArea::vertical()
-                    .id_salt("deck-page")
+                self.page_scroll_id =
+                    Some(ui.make_persistent_id(egui::IdSalt::new(("deck-page", self.page_epoch))));
+                let area = ScrollArea::vertical()
+                    .id_salt(("deck-page", self.page_epoch))
                     .auto_shrink([false, false])
                     .scroll_source(egui::scroll_area::ScrollSource {
                         scroll_bar: false,
@@ -3247,6 +3302,7 @@ impl App {
                         }
                         ui.add_space(104.0);
                     });
+                self.page_scroll_offset = area.state.offset().y;
                 if ease < 1.0 {
                     ctx.request_repaint();
                 }
@@ -4033,6 +4089,9 @@ impl eframe::App for App {
             }
         }
         crate::audio_ui::tick(self);
+        // Draw the pull-down before the page: the clock's own exit check must
+        // see whether this click belonged to the panel.
+        self.quick_ui(&ctx);
         if self.clock_full {
             crate::clock::fullscreen(self, root, &ctx);
         } else if self.stream.fullscreen {
