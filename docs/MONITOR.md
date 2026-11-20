@@ -37,8 +37,22 @@ found, config path). The **prepare vkms** button loads the module *and* writes
 `/etc/modprobe.d/sd-widgets.conf`, so the extra output survives a reboot without
 manual files.
 
-If `vkms` cannot be loaded, the daemon falls back to mirroring an existing niri
-output with `grim`.
+If `vkms` cannot be loaded, or niri refuses the connector, the daemon falls back
+to mirroring an existing niri output with `grim` and says why in the status note.
+
+niri draws every output with one render GPU. A VKMS connector is a separate DRM
+device, and with the NVIDIA proprietary driver niri cannot produce a buffer the
+VKMS scanner accepts (`No supported renderer buffer format found`), so the
+connector stays off. On such a machine the extra-screen button gives a mirror,
+which is honest and works; a true second screen needs a compositor that supports
+scan-out from a second GPU (sway/wlroots or Hyprland handle this) or a GPU whose
+driver can render into linear buffers.
+
+The daemon positions a new output against the outermost edge of the existing
+desktop, not against the primary display, so a "right" screen does not land on
+top of a second real monitor. Stopping the stream turns the virtual output off
+again and restores the compositor config that was there before the layout was
+written.
 
 ### KDE (virtual)
 

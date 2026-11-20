@@ -52,6 +52,11 @@ struct Inner {
     started_at: u64,
     output_rect: (i32, i32, u32, u32),
     created_output: Option<String>,
+    /// Output this daemon enabled for streaming, and the compositor config
+    /// text from before its layout was written. Both are restored on stop, so
+    /// a finished stream never leaves a phantom monitor behind.
+    layout_output: Option<String>,
+    layout_restore: Option<(std::path::PathBuf, String)>,
     rfb: bool,
 }
 
@@ -87,6 +92,8 @@ impl MonitorManager {
             started_at: 0,
             output_rect: (0, 0, 0, 0),
             created_output: None,
+            layout_output: None,
+            layout_restore: None,
             rfb: false,
         };
         let (compositor, outputs) = detect_all();
@@ -198,20 +205,42 @@ impl MonitorManager {
                 let _ = c.wait();
             }
         }
-        let created = self
+        let (created, layout_output, layout_restore, compositor) = self
             .inner
             .lock()
-            .ok()
-            .and_then(|i| i.created_output.clone());
+            .map(|i| {
+                (
+                    i.created_output.clone(),
+                    i.layout_output.clone(),
+                    i.layout_restore.clone(),
+                    i.compositor.clone(),
+                )
+            })
+            .unwrap_or((None, None, None, String::new()));
         if let Some(name) = created {
             if sdw_core::util::has("hyprctl") {
                 let _ = sdw_core::util::run("hyprctl", &["output", "remove", &name]);
+            }
+        }
+        // A virtual screen that stays enabled after the stream ends leaves
+        // windows on a display nobody can see, so turn it off explicitly.
+        if let Some(name) = layout_output {
+            disable_output(&compositor, &name);
+        }
+        // And give the compositor its original config back: the layout block
+        // was written for the stream, not for the next login.
+        if let Some((path, text)) = layout_restore {
+            if let Err(e) = write_config(&path, &text) {
+                self.logger
+                    .warn(format!("не удалось вернуть конфиг {}: {e}", path.display()));
             }
         }
         std::thread::sleep(Duration::from_millis(250));
         if let Ok(mut inner) = self.inner.lock() {
             inner.running = false;
             inner.created_output = None;
+            inner.layout_output = None;
+            inner.layout_restore = None;
             inner.rfb = false;
             inner.note.clear();
         }
@@ -240,6 +269,16 @@ impl MonitorManager {
         } else {
             req.output.trim().to_string()
         };
+        // A real, already enabled monitor is part of the desktop. Extending
+        // onto it would move the user's own screens around instead of adding
+        // one, which is exactly what a stale saved output caused.
+        if mode == MonitorMode::Extend
+            && outputs
+                .iter()
+                .any(|o| o.name == output && o.enabled && !o.virtual_output)
+        {
+            output = pick_output(&outputs, mode);
+        }
         let mut rect = output_rect(&outputs, &output);
         let mut created = None;
         let mut rfb = false;
@@ -349,7 +388,12 @@ impl MonitorManager {
             // compositor config, so the layout survives a restart.
             if !rfb && mode == MonitorMode::Extend && !output.is_empty() && output != "весь экран"
             {
-                if let Err(e) = apply_output_layout(
+                let ephemeral = created.is_some()
+                    || self
+                        .outputs()
+                        .iter()
+                        .any(|o| o.name == output && o.virtual_output);
+                match apply_output_layout(
                     &compositor,
                     &output,
                     width,
@@ -359,14 +403,35 @@ impl MonitorManager {
                     &self.outputs(),
                     &self.logger,
                 ) {
-                    self.logger
-                        .warn(format!("не удалось применить раскладку монитора: {e}"));
+                    Ok(restore) => {
+                        if let Ok(mut inner) = self.inner.lock() {
+                            if ephemeral {
+                                inner.layout_output = Some(output.clone());
+                            }
+                            inner.layout_restore = restore;
+                        }
+                    }
+                    Err(e) => {
+                        self.logger
+                            .warn(format!("не удалось применить раскладку монитора: {e}"));
+                    }
                 }
                 std::thread::sleep(Duration::from_millis(550));
                 self.refresh();
                 let now = self.outputs();
                 let active = now.iter().any(|o| o.name == output && o.enabled);
                 if !active {
+                    if compositor == "niri" && vkms_loaded() {
+                        // niri asks the render GPU to draw into the extra
+                        // scanner's buffers; with the NVIDIA driver it cannot
+                        // produce a linear buffer, so the compositor logs
+                        // "No supported renderer buffer format found" and
+                        // leaves the connector off. Say so instead of only
+                        // reporting a dead output.
+                        return Err(format!(
+                            "niri не включает {output}: он не умеет выводить изображение на DRM-устройство второй видеокарты (VKMS) с драйвером NVIDIA"
+                        ));
+                    }
                     return Err(format!("выход {output} остался выключенным"));
                 }
                 rect = output_rect(&now, &output);
@@ -665,7 +730,10 @@ fn output_rect(outputs: &[DisplayOutput], name: &str) -> (i32, i32, u32, u32) {
     }
 }
 
-/// Top-left corner for a new output of `w`×`h`, placed relative to the primary display.
+/// Top-left corner for a new output of `w`×`h`, placed relative to the
+/// desktop's real edges. Anchoring only on the primary display put a "right"
+/// monitor on top of a second real screen; using the outermost enabled edge
+/// keeps every monitor side by side.
 fn layout_xy(
     outputs: &[DisplayOutput],
     output: &str,
@@ -673,29 +741,42 @@ fn layout_xy(
     h: u32,
     position: MonitorPosition,
 ) -> (i32, i32) {
-    // Anchor on a *real, enabled* output and never on the target itself: a
-    // freshly created virtual output usually sits at 0,0 with no logical size.
-    let reference = outputs
+    let others: Vec<&DisplayOutput> = outputs
         .iter()
-        .find(|o| o.name != output && o.enabled && o.primary && !o.virtual_output)
-        .or_else(|| {
-            outputs
-                .iter()
-                .find(|o| o.name != output && o.enabled && !o.virtual_output)
-        })
-        .or_else(|| outputs.iter().find(|o| o.name != output && o.enabled))
-        .or_else(|| outputs.iter().find(|o| o.primary))
-        .or_else(|| outputs.iter().find(|o| o.name != output))
-        .or_else(|| outputs.first());
-    let (px, py, pw, ph) = match reference {
-        Some(o) => (o.x, o.y, o.width.max(1) as i32, o.height.max(1) as i32),
-        None => (0, 0, 1280, 800),
+        .filter(|o| o.name != output && o.enabled && !o.virtual_output)
+        .collect();
+    let others = if others.is_empty() {
+        outputs.iter().filter(|o| o.name != output).collect()
+    } else {
+        others
     };
+    let primary = others.iter().find(|o| o.primary).or_else(|| others.first());
+    let (px, py) = primary.map(|o| (o.x, o.y)).unwrap_or((0, 0));
+    if others.is_empty() {
+        return match position {
+            MonitorPosition::Auto | MonitorPosition::Right => (w as i32, 0),
+            MonitorPosition::Left => (-(w as i32), 0),
+            MonitorPosition::Above => (0, -(h as i32)),
+            MonitorPosition::Below => (0, h as i32),
+        };
+    }
+    let left = others.iter().map(|o| o.x).min().unwrap_or(px);
+    let top = others.iter().map(|o| o.y).min().unwrap_or(py);
+    let right = others
+        .iter()
+        .map(|o| o.x + o.width.max(1) as i32)
+        .max()
+        .unwrap_or(px);
+    let bottom = others
+        .iter()
+        .map(|o| o.y + o.height.max(1) as i32)
+        .max()
+        .unwrap_or(py);
     match position {
-        MonitorPosition::Auto | MonitorPosition::Right => (px + pw, py),
-        MonitorPosition::Left => (px - w as i32, py),
-        MonitorPosition::Above => (px, py - h as i32),
-        MonitorPosition::Below => (px, py + ph),
+        MonitorPosition::Auto | MonitorPosition::Right => (right, py),
+        MonitorPosition::Left => (left - w as i32, py),
+        MonitorPosition::Above => (px, top - h as i32),
+        MonitorPosition::Below => (px, bottom),
     }
 }
 
@@ -757,7 +838,7 @@ fn apply_output_layout(
     position: MonitorPosition,
     outputs: &[DisplayOutput],
     logger: &Logger,
-) -> Result<(), String> {
+) -> Result<Option<(std::path::PathBuf, String)>, String> {
     let (x, y) = layout_xy(outputs, output, width, height, position);
     logger.info(format!(
         "Экран: раскладка {output} → {x},{y} ({})",
@@ -792,7 +873,11 @@ fn apply_output_layout(
                 ));
             }
             let path = crate::config::niri_config_path();
+            let previous = std::fs::read_to_string(&path).ok();
             patch_niri_config(&path, output, &mode, x, y)?;
+            if let Some(previous) = previous {
+                return Ok(Some((path, previous)));
+            }
         }
         "hyprland" => {
             let spec = format!("{output},{width}x{height}@{fps},{x}x{y},1");
@@ -822,7 +907,11 @@ fn apply_output_layout(
             let path = dirs::config_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("sway/config");
+            let previous = std::fs::read_to_string(&path).ok();
             patch_sway_config(&path, output, width, height, fps, x, y)?;
+            if let Some(previous) = previous {
+                return Ok(Some((path, previous)));
+            }
         }
         "kde" => {
             if sdw_core::util::has("kscreen-doctor") {
@@ -854,7 +943,38 @@ fn apply_output_layout(
         }
         _ => {}
     }
-    Ok(())
+    Ok(None)
+}
+
+/// Turn a streaming-only output off in the running compositor.
+fn disable_output(compositor: &str, name: &str) {
+    match compositor {
+        "niri" => {
+            let _ = sdw_core::util::run("niri", &["msg", "output", name, "off"]);
+        }
+        "hyprland" => {
+            if sdw_core::util::has("hyprctl") {
+                let _ = sdw_core::util::run(
+                    "hyprctl",
+                    &["keyword", "monitor", &format!("{name},disable")],
+                );
+            }
+        }
+        "sway" | "wayland" => {
+            if sdw_core::util::has("swaymsg") {
+                let _ = sdw_core::util::run("swaymsg", &["output", name, "disable"]);
+            }
+        }
+        "kde" => {
+            if sdw_core::util::has("kscreen-doctor") {
+                let _ = sdw_core::util::run("kscreen-doctor", &[&format!("output.{name}.disable")]);
+            }
+        }
+        "x11" => {
+            let _ = sdw_core::util::run("xrandr", &["--output", name, "--off"]);
+        }
+        _ => {}
+    }
 }
 
 /// Replace the `output "name" { … }` block in niri's config, or append one.
