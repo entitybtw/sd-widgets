@@ -1300,6 +1300,254 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
 }
 
+/// The pull-down panel: notifications, then the Deck's own sound and light.
+///
+/// It is an overlay over the current page and leaves with a slide, the handle,
+/// the close button, a tap outside or B.
+pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
+    let lang = app.lang;
+    let anim = ctx.animate_bool_with_time(egui::Id::new("deck-quick"), app.quick_open, 0.16);
+    if !app.quick_open && anim <= 0.001 {
+        return;
+    }
+    let rect = ctx.content_rect();
+    let width = (rect.width() - 24.0).clamp(320.0, 860.0);
+    let slide = (1.0 - anim) * 540.0;
+    let pos = egui::pos2(rect.center().x - width / 2.0, rect.top() + 6.0 - slide);
+    let mut close = false;
+
+    // A dim layer behind the panel; a tap on it closes the panel.
+    if app.quick_open {
+        egui::Area::new(egui::Id::new("deck-quick-shade"))
+            .fixed_pos(rect.min)
+            .order(egui::Order::Middle)
+            .show(ctx, |ui| {
+                let (_, resp) = ui.allocate_exact_size(rect.size(), Sense::click());
+                ui.painter()
+                    .rect_filled(rect, CornerRadius::ZERO, Color32::from_black_alpha(96));
+                if resp.clicked() {
+                    close = true;
+                }
+            });
+    }
+
+    let mut jump_notif = false;
+    let mut dismiss: Option<u64> = None;
+    egui::Area::new(egui::Id::new("deck-quick-panel"))
+        .fixed_pos(pos)
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(if t.dark {
+                    Color32::from_rgba_premultiplied(0x12, 0x18, 0x20, 252)
+                } else {
+                    Color32::from_rgba_premultiplied(0xf7, 0xf9, 0xfc, 252)
+                })
+                .stroke(Stroke::new(1.0, t.line_strong))
+                .corner_radius(CornerRadius::ZERO)
+                .inner_margin(Margin::symmetric(18, 12))
+                .show(ui, |ui| {
+                    ui.set_width(width - 36.0);
+                    ui.horizontal(|ui| {
+                        ui.label(theme::hud(
+                            t!(lang, "центр управления", "control center"),
+                            t.faint,
+                        ));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if theme::icon_button(ui, theme::icon::CLOSE, t, 26.0, false).clicked()
+                            {
+                                close = true;
+                            }
+                            if theme::icon_button(ui, theme::icon::NOTIFICATIONS, t, 26.0, false)
+                                .clicked()
+                            {
+                                jump_notif = true;
+                            }
+                            ui.label(
+                                RichText::new(t!(
+                                    lang,
+                                    "стяните вниз сверху экрана",
+                                    "drag down from the top"
+                                ))
+                                .size(11.0)
+                                .color(t.faint),
+                            );
+                        });
+                    });
+                    ui.add_space(4.0);
+
+                    // The Deck's own sound and light.
+                    if let Some(level) = app.quick_volume {
+                        let mut volume = level as f32;
+                        let muted = app.quick_muted;
+                        let (_, released) = theme::slider_ex(
+                            ui,
+                            t,
+                            t!(lang, "громкость деки", "deck volume"),
+                            &mut volume,
+                            0.0..=100.0,
+                            |x| {
+                                if muted {
+                                    t!(lang, "выкл", "mute").to_string()
+                                } else {
+                                    format!("{}%", x.round() as u8)
+                                }
+                            },
+                        );
+                        if released {
+                            app.quick_set_volume(volume.round() as u8);
+                        } else if volume.round() as u8 != level {
+                            app.quick_volume = Some(volume.round() as u8);
+                        }
+                    } else {
+                        theme::small(
+                            ui,
+                            t!(
+                                lang,
+                                "на деке не найден звуковой сервер (wpctl или pactl).",
+                                "no sound server was found on the deck (wpctl or pactl)."
+                            ),
+                            t.muted,
+                        );
+                    }
+
+                    if let Some(level) = app.quick_brightness {
+                        let mut value = level as f32;
+                        let (_, released) = theme::slider_ex(
+                            ui,
+                            t,
+                            t!(lang, "яркость", "brightness"),
+                            &mut value,
+                            1.0..=100.0,
+                            |x| format!("{}%", x.round() as u8),
+                        );
+                        if released {
+                            app.quick_set_brightness(value.round() as u8);
+                        } else if value.round() as u8 != level {
+                            app.quick_brightness = Some(value.round() as u8);
+                        }
+                    }
+
+                    ui.horizontal(|ui| {
+                        let muted = app.quick_muted;
+                        let glyph = if muted {
+                            theme::icon::VOLUME_OFF
+                        } else {
+                            theme::icon::VOLUME_UP
+                        };
+                        if theme::icon_button(ui, glyph, t, 28.0, muted).clicked() {
+                            app.quick_toggle_mute();
+                        }
+                        if theme::ghost(ui, t!(lang, "убавить", "quieter"), t).clicked() {
+                            let next = app.quick_volume.unwrap_or(30).saturating_sub(5);
+                            app.quick_set_volume(next);
+                        }
+                        if theme::ghost(ui, t!(lang, "прибавить", "louder"), t).clicked() {
+                            let next = (app.quick_volume.unwrap_or(30) + 5).min(100);
+                            app.quick_set_volume(next);
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if theme::ghost(ui, t!(lang, "все уведомления", "all notifications"), t)
+                                .clicked()
+                            {
+                                jump_notif = true;
+                            }
+                        });
+                    });
+
+                    ui.add_space(6.0);
+                    if app.notifications.is_empty() {
+                        theme::small(ui, t!(lang, "уведомлений нет", "no notifications"), t.muted);
+                        return;
+                    }
+                    ui.label(theme::hud(
+                        &format!(
+                            "{} · {}",
+                            t!(lang, "уведомления", "notifications"),
+                            app.notifications.len()
+                        ),
+                        t.faint,
+                    ));
+                    ui.add_space(2.0);
+                    let newest: Vec<Notification> =
+                        app.notifications.iter().rev().take(3).cloned().collect();
+                    for n in newest {
+                        let color = notification_color(t, &n);
+                        egui::Frame::new()
+                            .fill(t.card)
+                            .stroke(Stroke::new(1.0, color.gamma_multiply(0.35)))
+                            .corner_radius(CornerRadius::ZERO)
+                            .inner_margin(Margin::symmetric(12, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.label(theme::icon(
+                                        notif_glyph(&n.app, &n.icon),
+                                        18.0,
+                                        color,
+                                    ));
+                                    ui.vertical(|ui| {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(if n.summary.is_empty() {
+                                                    &n.app
+                                                } else {
+                                                    &n.summary
+                                                })
+                                                .size(14.0)
+                                                .strong()
+                                                .color(t.strong),
+                                            )
+                                            .truncate(),
+                                        );
+                                        if !n.body.is_empty() {
+                                            ui.add(
+                                                egui::Label::new(
+                                                    RichText::new(util::truncate(&n.body, 90))
+                                                        .size(12.0)
+                                                        .color(t.muted),
+                                                )
+                                                .truncate(),
+                                            );
+                                        }
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if theme::icon_button(
+                                            ui,
+                                            theme::icon::CLOSE,
+                                            t,
+                                            22.0,
+                                            false,
+                                        )
+                                        .clicked()
+                                        {
+                                            dismiss = Some(n.id);
+                                        }
+                                        ui.label(
+                                            RichText::new(age(n.ts, lang))
+                                                .family(FontFamily::Monospace)
+                                                .size(10.0)
+                                                .color(t.faint),
+                                        );
+                                    });
+                                });
+                            });
+                        ui.add_space(4.0);
+                    }
+                });
+        });
+
+    if let Some(id) = dismiss {
+        app.dismiss_notif(id);
+    }
+    if jump_notif {
+        app.set_quick(false);
+        app.set_page(Page::Notifications);
+    } else if close {
+        app.set_quick(false);
+    }
+}
+
 /// Bluetooth devices on the computer, with headphone battery.
 ///
 /// Pairing, connecting and forgetting are declared actions; the daemon checks

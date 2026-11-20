@@ -42,6 +42,8 @@
 - `binds.rs` — bind list, editor and capture.
 - `input.rs` — evdev reader, gestures and button codes.
 - `sound.rs` — synthesized WAV packs and playback.
+- `sys.rs` — the Deck's own output volume and panel brightness (`wpctl`/`pactl`,
+  sysfs/`brightnessctl`), used by the pull-down panel.
 - `main.rs` — CLI and eframe entry.
 
 ### `sdw-daemon` (the computer)

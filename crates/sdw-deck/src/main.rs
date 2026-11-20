@@ -13,6 +13,7 @@ mod deck_view;
 mod input;
 mod pages;
 mod sound;
+mod sys;
 mod theme;
 
 use clap::Parser;

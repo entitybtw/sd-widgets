@@ -36,6 +36,8 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
   launches only apps it discovered itself, never a command line from the deck.
 - **Bluetooth**: pair, connect, trust and forget devices on the computer, with
   headphone battery from BlueZ and UPower.
+- **A control center on a downward pull**: notifications, the Deck's own volume
+  and brightness in one overlay, over any page, with a small handle at the top.
 - **PC audio on the Deck**: stream the whole computer or picked applications to
   the Deck speakers, with a configurable number of “are you sure?” steps.
 - **Self-updates**: both applications check the newest release on
@@ -64,6 +66,10 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Addons** | Import, enable, configure and remove packages; save the current look or clock as one. |
 | **Look** | Presets, palette, CSS editor, grid, density, dock/arrows, page visibility, sounds. |
 | **Settings** | Device name, language, theme, UI scale, input devices, updates. |
+
+A pull down from the top edge (or a tap on the handle) opens the **control
+center**: the newest notifications, the Deck's own volume and its brightness,
+over whatever page is open.
 
 Every page can be reached by the **visible left/right arrows**, by the floating
 glyph dock, by three-finger swipes, by keyboard, or with the deck's own controls:

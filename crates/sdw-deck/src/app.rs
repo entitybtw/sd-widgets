@@ -317,6 +317,8 @@ pub enum Task {
     Bluetooth(Result<sdw_core::model::BluetoothStatus, String>),
     /// Result of a Bluetooth action; the page reloads afterwards.
     BtAction(Result<String, String>),
+    /// The Deck sink was muted or unmuted.
+    QuickMute(Result<bool, String>),
 }
 
 /// Multi-finger touch state from `egui::Event::Touch`.
@@ -574,6 +576,16 @@ pub struct App {
     /// Address waiting for a second press before it is removed.
     pub bluetooth_remove: Option<String>,
 
+    /// Pull-down control panel: the Deck's own volume and brightness plus the
+    /// newest notifications.
+    pub quick_open: bool,
+    pub quick_volume: Option<u8>,
+    pub quick_muted: bool,
+    pub quick_brightness: Option<u8>,
+    pub quick_at: Option<Instant>,
+    /// Finger offset while a top-edge pull-down is in progress.
+    pub quick_pull: f32,
+
     pub osk_open: bool,
     pub osk_shift: bool,
     pub osk_symbols: bool,
@@ -802,6 +814,12 @@ impl App {
             bluetooth_at: None,
             bluetooth_err: String::new(),
             bluetooth_remove: None,
+            quick_open: false,
+            quick_volume: None,
+            quick_muted: false,
+            quick_brightness: None,
+            quick_at: None,
+            quick_pull: 0.0,
             audio_player: None,
             audio_confirm_left: 0,
             audio_error: String::new(),
@@ -1050,6 +1068,35 @@ impl App {
             )
         });
         let rect = ctx.content_rect();
+
+        // An open panel is dismissed by a pull up rather than a page swipe.
+        if self.quick_open {
+            if pressed {
+                if let Some(p) = pos {
+                    self.edge_swipe = Some((p, p, Instant::now()));
+                }
+            }
+            if let Some((start, _, at)) = self.edge_swipe {
+                if down {
+                    if let Some(p) = pos {
+                        self.edge_swipe = Some((start, p, at));
+                    }
+                } else if released {
+                    if let Some(p) = pos {
+                        let dy = p.y - start.y;
+                        let dx = p.x - start.x;
+                        if dy < -70.0 && dy.abs() > dx.abs() * 1.2 {
+                            self.set_quick(false);
+                        }
+                    }
+                    self.edge_swipe = None;
+                } else {
+                    self.edge_swipe = None;
+                }
+            }
+            return;
+        }
+
         if pressed {
             if let Some(p) = pos {
                 self.swipe_blocked = false;
@@ -1072,7 +1119,13 @@ impl App {
                     self.edge_swipe = Some((start, p, at));
                     let dx = p.x - start.x;
                     let dy = p.y - start.y;
-                    if theme::style().animations
+                    let from_top = start.y <= rect.top() + 96.0;
+                    if from_top && dy > 8.0 && dy > dx.abs() * 1.2 {
+                        // A pull down from the top edge shows the panel; the
+                        // handle grows under the finger as feedback.
+                        self.quick_pull = dy;
+                        self.page_slide = 0.0;
+                    } else if theme::style().animations
                         && !self.swipe_blocked
                         && dx.abs() > 6.0
                         && dx.abs() > dy.abs() * 1.2
@@ -1081,6 +1134,7 @@ impl App {
                         self.page_slide = dx.clamp(-w * 0.6, w * 0.6);
                     } else if !self.swipe_blocked {
                         self.page_slide = 0.0;
+                        self.quick_pull = 0.0;
                     }
                 }
             } else if released {
@@ -1089,6 +1143,17 @@ impl App {
                     let dy = p.y - start.y;
                     let edge = start.x <= rect.left() + 64.0 || start.x >= rect.right() - 64.0;
                     let min = if edge { 80.0 } else { 140.0 };
+                    let pull = self.quick_pull;
+                    self.quick_pull = 0.0;
+                    if !self.swipe_blocked
+                        && pull > 70.0
+                        && at.elapsed() < Duration::from_millis(900)
+                    {
+                        self.page_slide = 0.0;
+                        self.set_quick(true);
+                        self.edge_swipe = None;
+                        return;
+                    }
                     let gesture_recent = self
                         .last_gesture
                         .as_ref()
@@ -1111,7 +1176,9 @@ impl App {
     }
 
     fn go_back(&mut self, ctx: &egui::Context) {
-        if self.clock_full {
+        if self.quick_open {
+            self.set_quick(false);
+        } else if self.clock_full {
             self.clock_full = false;
         } else if self.stream.fullscreen {
             self.set_fullscreen(ctx, false);
@@ -1864,6 +1931,63 @@ impl App {
                     .map_err(|e| e.to_string()),
             )
         });
+    }
+
+    /// Drop a notification locally and on the computer.
+    pub fn dismiss_notif(&mut self, id: u64) {
+        self.notifications.retain(|n| n.id != id);
+        if let Some(c) = self.client() {
+            self.spawn(move || {
+                Task::Msg(
+                    c.dismiss_notification(id)
+                        .map(|_| String::new())
+                        .map_err(|e| e.to_string()),
+                )
+            });
+        }
+    }
+
+    /// Open or close the pull-down panel. Opening reads the current values at
+    /// once, so the sliders never show a stale number.
+    pub fn set_quick(&mut self, open: bool) {
+        self.quick_open = open;
+        self.quick_pull = 0.0;
+        if open {
+            self.quick_at = None;
+            self.quick_values();
+        }
+    }
+
+    /// Read the Deck's own volume and brightness. Called when the panel opens
+    /// and every couple of seconds while it is visible.
+    pub fn quick_values(&mut self) {
+        if let Some((level, muted)) = crate::sys::volume() {
+            self.quick_volume = Some(level);
+            self.quick_muted = muted;
+        }
+        self.quick_brightness = crate::sys::brightness();
+        self.quick_at = Some(Instant::now());
+    }
+
+    /// Set the Deck volume from the panel. The value is applied when the finger
+    /// leaves the slider, not on every pixel of the drag.
+    pub fn quick_set_volume(&mut self, percent: u8) {
+        self.quick_volume = Some(percent.min(100));
+        self.quick_muted = false;
+        if let Err(e) = crate::sys::set_volume(percent) {
+            self.toast(e, false);
+        }
+    }
+
+    pub fn quick_set_brightness(&mut self, percent: u8) {
+        self.quick_brightness = Some(percent.clamp(1, 100));
+        if let Err(e) = crate::sys::set_brightness(percent) {
+            self.toast(e, false);
+        }
+    }
+
+    pub fn quick_toggle_mute(&mut self) {
+        self.spawn(|| Task::QuickMute(crate::sys::toggle_mute()));
     }
 
     /// Read the application list from the active computer. One request at a
@@ -3034,6 +3158,13 @@ impl App {
                 self.bluetooth_at = None;
             }
             Task::BtAction(Err(e)) => self.toast(e, false),
+            Task::QuickMute(Ok(muted)) => {
+                self.quick_muted = muted;
+                if self.quick_volume == Some(0) && !muted {
+                    self.quick_volume = Some(30);
+                }
+            }
+            Task::QuickMute(Err(e)) => self.toast(e, false),
         }
     }
 
@@ -3762,6 +3893,60 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 
+    /// The pull-down panel and the small handle that always opens it.
+    fn quick_ui(&mut self, ctx: &egui::Context) {
+        let t = Tokens::get(ctx);
+        let blocked = self.clock_full || self.stream.fullscreen || self.binds.capture;
+        if blocked {
+            if self.quick_open {
+                self.set_quick(false);
+            }
+            return;
+        }
+        if self.quick_open
+            && self
+                .quick_at
+                .map(|at| at.elapsed() > Duration::from_secs(2))
+                .unwrap_or(true)
+        {
+            self.quick_values();
+        }
+
+        if !self.quick_open {
+            let pull = self.quick_pull.max(0.0);
+            let mut toggle = false;
+            egui::Area::new(Id::new("deck-quick-handle"))
+                .anchor(egui::Align2::CENTER_TOP, Vec2::new(0.0, 1.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    let (rect, resp) =
+                        ui.allocate_exact_size(Vec2::new(110.0, 12.0), Sense::click());
+                    let body = egui::Rect::from_center_size(
+                        rect.center(),
+                        Vec2::new(46.0 + pull.min(60.0) * 1.3, 3.0),
+                    );
+                    ui.painter().rect_filled(
+                        body,
+                        CornerRadius::ZERO,
+                        if pull > 4.0 { t.accent } else { t.line_strong },
+                    );
+                    if resp.clicked() {
+                        toggle = true;
+                    }
+                });
+            if toggle {
+                self.set_quick(true);
+            }
+        }
+
+        crate::pages::quick_panel(self, ctx, &t);
+        if self.quick_open
+            || ctx.animate_bool_with_time(Id::new("deck-quick"), self.quick_open, 0.16) > 0.001
+        {
+            ctx.request_repaint();
+        }
+    }
+
     fn toast_ui(&mut self, ctx: &egui::Context) {
         let Some(toast) = &self.toast else {
             return;
@@ -3814,6 +3999,7 @@ impl eframe::App for App {
         self.popup_ui(&ctx);
         self.toast_ui(&ctx);
         self.pad_cursor_ui(&ctx);
+        self.quick_ui(&ctx);
 
         let ms = if self.stream.feed.is_some() {
             24
