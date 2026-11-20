@@ -70,11 +70,6 @@ layout is applied with `xrandr`.
 Desktop capture with `ffmpeg -f gdigrab`. The extra monitor is presented as a
 window on the chosen side; true virtual displays depend on the display driver.
 
-### macOS (mirror)
-
-`screencapture` of the selected display. macOS does not allow creating virtual
-displays without a kernel extension.
-
 ## Virtual machines
 
 A guest usually has one virtual GPU and no spare connector. The daemon detects
@@ -100,7 +95,7 @@ and the config are found.
 ## Configuration hints
 
 When automatic patching is not possible (read-only config, unrecognised compositor,
-Windows/macOS), the setup wizard and the daemon GUI show the exact snippet to add.
+Windows), the setup wizard and the daemon GUI show the exact snippet to add.
 Examples:
 
 niri (`~/.config/niri/config.kdl`):
@@ -142,7 +137,6 @@ xrandr --output VIRTUAL1 --mode 1280x800_60 --right-of eDP-1
 | KDE | `krfb-virtualmonitor`, RFB support |
 | X11 | `ffmpeg`, `xrandr` |
 | Windows | `ffmpeg` |
-| macOS | `screencapture` |
 | mirror | `grim` (Wayland) or `spectacle` (KDE) |
 
 The daemon reports which backend it selected and why in its log and in the

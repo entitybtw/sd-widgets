@@ -81,7 +81,6 @@ directional slide, and the tiles stagger in behind it.
     one button in the wizard loads VKMS and keeps it loaded after a reboot.
   - KDE: `krfb-virtualmonitor` with a built-in RFB client.
   - X11 and Windows: `ffmpeg` desktop capture.
-  - macOS: `screencapture`.
   - virtual machines: the same VKMS path is picked automatically, with a
     readiness row for the kernel module, the output and the config.
   - Fallback: mirror an existing output with `grim`/`spectacle`.
@@ -117,7 +116,7 @@ directional slide, and the tiles stagger in behind it.
 
 **Computer side**
 
-- Linux, Windows or macOS.
+- Linux or Windows.
 - Optional at runtime, depending on features:
   - VIIPER 0.6+ for virtual gamepads (the daemon can install it).
   - `usbip` for VIIPER local attach.
@@ -160,7 +159,6 @@ Grab the artifacts from the releases page:
 
 - `sdw-deck-<version>-x86_64.AppImage` — Steam Deck / Linux.
 - `sdw-daemon-<version>-windows-x86_64.zip` — Windows.
-- `sdw-daemon-<version>-macos-<arch>.dmg` — macOS.
 
 ### From source
 
@@ -178,8 +176,8 @@ Both applications check the newest published release on
 `https://git.entitybtw.ru/entitybtw/sd-widgets/releases` when they start and every
 six hours after that. **Settings → Updates** shows the version, the release notes
 and a download button. On Linux the downloaded AppImage replaces the running binary
-(the restart is yours); on Windows and macOS the downloaded file is shown so you can
-swap it in. Headless users can do the same without a window:
+(the restart is yours); on Windows the downloaded file is shown so you can swap it
+in. Headless users can do the same without a window:
 
 ```bash
 sdw-daemon --check-updates
@@ -328,7 +326,7 @@ crates/sdw-deck      the Deck app (egui)
 crates/sdw-daemon    the PC daemon, server and GUI (egui)
 vendor/viiper-client vendored MIT Rust client for VIIPER
 assets               fonts and icons
-packaging            install.sh, desktop files, systemd unit, AppImage / Windows / macOS scripts
+packaging            install.sh, desktop files, systemd unit, AppImage / Windows scripts
 docs                 architecture, API, themes, monitor notes, addons, audio
 ```
 

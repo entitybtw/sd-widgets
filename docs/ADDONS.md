@@ -45,7 +45,7 @@ window. The path may point at:
 A `.zip`/`.sdwaddon` may keep its files at the root or inside one top-level
 folder. The unpacker rejects absolute paths and `..` escapes, and refuses an
 archive that expands beyond 64 MB. No external `unzip` is needed, so the same
-link works on Linux, Windows and macOS.
+link works on Linux and Windows.
 
 Importing an existing `id` replaces the previous package; the user's enabled
 state and values are kept. **Remove** deletes the folder and clears its values.

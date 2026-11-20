@@ -1,9 +1,9 @@
 //! Mirrors desktop notifications into a small ring buffer for the Deck.
 //!
 //! On Linux this listens to the session bus. It does not replace the desktop notification
-//! daemon: it only observes `org.freedesktop.Notifications.Notify` calls. On Windows and
-//! macOS the platform keeps notifications in a private store; the daemon reports that
-//! mirroring is unavailable instead of pretending.
+//! daemon: it only observes `org.freedesktop.Notifications.Notify` calls. On Windows the
+//! platform keeps notifications in a private store; the daemon reports that mirroring is
+//! unavailable instead of pretending.
 
 use crate::state::Logger;
 use sdw_core::model::{now_ms, Notification, NotificationStatus};
@@ -31,10 +31,8 @@ impl NotificationStore {
     pub fn new(enabled: bool, logger: Logger) -> Self {
         let backend = if cfg!(target_os = "linux") {
             "D-Bus"
-        } else if cfg!(target_os = "windows") {
-            "Windows"
         } else {
-            "macOS"
+            "Windows"
         };
         Self {
             inner: Mutex::new(Inner {

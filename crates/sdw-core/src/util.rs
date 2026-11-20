@@ -205,13 +205,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
         c.args(["/C", "start", "", url]);
         c
     };
-    #[cfg(target_os = "macos")]
-    let mut c = {
-        let mut c = Command::new("open");
-        c.arg(url);
-        c
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     let mut c = {
         let mut c = Command::new("xdg-open");
         c.arg(url);

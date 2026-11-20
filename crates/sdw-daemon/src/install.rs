@@ -329,8 +329,6 @@ pub fn install(
             ctx.line("На Windows установите usbipd и ffmpeg через winget:");
             ctx.line("  winget install --id Gyan.FFmpeg");
             ctx.line("  winget install --id dorssel.usbipd-win");
-        } else if cfg!(target_os = "macos") {
-            ctx.line("На macOS: brew install ffmpeg cliclick");
         } else if let Err(e) = install_packages(&need_packages, sudo_password, ctx) {
             ctx.error(format!("пакеты: {e}"));
             return Err(e);

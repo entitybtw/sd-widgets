@@ -1757,7 +1757,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
 // ---------------------------------------------------------------- screen
 
-fn backend_list() -> [MonitorBackend; 8] {
+fn backend_list() -> [MonitorBackend; 7] {
     [
         MonitorBackend::Auto,
         MonitorBackend::Hyprland,
@@ -1766,7 +1766,6 @@ fn backend_list() -> [MonitorBackend; 8] {
         MonitorBackend::Mirror,
         MonitorBackend::X11,
         MonitorBackend::Gdigrab,
-        MonitorBackend::MacCapture,
     ]
 }
 

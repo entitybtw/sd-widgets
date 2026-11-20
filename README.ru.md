@@ -78,7 +78,6 @@
     перезагрузки;
   - KDE: `krfb-virtualmonitor` и встроенный RFB-клиент;
   - X11 и Windows: захват `ffmpeg`;
-  - macOS: `screencapture`;
   - виртуальные машины: тот же путь через VKMS выбирается автоматически, а
     мастер показывает готовность модуля, выхода и конфига;
   - запасной вариант: зеркало существующего выхода через `grim`/`spectacle`.
@@ -114,7 +113,7 @@
 
 **Компьютер**
 
-- Linux, Windows или macOS.
+- Linux или Windows.
 - По желанию, в зависимости от функций: VIIPER 0.6+, `usbip`, `hyprctl`, `niri`,
   `krfb-virtualmonitor`, `ffmpeg`, `grim`, `spectacle`, `xrandr`.
 - На деке для звуков: `pw-play`, `paplay`, `aplay`, `ffplay` или `mpv`.
@@ -154,7 +153,6 @@ systemd. Откройте `http://<компьютер>:47830`, завершит�
 
 - `sdw-deck-<версия>-x86_64.AppImage` — дека и Linux.
 - `sdw-daemon-<версия>-windows-x86_64.zip` — Windows.
-- `sdw-daemon-<версия>-macos-<arch>.dmg` — macOS.
 
 ### Из исходников
 
@@ -170,7 +168,7 @@ cargo build --release -p sdw-deck -p sdw-daemon
 `https://git.entitybtw.ru/entitybtw/sd-widgets/releases` при запуске и каждые
 шесть часов. В **Настройках → Обновления** видны версия, список изменений и кнопка
 скачивания. На Linux скачанный AppImage заменяет запущенный файл (перезапуск — за
-тобой); на Windows и macOS показывается путь к скачанному файлу. Без окна:
+тобой); на Windows показывается путь к скачанному файлу. Без окна:
 
 ```bash
 sdw-daemon --check-updates
@@ -314,7 +312,7 @@ crates/sdw-deck      приложение деки (egui)
 crates/sdw-daemon    демон ПК, сервер и GUI (egui)
 vendor/viiper-client MIT-клиент VIIPER
 assets               шрифты и иконки
-packaging            install.sh, desktop-файлы, systemd-юнит, скрипты AppImage / Windows / macOS
+packaging            install.sh, desktop-файлы, systemd-юнит, скрипты AppImage / Windows
 docs                 архитектура, API, темы, монитор, аддоны, звук
 ```
 

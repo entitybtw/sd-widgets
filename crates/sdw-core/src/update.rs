@@ -40,13 +40,7 @@ impl UpdateInfo {
     /// The asset for this application on this platform. `app` is `sdw-deck`
     /// or `sdw-daemon`.
     pub fn asset_for(&self, app: &str) -> Option<&UpdateAsset> {
-        let platform = if cfg!(windows) {
-            "windows"
-        } else if cfg!(target_os = "macos") {
-            "macos"
-        } else {
-            "linux"
-        };
+        let platform = if cfg!(windows) { "windows" } else { "linux" };
         let app = app.to_ascii_lowercase();
         let platform = platform.to_string();
         let fits = |name: &str| {
@@ -56,8 +50,6 @@ impl UpdateInfo {
             }
             let by_ext = if platform == "windows" {
                 n.ends_with(".exe") || n.ends_with(".msi") || n.ends_with(".zip")
-            } else if platform == "macos" {
-                n.ends_with(".dmg") || n.ends_with(".tar.gz")
             } else {
                 n.ends_with(".appimage") || n.ends_with(".tar.gz") || n.ends_with(".deb")
             };

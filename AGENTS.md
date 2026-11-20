@@ -48,8 +48,8 @@ make release               # target/release/sdw-deck, sdw-daemon
 packaging/linux/build-appimage.sh all
 ```
 
-Cross builds for Windows and macOS cannot be produced in this environment; do not
-pretend they were tested.
+Cross builds for Windows cannot be produced in this environment without a MinGW
+linker; do not pretend they were tested.
 
 ## Where things are
 
@@ -58,6 +58,6 @@ crates/sdw-core      shared model, addons, API client, auth, discovery, UDP, i18
 crates/sdw-deck      Deck app: app.rs, pages.rs, clock.rs, addons_ui.rs, theme.rs
 crates/sdw-daemon    PC daemon: server.rs, state.rs, monitor.rs, gui/, config.rs
 assets               fonts and icons
-packaging            install.sh, desktop files, systemd unit, AppImage / Windows / macOS scripts
+packaging            install.sh, desktop files, systemd unit, AppImage / Windows scripts
 docs                 architecture, API, themes, addons, monitor
 ```

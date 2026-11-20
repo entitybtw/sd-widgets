@@ -2563,7 +2563,6 @@ impl App {
                                         MonitorBackend::Mirror,
                                         MonitorBackend::X11,
                                         MonitorBackend::Gdigrab,
-                                        MonitorBackend::MacCapture,
                                     ] {
                                         ui.selectable_value(
                                             &mut self.screen.backend,
@@ -5208,7 +5207,6 @@ fn backend_label(l: Lang, b: MonitorBackend) -> &'static str {
         MonitorBackend::Mirror => t!(l, "зеркало", "mirror"),
         MonitorBackend::X11 => "x11",
         MonitorBackend::Gdigrab => "windows gdigrab",
-        MonitorBackend::MacCapture => "macos screencapture",
     }
 }
 

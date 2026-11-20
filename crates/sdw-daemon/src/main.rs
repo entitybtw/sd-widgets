@@ -301,11 +301,7 @@ fn has_display() -> bool {
     {
         true
     }
-    #[cfg(target_os = "macos")]
-    {
-        true
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
+    #[cfg(unix)]
     {
         std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some()
     }

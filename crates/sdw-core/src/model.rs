@@ -312,7 +312,6 @@ pub enum MonitorBackend {
     Mirror,
     X11,
     Gdigrab,
-    MacCapture,
 }
 
 impl MonitorBackend {
@@ -325,7 +324,6 @@ impl MonitorBackend {
             Self::Mirror => "Зеркало (grim)",
             Self::X11 => "X11 (ffmpeg)",
             Self::Gdigrab => "Windows (gdigrab)",
-            Self::MacCapture => "macOS (screencapture)",
         }
     }
 }
@@ -1867,8 +1865,6 @@ pub fn now_ms() -> u64 {
 pub fn platform() -> &'static str {
     if cfg!(target_os = "windows") {
         "windows"
-    } else if cfg!(target_os = "macos") {
-        "macos"
     } else if cfg!(target_os = "linux") {
         "linux"
     } else {

@@ -5,7 +5,6 @@
 | `install.sh` | The one-command installer for the Deck and the daemon (downloads a release, writes launchers, services and the Steam shortcut). |
 | `linux/` | `.desktop` entries, a systemd user unit, an autostart entry, `build-appimage.sh`, the Steam helper and artwork generator. |
 | `windows/` | `build.ps1` and a short readme for the zip. |
-| `macos/` | `build-dmg.sh`, which builds a `.app` and a DMG per architecture. |
 
 All build scripts write to `dist/` in the repository root.
 
@@ -54,11 +53,4 @@ install -Dm644 packaging/linux/sdw-daemon-autostart.desktop ~/.config/autostart/
 
 ```powershell
 pwsh -File packaging/windows/build.ps1
-```
-
-## macOS
-
-```bash
-packaging/macos/build-dmg.sh arm64
-packaging/macos/build-dmg.sh x86_64
 ```

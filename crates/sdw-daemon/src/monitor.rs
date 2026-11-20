@@ -8,7 +8,6 @@
 //! * KDE Plasma: `krfb-virtualmonitor` + a tiny built-in RFB client
 //! * X11: `ffmpeg -f x11grab`
 //! * Windows: `ffmpeg -f gdigrab`
-//! * macOS: `screencapture`
 //!
 //! Every path ends in the same place: the newest JPEG frame in shared memory,
 //! served by `GET /api/v1/monitor/frame`.
@@ -480,8 +479,6 @@ impl MonitorManager {
                 return Err("Для Windows-трансляции нужен ffmpeg в PATH.".into());
             }
             Capture::FfmpegWindows
-        } else if backend == MonitorBackend::MacCapture || compositor == "macos" {
-            Capture::Mac
         } else {
             // Wayland screenshot path: grim, spectacle or gnome-screenshot.
             if sdw_core::util::has("grim") && !output.is_empty() {
@@ -614,16 +611,6 @@ impl MonitorManager {
                     frames.clone(),
                     child_slot.clone(),
                 ),
-                Capture::Mac => capture_mac(
-                    rect,
-                    width,
-                    height,
-                    fps,
-                    quality2,
-                    stop2.clone(),
-                    frame.clone(),
-                    frames.clone(),
-                ),
                 Capture::Rfb => rfb_capture(
                     "127.0.0.1:5900",
                     width,
@@ -677,7 +664,6 @@ enum Capture {
     Gnome,
     FfmpegX11,
     FfmpegWindows,
-    Mac,
     Rfb,
 }
 
@@ -694,7 +680,6 @@ fn default_backend(compositor: &str, mode: MonitorMode) -> MonitorBackend {
         "gnome" if cfg!(target_os = "linux") && vkms_available() => MonitorBackend::Vkms,
         "x11" => MonitorBackend::X11,
         "windows" => MonitorBackend::Gdigrab,
-        "macos" => MonitorBackend::MacCapture,
         _ if cfg!(target_os = "linux") && vkms_available() => MonitorBackend::Vkms,
         _ => MonitorBackend::Mirror,
     }
@@ -1148,9 +1133,6 @@ pub fn detect_compositor() -> String {
     if cfg!(windows) {
         return "windows".into();
     }
-    if cfg!(target_os = "macos") {
-        return "macos".into();
-    }
     if std::env::var_os("NIRI_SOCKET").is_some() || sdw_core::util::has("niri") && niri_works() {
         return "niri".into();
     }
@@ -1193,7 +1175,6 @@ fn detect_all() -> (String, Vec<DisplayOutput>) {
         "sway" => sway_outputs().unwrap_or_default(),
         "x11" => xrandr_outputs().unwrap_or_default(),
         "windows" => windows_outputs().unwrap_or_default(),
-        "macos" => mac_outputs().unwrap_or_default(),
         _ => Vec::new(),
     };
     if outputs.is_empty() {
@@ -1454,54 +1435,6 @@ fn windows_outputs() -> Result<Vec<DisplayOutput>, String> {
     Ok(out)
 }
 
-fn mac_outputs() -> Result<Vec<DisplayOutput>, String> {
-    let text = sdw_core::util::run("system_profiler", &["SPDisplaysDataType", "-json"])?;
-    let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-    let arr = v["SPDisplaysDataType"]
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
-    let mut out = Vec::new();
-    let mut idx = 0;
-    for gpu in arr {
-        let displays = gpu["spdisplays_ndrvs"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        for d in displays {
-            let name = d["_name"].as_str().unwrap_or("Display").to_string();
-            let res = d["_spdisplays_resolution"]
-                .as_str()
-                .or_else(|| d["spdisplays_resolution"].as_str())
-                .unwrap_or("1920 x 1080");
-            let (w, h) = parse_resolution(res).unwrap_or((1920, 1080));
-            let primary = d["spdisplays_main"].as_str() == Some("spdisplays_yes") || idx == 0;
-            out.push(DisplayOutput {
-                name: name.clone(),
-                description: name,
-                width: w,
-                height: h,
-                refresh: 60.0,
-                x: if idx == 0 {
-                    0
-                } else {
-                    out.iter()
-                        .map(|o: &DisplayOutput| o.x + o.width as i32)
-                        .max()
-                        .unwrap_or(0)
-                },
-                y: 0,
-                scale: 1.0,
-                primary,
-                virtual_output: false,
-                enabled: true,
-            });
-            idx += 1;
-        }
-    }
-    Ok(out)
-}
-
 fn parse_resolution(s: &str) -> Option<(u32, u32)> {
     let mut nums = s
         .split(|c: char| !c.is_ascii_digit())
@@ -1577,8 +1510,6 @@ fn detect_tools() -> Vec<ToolStatus> {
         tool("xdotool", "Мышь X11", "sudo pacman -S xdotool"),
         tool("ydotool", "Мышь Wayland", "sudo pacman -S ydotool"),
         tool("wtype", "Клавиатура Wayland", "sudo pacman -S wtype"),
-        tool("screencapture", "Снимки macOS", "встроено в macOS"),
-        tool("cliclick", "Мышь macOS", "brew install cliclick"),
         tool(
             "usbip",
             "Подключение USB-устройств VIIPER",
@@ -1594,11 +1525,6 @@ fn detect_tools() -> Vec<ToolStatus> {
         // Keep the full list on Linux; hide irrelevant platform tools elsewhere.
         if cfg!(windows) {
             t.name == "ffmpeg" || t.name == "viiper" || t.name == "usbip"
-        } else if cfg!(target_os = "macos") {
-            matches!(
-                t.name.as_str(),
-                "screencapture" | "cliclick" | "ffmpeg" | "viiper" | "usbip"
-            )
         } else {
             true
         }
@@ -1647,9 +1573,6 @@ fn config_hint(
         ),
         "windows" => format!(
             "# Windows\nПараметры → Система → Дисплей → Несколько дисплеев → Расширить.\n# Для трансляции нужен ffmpeg в PATH."
-        ),
-        "macos" => format!(
-            "# macOS\nСистемные настройки → Дисплеи → Добавить дисплей.\n# Для управления мышью разрешите Accessibility для sdw-daemon."
         ),
         _ => format!(
             "# Универсальный вариант\n# Создайте выход {w}x{h} средствами композитора и выберите его здесь.\n# Для зеркала достаточно grim или spectacle."
@@ -2142,62 +2065,6 @@ fn find_marker(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
-fn capture_mac(
-    rect: (i32, i32, u32, u32),
-    width: u32,
-    height: u32,
-    fps: u32,
-    quality: u8,
-    stop: Arc<AtomicBool>,
-    frame: Arc<Mutex<SharedFrame>>,
-    frames: Arc<AtomicU64>,
-) -> Result<(), String> {
-    let interval = Duration::from_millis((1000 / fps.max(1)).max(80) as u64);
-    let path = std::env::temp_dir().join(format!("sdw-mac-{}.jpg", std::process::id()));
-    let mut failures = 0u32;
-    while !stop.load(Ordering::Relaxed) {
-        let started = Instant::now();
-        let (x, y, w, h) = rect;
-        let out = Command::new("screencapture")
-            .args([
-                "-x",
-                "-t",
-                "jpg",
-                "-R",
-                &format!("{x},{y},{w},{h}"),
-                &path.display().to_string(),
-            ])
-            .status();
-        let mut ok = false;
-        if out.map(|s| s.success()).unwrap_or(false) {
-            if let Ok(bytes) = std::fs::read(&path) {
-                if let Ok(img) = image::load_from_memory(&bytes) {
-                    if let Ok(j) = encode_jpeg(&img, width, height, quality) {
-                        store_frame(&frame, &frames, j, width, height);
-                        ok = true;
-                    }
-                }
-            }
-            let _ = std::fs::remove_file(&path);
-        }
-        if ok {
-            failures = 0;
-        } else {
-            failures += 1;
-            if failures > 15 {
-                return Err(
-                    "screencapture не работает: разрешите запись экрана в настройках macOS".into(),
-                );
-            }
-        }
-        let spent = started.elapsed();
-        if spent < interval {
-            std::thread::sleep(interval - spent);
-        }
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------- pointer input
 
 fn inject_pointer(
@@ -2209,9 +2076,6 @@ fn inject_pointer(
 ) -> Result<(), String> {
     if cfg!(windows) {
         return windows_pointer(x, y, action, amount);
-    }
-    if cfg!(target_os = "macos") {
-        return mac_pointer(x, y, action, amount);
     }
     let has_ydotool = sdw_core::util::has("ydotool");
     let has_xdotool = sdw_core::util::has("xdotool");
@@ -2274,29 +2138,6 @@ fn scroll_ydotool(amount: i32) -> Result<(), String> {
     )
     .map(|_| ())
     .map_err(|e| format!("ydotool scroll: {e}"))
-}
-
-fn mac_pointer(x: i32, y: i32, action: &str, _amount: i32) -> Result<(), String> {
-    if sdw_core::util::has("cliclick") {
-        let cmd = match action {
-            "down" => format!("dd:{x},{y}"),
-            "up" => format!("du:{x},{y}"),
-            "click" | "move" => format!("m:{x},{y}"),
-            "right_click" => format!("rc:{x},{y}"),
-            "scroll_up" => "su".into(),
-            "scroll_down" => "sd".into(),
-            _ => format!("m:{x},{y}"),
-        };
-        return sdw_core::util::run("cliclick", &[&cmd]).map(|_| ());
-    }
-    let script = match action {
-        "click" | "move" => format!("tell application \"System Events\" to click at {{{x}, {y}}}"),
-        "right_click" => format!(
-            "tell application \"System Events\" to click at {{{x}, {y}}} using {{control down}}"
-        ),
-        _ => format!("tell application \"System Events\" to set position of mouse to {{{x}, {y}}}"),
-    };
-    sdw_core::util::run("osascript", &["-e", &script]).map(|_| ())
 }
 
 #[cfg(windows)]

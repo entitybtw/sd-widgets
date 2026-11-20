@@ -341,13 +341,7 @@ pub fn viiper_key_path() -> PathBuf {
             .unwrap_or_else(|| PathBuf::from("."))
             .join("VIIPER/viiper.key.txt")
     }
-    #[cfg(target_os = "macos")]
-    {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("VIIPER/viiper.key.txt")
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     {
         sdw_core::util::config_dir().join("viiper.key.txt")
     }
