@@ -176,6 +176,11 @@ On Linux the daemon reads `.desktop` files from the XDG application directories
 and skips hidden or `NoDisplay` entries. On Windows it reads the Start Menu
 shortcuts. No executable path or command line is included.
 
+The list is ordered the way the computer is used: every successful launch is
+counted in `apps.usage.json` in the daemon's data directory, and `scan()` sorts by
+a frecency score (launch count plus a recency weight) before falling back to the
+name. The file is capped at 400 entries and only ever holds application ids.
+
 `POST /api/v1/apps/launch`
 
 ```json

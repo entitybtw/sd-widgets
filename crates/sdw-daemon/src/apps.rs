@@ -6,6 +6,7 @@
 //! user did not put in this file.
 
 use sdw_core::model::{AppEntry, AppKind, PowerAction};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// An application plus what is needed to start it. Only the sanitized
@@ -30,16 +31,14 @@ impl App {
     }
 }
 
-/// Scan the applications installed for this user.
+/// Scan the applications installed for this user, most used first.
 pub fn scan() -> Vec<App> {
     #[cfg(windows)]
-    {
-        scan_windows()
-    }
+    let mut apps = scan_windows();
     #[cfg(not(windows))]
-    {
-        scan_linux()
-    }
+    let mut apps = scan_linux();
+    order_by_usage(&mut apps);
+    apps
 }
 
 /// Start an application by the id returned from [`scan`].
@@ -64,7 +63,85 @@ pub fn launch(id: &str) -> Result<String, String> {
     };
     sdw_core::util::spawn_detached(program, &args)
         .map(|_| format!("запущено: {}", app.entry.name))?;
+    bump_usage(id);
     Ok(format!("запущено: {}", app.entry.name))
+}
+
+// ---------------------------------------------------------------- usage
+
+/// How often and how recently an application was started. The deck asks for a
+/// plain list, so the order itself is the whole feature.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+struct Usage {
+    #[serde(default)]
+    count: u64,
+    #[serde(default)]
+    last_ms: u64,
+}
+
+fn usage_path() -> PathBuf {
+    sdw_core::util::data_dir().join("apps.usage.json")
+}
+
+fn load_usage() -> HashMap<String, Usage> {
+    let Ok(text) = std::fs::read_to_string(usage_path()) else {
+        return HashMap::new();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+fn save_usage(usage: &HashMap<String, Usage>) {
+    let dir = sdw_core::util::data_dir();
+    let _ = sdw_core::util::ensure_dir(&dir);
+    if let Ok(text) = serde_json::to_string(usage) {
+        let _ = std::fs::write(usage_path(), text);
+    }
+}
+
+fn bump_usage(id: &str) {
+    let mut usage = load_usage();
+    let entry = usage.entry(id.to_string()).or_default();
+    entry.count = entry.count.saturating_add(1);
+    entry.last_ms = sdw_core::model::now_ms();
+    if usage.len() > 400 {
+        let mut items: Vec<(String, Usage)> = usage.into_iter().collect();
+        items.sort_by_key(|(_, u)| std::cmp::Reverse(u.last_ms));
+        items.truncate(400);
+        usage = items.into_iter().collect();
+    }
+    save_usage(&usage);
+}
+
+/// Count with a recency bonus: a program used five times last week beats one
+/// used six times a year ago, but a clear favourite still stays on top.
+fn frecency(u: &Usage) -> f64 {
+    let age_days = sdw_core::model::now_ms().saturating_sub(u.last_ms) as f64 / 86_400_000.0;
+    let weight = if age_days <= 1.0 {
+        1.0
+    } else if age_days <= 7.0 {
+        0.8
+    } else if age_days <= 30.0 {
+        0.5
+    } else {
+        0.25
+    };
+    u.count as f64 + weight * 4.0
+}
+
+fn order_by_usage(apps: &mut [App]) {
+    let usage = load_usage();
+    apps.sort_by(|a, b| {
+        let ua = usage.get(&a.entry.id).map(frecency).unwrap_or(0.0);
+        let ub = usage.get(&b.entry.id).map(frecency).unwrap_or(0.0);
+        ub.partial_cmp(&ua)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| {
+                a.entry
+                    .name
+                    .to_lowercase()
+                    .cmp(&b.entry.name.to_lowercase())
+            })
+    });
 }
 
 // ---------------------------------------------------------------- power
