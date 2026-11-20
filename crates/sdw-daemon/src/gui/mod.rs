@@ -5526,7 +5526,27 @@ impl App {
                     if switch(ui, &mut on, t).changed() {
                         self.save(|c| c.autostart = on);
                         let logger = self.state.logger.clone();
-                        autostart::apply(on, &logger);
+                        // Say what happened: a debug build cannot write itself
+                        // into the session, and a silent switch would lie.
+                        let outcome = autostart::apply(on, &logger);
+                        match outcome {
+                            autostart::Outcome::Written => self.toast(
+                                t!(self.lang, "автозапуск включён", "autostart is on"),
+                                true,
+                            ),
+                            autostart::Outcome::Removed => self.toast(
+                                t!(self.lang, "автозапуск выключен", "autostart is off"),
+                                true,
+                            ),
+                            autostart::Outcome::Skipped => self.toast(
+                                t!(
+                                    self.lang,
+                                    "отладочная сборка: автозапуск не записан; запустите установленный демон или AppImage",
+                                    "debug build: nothing written; run the installed daemon or the AppImage"
+                                ),
+                                false,
+                            ),
+                        }
                     }
                 },
             );

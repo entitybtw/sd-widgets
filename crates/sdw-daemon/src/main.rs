@@ -173,7 +173,7 @@ fn main() {
     let _ = std::fs::remove_file(config::window_marker());
 
     let state = AppState::new();
-    autostart::apply(state.cfg().autostart, &state.logger);
+    let _ = autostart::apply(state.cfg().autostart, &state.logger);
     if !state.cfg().viiper.password.is_empty() {
         let _ = state.viiper.write_key(&state.cfg().viiper.password);
     }

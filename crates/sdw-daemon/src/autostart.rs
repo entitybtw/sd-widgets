@@ -15,15 +15,30 @@ use std::path::{Path, PathBuf};
 const NIRI_MARK: &str = "// sd-widgets: daemon autostart";
 const HYPR_MARK: &str = "# sd-widgets: daemon autostart";
 
+/// What [`apply`] did, so the window can say it instead of guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    Written,
+    Removed,
+    /// A debug build: writing it into the session would point the login at
+    /// `target/debug`, so nothing was touched.
+    Skipped,
+}
+
 /// The command the session should run, quoted for a desktop entry and for
-/// KDL/Hyprland configs. A binary under `target/` is a development build and
-/// must never write itself into the maintainer's session config.
+/// KDL/Hyprland configs. A `target/debug` binary is a development build and
+/// must never write itself into the maintainer's session config; a release
+/// build is what `make release` produces, and it is fine to autostart.
 fn command() -> Option<(String, String, String)> {
     let exe = if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()) {
         PathBuf::from(appimage)
     } else {
         let exe = std::env::current_exe().ok()?;
-        if exe.components().any(|c| c.as_os_str() == "target") {
+        let debug = exe
+            .components()
+            .zip(exe.components().skip(1))
+            .any(|(a, b)| a.as_os_str() == "target" && b.as_os_str() == "debug");
+        if debug {
             return None;
         }
         exe
@@ -137,22 +152,21 @@ fn xdg_entry(cmd: &str) -> String {
 
 /// Put the session in the requested state. Safe to call on every start: it
 /// only writes a file when the content actually changes.
-pub fn apply(enabled: bool, logger: &Logger) {
+pub fn apply(enabled: bool, logger: &Logger) -> Outcome {
     let entry = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("autostart/sdw-daemon.desktop");
     if !enabled {
         remove_if_present(&entry, logger);
-        for (path, mark) in compositor_configs() {
+        for (path, _mark) in compositor_configs() {
             if let Ok(text) = std::fs::read_to_string(&path) {
                 let next = without_ours(&text);
                 if next != text {
                     write_if_changed(&path, &next, logger);
                 }
             }
-            let _ = mark;
         }
-        return;
+        return Outcome::Removed;
     }
 
     let Some((xdg_cmd, niri_line, hypr_line)) = command() else {
@@ -160,7 +174,7 @@ pub fn apply(enabled: bool, logger: &Logger) {
             "автозапуск: пропущен для отладочной сборки (запустите установленный \
              демон или AppImage, чтобы включить его)",
         );
-        return;
+        return Outcome::Skipped;
     };
     write_if_changed(&entry, &xdg_entry(&xdg_cmd), logger);
 
@@ -186,6 +200,7 @@ pub fn apply(enabled: bool, logger: &Logger) {
             write_if_changed(&hypr, &next, logger);
         }
     }
+    Outcome::Written
 }
 
 fn compositor_configs() -> Vec<(PathBuf, &'static str)> {
