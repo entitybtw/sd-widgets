@@ -1112,6 +1112,9 @@ fn patch_config(state: Arc<AppState>, mut req: Request) {
     });
     match result {
         Ok(()) => {
+            if let Some(enabled) = body.get("autostart").and_then(Value::as_bool) {
+                crate::autostart::apply(enabled, &state.logger);
+            }
             if let Ok(mut ha) = state.ha.lock() {
                 let cfg = state.cfg();
                 ha.status.favorites = cfg.ha.favorites.clone();

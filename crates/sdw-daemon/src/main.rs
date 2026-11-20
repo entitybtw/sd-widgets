@@ -1,6 +1,7 @@
 //! sd-widgets daemon: virtual gamepads, extra screen, notifications and Home Assistant.
 
 mod audio;
+mod autostart;
 mod config;
 #[cfg(feature = "gui")]
 mod gui;
@@ -29,6 +30,9 @@ struct Cli {
     /// run without a window (server only)
     #[arg(long)]
     headless: bool,
+    /// start with the window hidden, as at login
+    #[arg(long)]
+    hidden: bool,
     /// override the api port (also moves the udp input port)
     #[arg(long)]
     port: Option<u16>,
@@ -167,6 +171,7 @@ fn main() {
     let _ = std::fs::remove_file(config::window_marker());
 
     let state = AppState::new();
+    autostart::apply(state.cfg().autostart, &state.logger);
     if !state.cfg().viiper.password.is_empty() {
         let _ = state.viiper.write_key(&state.cfg().viiper.password);
     }
@@ -204,7 +209,7 @@ fn main() {
                     .error(format!("http сервер не запустился: {e}"));
             }
         });
-        let result = gui::run(state.clone());
+        let result = gui::run(state.clone(), cli.hidden);
         if let Err(e) = result {
             eprintln!("gui: {e}");
             headless(state);

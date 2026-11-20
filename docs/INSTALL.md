@@ -42,6 +42,14 @@ falls back to `~/.config/autostart/sdw-daemon.desktop` and starts the daemon
 once. The daemon opens `http://<computer>:47830` for the first-run setup; the
 console prints the address with your LAN IP.
 
+The daemon also has a **start with the system** switch in its settings. It
+writes the XDG autostart entry and, because niri and Hyprland ignore that
+folder, one line in their own config (`spawn-at-startup` or `exec-once`).
+Turning the switch off removes both again. The command carries `--hidden`, so
+at login the daemon sits in the tray instead of opening a window; the tray,
+`sdw-daemon --show` and starting the daemon again bring the window back.
+Debug builds under `target/` never write themselves into the session config.
+
 ### The Deck and the Steam library
 
 `install.sh deck` adds sd-widgets as a **non-Steam shortcut** by writing one

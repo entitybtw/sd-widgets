@@ -3,6 +3,7 @@
 
 mod theme;
 
+use crate::autostart;
 use crate::config::{self, DaemonConfig};
 use crate::install;
 use crate::state::AppState;
@@ -225,13 +226,15 @@ pub struct App {
     hidden_notice: bool,
     /// When the close button was last pressed; a second press quits.
     close_at: Option<Instant>,
+    /// Started by the session (`--hidden`): hide on the first frame.
+    start_hidden: bool,
 }
 
 /// Set once the user really wants the process to end (the tray, `--quit` or the
 /// quit button). Until then closing the window only hides it.
 static ALLOW_CLOSE: AtomicBool = AtomicBool::new(false);
 
-pub fn run(state: Arc<AppState>) -> eframe::Result<()> {
+pub fn run(state: Arc<AppState>, hidden: bool) -> eframe::Result<()> {
     let marker = config::window_marker();
     let _ = std::fs::write(&marker, b"1");
     let options = eframe::NativeOptions {
@@ -252,7 +255,7 @@ pub fn run(state: Arc<AppState>) -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             theme::install_fonts(&cc.egui_ctx);
-            let app = App::new(state.clone());
+            let app = App::new(state.clone(), hidden);
             theme::apply(&cc.egui_ctx, app.dark);
             watch_requests(state.clone(), cc.egui_ctx.clone());
             Ok(Box::new(app))
@@ -287,7 +290,7 @@ fn watch_requests(state: Arc<AppState>, ctx: egui::Context) {
 }
 
 impl App {
-    fn new(state: Arc<AppState>) -> Self {
+    fn new(state: Arc<AppState>, hidden: bool) -> Self {
         let cfg = state.cfg();
         let (task_tx, task_rx) = channel();
         let components = install::component_status();
@@ -367,6 +370,7 @@ impl App {
             last_job: 0,
             logs_follow: true,
             hidden_notice: false,
+            start_hidden: hidden,
             close_at: None,
             state,
         }
@@ -687,6 +691,16 @@ impl eframe::App for App {
                          запуск вернут окно, --quit остановит",
                     );
                 }
+            }
+        }
+        if self.start_hidden {
+            // At login the daemon belongs in the tray, not over the desktop.
+            // Wayland has no hide request, so minimize; elsewhere hide.
+            self.start_hidden = false;
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            } else {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             }
         }
         self.poll();
@@ -4551,6 +4565,28 @@ impl App {
                     let mut on = cfg.viiper.auto_start;
                     if switch(ui, &mut on, t).changed() {
                         self.save(|c| c.viiper.auto_start = on);
+                    }
+                },
+            );
+            row(
+                ui,
+                t,
+                t!(
+                    self.lang,
+                    "запускать с системой",
+                    "start with the system"
+                ),
+                t!(
+                    self.lang,
+                    "запись в автозапуске и строка в конфиге niri/hyprland; окно при входе скрыто",
+                    "an autostart entry and a line in the niri/hyprland config; the window starts hidden"
+                ),
+                |ui| {
+                    let mut on = cfg.autostart;
+                    if switch(ui, &mut on, t).changed() {
+                        self.save(|c| c.autostart = on);
+                        let logger = self.state.logger.clone();
+                        autostart::apply(on, &logger);
                     }
                 },
             );
