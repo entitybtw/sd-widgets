@@ -74,6 +74,9 @@ pub struct MonitorManager {
     stop: Mutex<Arc<AtomicBool>>,
     child: Arc<Mutex<Option<Child>>>,
     frames: Arc<AtomicU64>,
+    /// The uinput absolute pointer, created on the first remote move. It is
+    /// dropped when the stream stops, so an idle daemon owns no input device.
+    pointer: Mutex<Option<crate::pointer::AbsolutePointer>>,
     logger: Logger,
 }
 
@@ -125,6 +128,7 @@ impl MonitorManager {
             stop: Mutex::new(Arc::new(AtomicBool::new(true))),
             child: Arc::new(Mutex::new(None)),
             frames: Arc::new(AtomicU64::new(0)),
+            pointer: Mutex::new(None),
             logger,
         }
     }
@@ -265,6 +269,11 @@ impl MonitorManager {
             inner.layout_restore = None;
             inner.rfb = false;
             inner.note.clear();
+        }
+        // The virtual input device belongs to the stream: remove it with the
+        // picture instead of leaving an absolute mouse in the desktop.
+        if let Ok(mut pointer) = self.pointer.lock() {
+            *pointer = None;
         }
     }
 
@@ -721,9 +730,14 @@ impl MonitorManager {
     }
 
     pub fn input(&self, input: &MonitorInput) -> Result<(), String> {
-        let (rect, enabled, compositor) = {
+        let (rect, outputs, enabled, compositor) = {
             let i = self.inner.lock().map_err(|_| "monitor lock")?;
-            (i.output_rect, i.input_enabled, i.compositor.clone())
+            (
+                i.output_rect,
+                i.outputs.clone(),
+                i.input_enabled,
+                i.compositor.clone(),
+            )
         };
         if !enabled {
             return Err("Управление мышью выключено в настройках экрана".into());
@@ -733,7 +747,53 @@ impl MonitorManager {
         }
         let x = rect.0 + (input.x.clamp(0.0, 1.0) * rect.2 as f32) as i32;
         let y = rect.1 + (input.y.clamp(0.0, 1.0) * rect.3 as f32) as i32;
-        inject_pointer(&compositor, x, y, &input.action, input.amount)
+        if compositor == "x11" {
+            return inject_pointer(&compositor, x, y, &input.action, input.amount);
+        }
+        // On Wayland an absolute uinput device is the only way to put the
+        // cursor exactly under the finger: ydotool's `--absolute` is a reset
+        // plus a relative move and acceleration bends it. The device covers
+        // the whole desktop, so the normalized position is mapped from the
+        // streamed output into the compositor's global box.
+        let global = global_rect(&outputs, rect);
+        let nx = if global.2 > 0 {
+            ((x - global.0) as f32 / global.2 as f32).clamp(0.0, 1.0)
+        } else {
+            input.x.clamp(0.0, 1.0)
+        };
+        let ny = if global.3 > 0 {
+            ((y - global.1) as f32 / global.3 as f32).clamp(0.0, 1.0)
+        } else {
+            input.y.clamp(0.0, 1.0)
+        };
+        let mut slot = self.pointer.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_none() {
+            match crate::pointer::AbsolutePointer::open() {
+                Ok(p) => *slot = Some(p),
+                Err(e) => {
+                    // No /dev/uinput access: keep the old tool path, but say
+                    // why once in the log so "the cursor jumps" is diagnosable.
+                    self.logger
+                        .warn(format!("точное управление мышью недоступно: {e}"));
+                }
+            }
+        }
+        let pointer_error = match slot.as_mut() {
+            Some(p) => match p.send(nx, ny, &input.action, input.amount) {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    *slot = None;
+                    Some(e)
+                }
+            },
+            None => None,
+        };
+        inject_pointer(&compositor, x, y, &input.action, input.amount).map_err(|e| {
+            match pointer_error {
+                Some(p) => format!("{e}; {p}"),
+                None => e,
+            }
+        })
     }
 
     fn outputs(&self) -> Vec<DisplayOutput> {
@@ -810,6 +870,30 @@ fn output_rect(outputs: &[DisplayOutput], name: &str) -> (i32, i32, u32, u32) {
     } else {
         (0, 0, 1280, 800)
     }
+}
+
+/// The box that the compositor calls the whole desktop: every enabled output
+/// plus the streamed one (which may be newer than the cached output list).
+/// An absolute pointer finds the cursor by this box, not by the streamed
+/// output alone, so a second real monitor stays reachable and the virtual
+/// output is not treated as the whole world.
+fn global_rect(outputs: &[DisplayOutput], streamed: (i32, i32, u32, u32)) -> (i32, i32, u32, u32) {
+    let mut min_x = streamed.0;
+    let mut min_y = streamed.1;
+    let mut max_x = streamed.0.saturating_add(streamed.2.max(1) as i32);
+    let mut max_y = streamed.1.saturating_add(streamed.3.max(1) as i32);
+    for o in outputs.iter().filter(|o| o.enabled) {
+        min_x = min_x.min(o.x);
+        min_y = min_y.min(o.y);
+        max_x = max_x.max(o.x.saturating_add(o.width.max(1) as i32));
+        max_y = max_y.max(o.y.saturating_add(o.height.max(1) as i32));
+    }
+    (
+        min_x,
+        min_y,
+        (max_x - min_x).max(1) as u32,
+        (max_y - min_y).max(1) as u32,
+    )
 }
 
 /// Top-left corner for a new output of `w`×`h`, placed relative to the

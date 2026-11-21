@@ -13,6 +13,7 @@ mod media;
 mod mirror;
 mod monitor;
 mod notifications;
+mod pointer;
 mod server;
 mod state;
 mod tray;
