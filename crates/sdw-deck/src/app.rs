@@ -501,7 +501,7 @@ impl TouchTrack {
             let dx = end.0 - start.0;
             let dy = end.1 - start.1;
             if now.saturating_duration_since(started) < Duration::from_millis(700)
-                && dx.abs() > 0.14
+                && dx.abs() > 0.10
                 && dx.abs() > dy.abs() * 1.6
             {
                 return Some(GestureSpec {
@@ -1286,11 +1286,11 @@ impl App {
             && self.touch.max >= 1
         {
             if let Some(delta) = self.touch.drag_px(rect) {
-                // The gesture is recognised at 24 points; the page starts
+                // The gesture is recognised at 18 points; the page starts
                 // moving from the point where it was recognised, not from
                 // zero, so the first preview frame is not a jump.
                 if self.page_anchor.is_none()
-                    && delta.x.abs() > 24.0
+                    && delta.x.abs() > 18.0
                     && delta.x.abs() > delta.y.abs() * 1.6
                 {
                     self.page_anchor = Some(delta.x);
@@ -1427,9 +1427,9 @@ impl App {
                                 // Only a clearly horizontal drag previews the
                                 // next page; vertical scrolling stays intact.
                                 // The preview starts where the gesture was
-                                // recognised, so it never jumps by 24 points.
+                                // recognised, so it never jumps by 18 points.
                                 if self.page_anchor.is_none()
-                                    && dx.abs() > 24.0
+                                    && dx.abs() > 18.0
                                     && dx.abs() > dy.abs() * 1.6
                                 {
                                     self.page_anchor = Some(dx);
@@ -1536,15 +1536,15 @@ impl App {
                                 // with it instead of yanking the page.
                                 let vel = dx / held;
                                 // A page turns when it has been dragged a
-                                // fifth of the way, or on a quick flick: the
+                                // seventh of the way, or on a quick flick: the
                                 // rest of the move is carried by the turn.
                                 let flick = held < 0.35
-                                    && vel.abs() > 420.0
-                                    && slide.abs() > 20.0
+                                    && vel.abs() > 300.0
+                                    && slide.abs() > 16.0
                                     && slide.signum() == vel.signum();
                                 let commit = !self.swipe_blocked
                                     && self.page_anchor.is_some()
-                                    && (slide.abs() > width * 0.2 || flick);
+                                    && (slide.abs() > width * 0.15 || flick);
                                 if commit {
                                     // The cue belongs to the flick itself; the
                                     // page lands a fraction of a second later.
@@ -6102,6 +6102,44 @@ mod touch_tests {
                 egui::pos2(402.0, 201.0),
                 r,
                 now + Duration::from_millis(80)
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn one_finger_short_flick_turns_the_page() {
+        // A tenth of the width was too little to count before; on a touch
+        // screen it is a deliberate short swipe, not an accident.
+        let mut track = TouchTrack::default();
+        let now = Instant::now();
+        let r = rect();
+        track.begin(1, egui::pos2(400.0, 250.0), r, now);
+        track.moved(1, egui::pos2(312.0, 254.0));
+        let spec = track
+            .end(
+                1,
+                egui::pos2(312.0, 254.0),
+                r,
+                now + Duration::from_millis(220),
+            )
+            .expect("a short horizontal drag is a swipe");
+        assert_eq!(spec.kind, GestureKind::Swipe);
+        assert_eq!(spec.dir, Some(SwipeDir::Left));
+    }
+
+    #[test]
+    fn one_finger_tiny_drag_stays_a_tap() {
+        let mut track = TouchTrack::default();
+        let now = Instant::now();
+        let r = rect();
+        track.begin(1, egui::pos2(400.0, 250.0), r, now);
+        track.moved(1, egui::pos2(340.0, 254.0));
+        assert!(track
+            .end(
+                1,
+                egui::pos2(340.0, 254.0),
+                r,
+                now + Duration::from_millis(200)
             )
             .is_none());
     }
