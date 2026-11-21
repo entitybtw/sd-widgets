@@ -833,14 +833,14 @@ impl App {
                 frames: 0,
                 last_frame_at: Instant::now() - Duration::from_secs(10),
                 fullscreen: false,
-                mode: MonitorMode::Extend,
-                position: MonitorPosition::Auto,
-                backend: MonitorBackend::Auto,
-                width: 1280,
-                height: 800,
-                fps: 15,
-                quality: 75,
-                input: false,
+                mode: cfg.stream.mode,
+                position: cfg.stream.position,
+                backend: cfg.stream.backend,
+                width: cfg.stream.width.clamp(320, 7680),
+                height: cfg.stream.height.clamp(200, 4320),
+                fps: cfg.stream.fps.clamp(1, 120),
+                quality: cfg.stream.quality.clamp(1, 100),
+                input: cfg.stream.input,
                 last_pointer: Instant::now() - Duration::from_secs(1),
                 pointer_down: false,
             },
@@ -1551,6 +1551,16 @@ impl App {
         self.cfg.deck_view = self.deck_view.cfg.clone();
         self.cfg.lang = self.lang.code().to_string();
         self.cfg.dark = self.dark;
+        self.cfg.stream = sdw_core::model::StreamCfg {
+            mode: self.stream.mode,
+            backend: self.stream.backend,
+            position: self.stream.position,
+            width: self.stream.width,
+            height: self.stream.height,
+            fps: self.stream.fps,
+            quality: self.stream.quality,
+            input: self.stream.input,
+        };
         if let Err(e) = sdw_core::config::save(&self.cfg) {
             self.toast(format!("не удалось сохранить: {e}"), false);
         }

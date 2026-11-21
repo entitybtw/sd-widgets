@@ -2618,7 +2618,9 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
             app.save_soon();
         }
         ui.horizontal(|ui| {
-            theme::switch(ui, &mut app.stream.input, t);
+            if theme::switch(ui, &mut app.stream.input, t).changed() {
+                app.save_soon();
+            }
             ui.label(
                 RichText::new(t!(app.lang, "мышь и клавиатура", "mouse and keyboard"))
                     .size(12.5)
@@ -2695,6 +2697,7 @@ fn monitor_mode_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
                     .clicked()
                 {
                     app.stream.mode = mode;
+                    app.save_soon();
                 }
             }
         });
@@ -2713,6 +2716,7 @@ fn monitor_backend_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
                         .clicked()
                     {
                         app.stream.backend = b;
+                        app.save_soon();
                     }
                 }
             });
@@ -2733,6 +2737,7 @@ fn monitor_position_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
                             .clicked()
                         {
                             app.stream.position = p;
+                            app.save_soon();
                         }
                     }
                 });
@@ -2754,6 +2759,7 @@ fn monitor_size_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
                 {
                     app.stream.width = w;
                     app.stream.height = h;
+                    app.save_soon();
                 }
             }
         });

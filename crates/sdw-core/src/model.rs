@@ -1921,6 +1921,37 @@ impl Default for AudioDeckCfg {
     }
 }
 
+/// The extra-monitor settings the screen tab edits. They are saved with the
+/// rest of the deck config, so the next launch starts where the last one
+/// stopped instead of back at the defaults.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct StreamCfg {
+    pub mode: MonitorMode,
+    pub backend: MonitorBackend,
+    pub position: MonitorPosition,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub quality: u8,
+    pub input: bool,
+}
+
+impl Default for StreamCfg {
+    fn default() -> Self {
+        Self {
+            mode: MonitorMode::Extend,
+            backend: MonitorBackend::Auto,
+            position: MonitorPosition::Auto,
+            width: 1280,
+            height: 800,
+            fps: 15,
+            quality: 75,
+            input: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeckConfig {
@@ -1981,6 +2012,15 @@ pub struct DeckConfig {
     pub deck_view: DeckViewCfg,
     #[serde(default)]
     pub clock: ClockCfg,
+    /// The screen tab's settings, remembered across restarts.
+    #[serde(default)]
+    pub stream: StreamCfg,
+    /// Home Assistant reached straight from the deck, without the computer:
+    /// the address and a long-lived token. Empty means "use the daemon".
+    #[serde(default)]
+    pub ha_url: String,
+    #[serde(default)]
+    pub ha_token: String,
     #[serde(default)]
     pub audio: AudioDeckCfg,
     #[serde(default)]
@@ -2043,6 +2083,9 @@ impl Default for DeckConfig {
             sound: SoundCfg::default(),
             deck_view: DeckViewCfg::default(),
             clock: ClockCfg::default(),
+            stream: StreamCfg::default(),
+            ha_url: String::new(),
+            ha_token: String::new(),
             audio: AudioDeckCfg::default(),
             addons: crate::addons::AddonsCfg::default(),
             light_colors: Vec::new(),
