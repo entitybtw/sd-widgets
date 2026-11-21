@@ -709,19 +709,71 @@ pub fn install_fonts(ctx: &egui::Context) {
             "/../../assets/fonts/NotoEmoji.ttf"
         )))),
     );
+    // A mirrored notification can carry any glyph: arrows, ticks, currency
+    // signs, CJK. The two shipped faces cover Latin, Cyrillic and emoji, so a
+    // system face is added behind them when one is installed. Nothing is
+    // required: without it the interface is exactly what it was.
+    let fallbacks = system_fonts(&mut fonts);
     if let Some(f) = fonts.families.get_mut(&FontFamily::Proportional) {
         f.insert(0, "archivo".to_owned());
         f.insert(1, "noto-emoji".to_owned());
+        for name in &fallbacks {
+            f.push(name.clone());
+        }
     }
     if let Some(f) = fonts.families.get_mut(&FontFamily::Monospace) {
         f.insert(0, "jetbrains".to_owned());
         f.insert(1, "noto-emoji".to_owned());
+        for name in &fallbacks {
+            f.push(name.clone());
+        }
     }
     fonts.families.insert(
         FontFamily::Name("material".into()),
         vec!["material".to_owned(), "archivo".to_owned()],
     );
     ctx.set_fonts(fonts);
+}
+
+/// Read the wide system faces, if they are there, and register them.
+///
+/// A desktop notification is written by somebody else and can hold almost any
+/// character, including ones the shipped subset fonts have no picture for.
+/// One or two system files cover the rest on every normal Linux install; the
+/// list stays short so a frame is still cheap to shape.
+fn system_fonts(fonts: &mut FontDefinitions) -> Vec<String> {
+    const CANDIDATES: [(&str, &[&str]); 2] = [
+        (
+            "system-sans",
+            &[
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+                "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            ],
+        ),
+        (
+            "system-mono",
+            &[
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+                "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+            ],
+        ),
+    ];
+    let mut names = Vec::new();
+    for (name, paths) in CANDIDATES {
+        let Some(bytes) = paths.iter().find_map(|p| std::fs::read(p).ok()) else {
+            continue;
+        };
+        fonts
+            .font_data
+            .insert(name.to_owned(), Arc::new(FontData::from_owned(bytes)));
+        names.push(name.to_owned());
+    }
+    names
 }
 
 /// Linear blend between two colours; `k` = 0 keeps `a`, 1 keeps `b`.
