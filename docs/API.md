@@ -131,15 +131,17 @@ over the whole window when asked.
 | Method | Path | Body / result |
 | --- | --- | --- |
 | `GET` | `/api/v1/deck/want` | `{ "want": bool, "fps": 60 }` — is somebody showing this deck right now, and the highest rate it accepts. |
-| `POST` | `/api/v1/deck/frame?device=&name=&page=&version=&width=&height=` | Raw JPEG body (≤ 4 MB, starts with `FF D8`). Marks the deck as watched. |
+| `POST` | `/api/v1/deck/frame?device=&name=&page=&version=&width=&height=` | Raw JPEG body (≤ 4 MB, starts with `FF D8`). A frame does not count as a viewer. |
 | `POST` | `/api/v1/deck/audio?rate=&channels=` | Raw `s16le` PCM (≤ 512 KB), played on the computer while the deck is watched; `409` when nobody watches. |
 | `GET` | `/api/v1/deck` | `DeckMirrorState`: live flag, frame age, page, size, seq, watched flag and the client list. |
 | `GET` | `/api/v1/deck/frame` | Newest JPEG, `404` before the first frame. |
 
 `want` is what keeps an idle deck quiet: the deck asks about every 1.5 s and only
-captures frames while the answer is yes. Both `GET /api/v1/deck` and the daemon's
+captures frames while the answer is yes. Only `GET /api/v1/deck` and the daemon's
 own **steam deck** page hold the watch open for a few seconds, so a viewer on the
-computer is not fighting the deck's poll.
+computer is not fighting the deck's poll. A frame the deck pushes on its own
+never flips the answer: otherwise one idle frame would make the deck watch itself
+forever, at full rate and with sound.
 
 ## Home Assistant
 

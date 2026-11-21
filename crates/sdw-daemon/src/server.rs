@@ -110,10 +110,12 @@ fn handle(state: Arc<AppState>, mut req: Request) {
     match (method.clone(), path) {
         (Method::Get, "/api/v1/status") => respond_json(req, 200, &state.status()),
         // -------------------------------------------------------- deck mirror
-        (Method::Post, "/api/v1/deck/frame") => {
-            state.mirror.watching();
-            deck_frame(state, req, query)
-        }
+        // A frame is not a viewer: the deck sends one quiet frame every few
+        // seconds to keep its row alive. Marking the deck watched here made
+        // that frame flip `want` on, so the deck immediately started a
+        // full-rate stream (and its sound) with nobody looking. Only the
+        // window's deck page and `GET /api/v1/deck` hold the watch open.
+        (Method::Post, "/api/v1/deck/frame") => deck_frame(state, req, query),
         (Method::Post, "/api/v1/deck/audio") => deck_audio_chunk(state, req, query),
         (Method::Get, "/api/v1/deck") => {
             state.mirror.watching();
