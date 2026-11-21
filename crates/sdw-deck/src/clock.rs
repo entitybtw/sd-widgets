@@ -99,19 +99,20 @@ pub fn fullscreen(app: &mut App, root: &mut Ui, ctx: &egui::Context) {
             let rect = ui.available_rect_before_wrap();
             canvas(ui, rect, &t, &cfg, &face);
 
-            // The same shortcuts every other page has: notifications, the
-            // control centre and a way out. A tap elsewhere still leaves.
-            let side = 36.0;
-            let gap = 6.0;
-            let top = rect.top() + 12.0;
-            let mut x = rect.right() - 12.0 - side;
+            // The same shortcuts every other page has: notifications and the
+            // control centre. Leaving is the hint below (a tap anywhere or
+            // Escape), so there is no third button to crowd these two.
+            let side = 40.0;
+            let gap = 10.0;
+            let top = rect.top() + 14.0;
+            let mut x = rect.right() - 16.0 - side;
             let button = |ui: &mut Ui, x: f32, glyph: &str, active: bool, tip: &str| {
                 let r = Rect::from_min_size(pos2(x, top), vec2(side, side));
                 ui.put(
                     r,
                     egui::Button::new(theme::icon(
                         glyph,
-                        20.0,
+                        21.0,
                         if active { t.accent } else { t.strong },
                     ))
                     .fill(t.bg2)
@@ -144,19 +145,6 @@ pub fn fullscreen(app: &mut App, root: &mut Ui, ctx: &egui::Context) {
             {
                 consumed = true;
                 action = Some(ClockAction::Quick);
-            }
-            x -= side + gap;
-            if button(
-                ui,
-                x,
-                theme::icon::CLOSE,
-                false,
-                t!(lang, "выйти из часов", "leave the clock"),
-            )
-            .clicked()
-            {
-                consumed = true;
-                action = Some(ClockAction::Exit);
             }
 
             ui.painter().text(
