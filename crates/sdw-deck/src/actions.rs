@@ -18,7 +18,14 @@ pub fn run(action: &Action, lang: Lang) -> Result<String, String> {
                 util::truncate(out, 120)
             }
         }),
-        Action::Launch { target } => launch(target, lang),
+        // An app bind starts on the computer; the deck must never fall back to
+        // starting it locally when the computer is missing.
+        Action::Launch { .. } => Err(t!(
+            lang,
+            "приложение запускается на компьютере",
+            "the app starts on the computer"
+        )
+        .into()),
         Action::Volume { delta } => volume_delta(*delta, lang),
         Action::VolumeSet { percent } => volume_set(*percent, lang),
         Action::Mute => volume_mute(lang),
@@ -40,31 +47,6 @@ pub fn run(action: &Action, lang: Lang) -> Result<String, String> {
         )
         .into()),
     }
-}
-
-fn launch(target: &str, lang: Lang) -> Result<String, String> {
-    let target = target.trim();
-    if target.is_empty() {
-        return Err(t!(lang, "пустое приложение", "empty app name").into());
-    }
-    if target.starts_with("http://")
-        || target.starts_with("https://")
-        || target.starts_with("steam://")
-    {
-        return util::open_url(target)
-            .map(|_| format!("{} {target}", t!(lang, "открыто", "opened")));
-    }
-    if target.ends_with(".desktop") {
-        return util::spawn_detached("gtk-launch", &[target])
-            .map(|_| format!("{} {target}", t!(lang, "запущено", "launched")));
-    }
-    if util::has("gtk-launch") {
-        if util::run("gtk-launch", &[target]).is_ok() {
-            return Ok(format!("{} {target}", t!(lang, "запущено", "launched")));
-        }
-    }
-    util::spawn_detached(target, &[])
-        .map(|_| format!("{} {target}", t!(lang, "запущено", "launched")))
 }
 
 fn volume_delta(delta: i32, lang: Lang) -> Result<String, String> {

@@ -75,8 +75,8 @@ impl ActionKind {
     pub fn label(self, lang: Lang) -> &'static str {
         match self {
             Self::None => t!(lang, "ничего", "nothing"),
-            Self::Shell => t!(lang, "команда", "shell command"),
-            Self::Launch => t!(lang, "приложение", "app"),
+            Self::Shell => t!(lang, "команда на деке", "shell command on the deck"),
+            Self::Launch => t!(lang, "приложение на компьютере", "app on the computer"),
             Self::VolumeStep => t!(lang, "громкость ±", "volume ±"),
             Self::VolumeSet => t!(lang, "громкость", "volume"),
             Self::Mute => t!(lang, "выкл. звук", "mute"),
@@ -908,19 +908,32 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     );
                 }
                 Action::Shell { command } => {
-                    ui.label(RichText::new(t!(lang, "команда оболочки", "shell command")).size(12.5).color(t.muted));
+                    ui.label(
+                        RichText::new(t!(lang, "команда оболочки", "shell command"))
+                            .size(12.5)
+                            .color(t.muted),
+                    );
                     ui.add(
                         TextEdit::multiline(command)
                             .desired_rows(3)
                             .desired_width(f32::INFINITY),
+                    );
+                    ui.label(
+                        RichText::new(t!(
+                            lang,
+                            "выполняется на этой деке, не на компьютере.",
+                            "runs on this deck, not on the computer."
+                        ))
+                        .size(11.0)
+                        .color(t.faint),
                     );
                 }
                 Action::Launch { target } => {
                     ui.label(
                         RichText::new(t!(
                             lang,
-                            "приложение с компьютера — из списка или вручную",
-                            "an application on the computer — from the list or by hand"
+                            "приложение запускается на компьютере — из списка или вручную",
+                            "the application starts on the computer — from the list or by hand"
                         ))
                         .size(12.5)
                         .color(t.muted),
@@ -1504,8 +1517,8 @@ fn launch_picker(app: &mut App, ui: &mut Ui, t: &Tokens, target: &str) -> Option
     ui.label(
         RichText::new(t!(
             lang,
-            "или вручную: .desktop-файл, команда, steam://",
-            "or by hand: a .desktop file, a command, steam://"
+            "или вручную: .desktop-файл, команда, steam:// — всё запускается на компьютере",
+            "or by hand: a .desktop file, a command, steam:// — all start on the computer"
         ))
         .size(11.0)
         .color(t.faint),
