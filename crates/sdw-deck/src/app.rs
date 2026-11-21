@@ -649,6 +649,9 @@ pub struct App {
 
     pub stream: StreamState,
     pub share: ShareState,
+    /// Capture of this deck's own output while somebody watches its screen.
+    pub share_audio: Option<crate::share_audio::ShareAudio>,
+    pub share_audio_err: String,
     pub ha: HaState,
     /// The temporary web page that takes the Home Assistant token from a
     /// phone, while it is open.
@@ -900,6 +903,8 @@ impl App {
                 last_pointer: Instant::now() - Duration::from_secs(1),
                 pointer_down: false,
             },
+            share_audio: None,
+            share_audio_err: String::new(),
             share: ShareState {
                 in_flight: false,
                 want: false,
@@ -2637,6 +2642,35 @@ impl App {
             return "binds";
         }
         self.page.key()
+    }
+
+    /// Start and stop capturing this deck's own sound.
+    ///
+    /// Capture follows the same switch as the picture: it runs only while a
+    /// viewer on the computer is actually watching, so a closed page on the
+    /// pc does not leave a microphone-like recorder running on the deck.
+    pub fn pump_share_audio(&mut self) {
+        let want = self.cfg.mirror_deck && self.cfg.mirror_sound && self.share.want;
+        if want && self.share_audio.is_none() {
+            let Some(c) = self.client() else {
+                return;
+            };
+            match crate::share_audio::ShareAudio::start(c) {
+                Ok(a) => {
+                    self.share_audio = Some(a);
+                    self.share_audio_err.clear();
+                }
+                Err(e) => {
+                    // Say it once, not on every frame: a missing parec is not
+                    // going to fix itself between two repaints.
+                    if self.share_audio_err != e {
+                        self.share_audio_err = e;
+                    }
+                }
+            }
+        } else if !want && self.share_audio.is_some() {
+            self.share_audio = None;
+        }
     }
 
     /// Send one frame of this screen to the computer.
@@ -5383,7 +5417,7 @@ impl eframe::App for App {
         self.pad_cursor_ui(&ctx);
         self.quick_ui(&ctx);
 
-        let ms = if self.stream.feed.is_some() {
+        let mut ms = if self.stream.feed.is_some() {
             24
         } else if self.gamepad_on
             || self.binds.capture
@@ -5397,8 +5431,14 @@ impl eframe::App for App {
         } else {
             350
         };
+        // A watched deck draws as often as it shares, otherwise the picture
+        // would be capped by the idle repaint rate, not by the settings.
+        if self.share.want && self.cfg.mirror_deck {
+            ms = ms.min(1000 / self.cfg.mirror_fps.clamp(1, 60) as u64);
+        }
         ctx.request_repaint_after(Duration::from_millis(ms));
         self.pump_share(&ctx);
+        self.pump_share_audio();
     }
 }
 

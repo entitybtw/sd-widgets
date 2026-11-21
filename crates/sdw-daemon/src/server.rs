@@ -114,6 +114,7 @@ fn handle(state: Arc<AppState>, mut req: Request) {
             state.mirror.watching();
             deck_frame(state, req, query)
         }
+        (Method::Post, "/api/v1/deck/audio") => deck_audio_chunk(state, req, query),
         (Method::Get, "/api/v1/deck") => {
             state.mirror.watching();
             respond_json(req, 200, &state.mirror.state())
@@ -325,6 +326,32 @@ fn deck_frame(state: Arc<AppState>, mut req: Request, query: &str) {
         .mirror
         .ingest(&id, &name, &page, &version, width, height, body);
     respond_json(req, 200, &json!({"ok": true}))
+}
+
+/// One chunk of the deck's own sound, raw `s16le`, played on this computer.
+/// Only while somebody watches the deck: a stray deck cannot open a sink.
+fn deck_audio_chunk(state: Arc<AppState>, mut req: Request, query: &str) {
+    if !state.mirror.is_watched() {
+        return error(req, 409, "экран деки никто не смотрит");
+    }
+    const LIMIT: u64 = 512 * 1024;
+    let mut body = Vec::new();
+    if let Err(e) = req.as_reader().take(LIMIT).read_to_end(&mut body) {
+        return error(req, 400, &format!("звук не прочитан: {e}"));
+    }
+    if body.is_empty() {
+        return error(req, 400, "пустой кусок звука");
+    }
+    let rate = query_u64(query, "rate").unwrap_or(48_000) as u32;
+    let channels = query_u64(query, "channels").unwrap_or(2) as u8;
+    match state.deck_audio.play(rate, channels, &body) {
+        Ok(()) => respond_json(
+            req,
+            200,
+            &json!({"ok": true, "bytes": state.deck_audio.bytes()}),
+        ),
+        Err(e) => error(req, 503, &e),
+    }
 }
 
 // ---------------------------------------------------------------- auth

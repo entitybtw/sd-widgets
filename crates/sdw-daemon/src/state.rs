@@ -497,6 +497,8 @@ pub struct AppState {
     pub monitor: Arc<MonitorManager>,
     /// The decks that send their screen here, and the newest picture.
     pub mirror: Arc<crate::mirror::Mirror>,
+    /// The deck's own sound while somebody watches its picture.
+    pub deck_audio: Arc<crate::deck_audio::DeckAudio>,
     pub ha: Arc<Mutex<HaRuntime>>,
     pub jobs: Arc<JobManager>,
     pub clients: AtomicU32,
@@ -521,6 +523,7 @@ impl AppState {
         ));
         let media = Arc::new(crate::media::MediaService::new());
         let mirror = Arc::new(crate::mirror::Mirror::new());
+        let deck_audio = Arc::new(crate::deck_audio::DeckAudio::new());
         let audio = Arc::new(crate::audio::Audio::new());
         let viiper = Arc::new(ViiperManager::new(logger.clone()));
         let monitor = Arc::new(MonitorManager::new(logger.clone()));
@@ -536,6 +539,7 @@ impl AppState {
             viiper,
             monitor,
             mirror,
+            deck_audio,
             ha,
             jobs,
             clients: AtomicU32::new(0),
@@ -612,6 +616,10 @@ impl AppState {
             }
         });
 
+        // The deck's own sound goes to one player process; a small tick
+        // closes it when the deck goes quiet.
+        crate::deck_audio::watch(self.deck_audio.clone(), self.stop.clone());
+
         // Notification mirroring (Linux only). When nothing else owns the
         // notification bus name we become the daemon ourselves, so apps can
         // finally deliver notifications to the deck.
@@ -678,6 +686,7 @@ impl AppState {
 
     pub fn shutdown(&self) {
         self.stop.store(true, Ordering::Relaxed);
+        self.deck_audio.stop();
         self.monitor.stop();
         self.viiper.stop();
     }

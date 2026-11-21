@@ -13,6 +13,7 @@ mod deck_view;
 mod ha_link;
 mod input;
 mod pages;
+mod share_audio;
 mod sound;
 mod sys;
 mod theme;

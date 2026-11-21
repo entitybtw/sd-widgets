@@ -6757,6 +6757,39 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 app.save_soon();
             }
         });
+        ui.horizontal_wrapped(|ui| {
+            let mut sound = app.cfg.mirror_sound;
+            theme::switch(ui, &mut sound, t);
+            if sound != app.cfg.mirror_sound {
+                app.cfg.mirror_sound = sound;
+                app.save();
+            }
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "звук деки вместе с экраном",
+                    "the deck's sound along with the picture"
+                ))
+                .size(13.0)
+                .color(t.muted),
+            );
+        });
+        ui.label(
+            RichText::new(t!(
+                app.lang,
+                "звук играет на компьютере, пока открыта страница «стим дек»; запись идёт только тогда же.",
+                "the sound plays on the computer while the “steam deck” page is open; recording runs only then too."
+            ))
+            .size(11.5)
+            .color(t.faint),
+        );
+        if !app.share_audio_err.is_empty() {
+            ui.label(
+                RichText::new(util::truncate(&app.share_audio_err, 160))
+                    .size(11.5)
+                    .color(t.warn),
+            );
+        }
         if app.share.sent > 0 {
             ui.label(
                 RichText::new(format!(

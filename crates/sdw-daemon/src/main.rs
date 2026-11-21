@@ -5,6 +5,7 @@ mod audio;
 mod autostart;
 mod bluetooth;
 mod config;
+mod deck_audio;
 #[cfg(feature = "gui")]
 mod gui;
 mod install;

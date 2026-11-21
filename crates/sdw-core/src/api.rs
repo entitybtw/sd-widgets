@@ -447,6 +447,36 @@ impl Client {
 
     // ---------------------------------------------------------- deck mirror
 
+    /// Push one chunk of the deck's own sound, raw `s16le`, for the computer
+    /// to play next to the picture.
+    pub fn push_deck_audio(&self, rate: u32, channels: u8, pcm: &[u8]) -> ApiResult<Value> {
+        let url = self.url(&format!(
+            "/api/v1/deck/audio?rate={rate}&channels={channels}"
+        ));
+        let mut r = self
+            .agent
+            .post(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .header("Content-Type", "application/octet-stream")
+            .send(pcm)
+            .map_err(|e| ApiError {
+                status: 0,
+                message: e.to_string(),
+            })?;
+        let status = r.status().as_u16();
+        let text = r.body_mut().read_to_string().unwrap_or_default();
+        if status != 200 {
+            return Err(ApiError {
+                status,
+                message: error_from_body(&text),
+            });
+        }
+        serde_json::from_str(&text).map_err(|e| ApiError {
+            status,
+            message: e.to_string(),
+        })
+    }
+
     /// Ask whether anyone on the computer is watching this deck's screen.
     /// The deck only captures frames while the answer is yes.
     pub fn deck_want(&self) -> ApiResult<bool> {

@@ -2050,6 +2050,10 @@ pub struct DeckConfig {
     /// JPEG quality of a shared frame (30..=95).
     #[serde(default = "default_mirror_quality")]
     pub mirror_quality: u8,
+    /// Send this deck's own sound along with the picture. It is played on the
+    /// paired computer only while somebody watches the deck page there.
+    #[serde(default = "default_true")]
+    pub mirror_sound: bool,
     #[serde(default = "default_true")]
     pub grid: bool,
     #[serde(default)]
@@ -2128,6 +2132,7 @@ impl Default for DeckConfig {
             mirror_deck: true,
             mirror_fps: 60,
             mirror_quality: 62,
+            mirror_sound: true,
             grid: true,
             style: ThemeCfg::default(),
             sound: SoundCfg::default(),

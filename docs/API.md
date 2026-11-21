@@ -132,6 +132,7 @@ over the whole window when asked.
 | --- | --- | --- |
 | `GET` | `/api/v1/deck/want` | `{ "want": bool, "fps": 60 }` — is somebody showing this deck right now, and the highest rate it accepts. |
 | `POST` | `/api/v1/deck/frame?device=&name=&page=&version=&width=&height=` | Raw JPEG body (≤ 4 MB, starts with `FF D8`). Marks the deck as watched. |
+| `POST` | `/api/v1/deck/audio?rate=&channels=` | Raw `s16le` PCM (≤ 512 KB), played on the computer while the deck is watched; `409` when nobody watches. |
 | `GET` | `/api/v1/deck` | `DeckMirrorState`: live flag, frame age, page, size, seq, watched flag and the client list. |
 | `GET` | `/api/v1/deck/frame` | Newest JPEG, `404` before the first frame. |
 

@@ -60,6 +60,8 @@
 - `mirror.rs` — the decks that send their screen, the newest frame and the
   `watching` window that decides how fast they send. A frame goes at the deck's
   own resolution, up to 60 fps, one in flight at a time. No network, no blocking.
+- `deck_audio.rs` — the deck's own sound on the computer: raw `s16le` chunks go
+  into one `pw-cat`/`paplay` process, which is closed 1.5 s after the last one.
 - `notifications.rs` — desktop notification watcher. It advertises `body-markup`,
   so the markup is reduced to plain text here (entities, `<br>`, `<img alt>`,
   D-Bus octal escapes) once, and the Deck only renders UTF-8.
