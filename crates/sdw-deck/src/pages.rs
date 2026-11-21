@@ -2680,37 +2680,12 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
         );
     }
 
-    ui.add_space(10.0);
-    theme::card(ui, t, |ui| {
-        monitor_settings(ui, app, t);
-        ui.add_space(6.0);
-        let mut fps = app.stream.fps;
-        if theme::slider_u32(ui, t, t!(app.lang, "fps", "fps"), &mut fps, 5..=60) {
-            app.stream.fps = fps;
-            app.save_soon();
-        }
-        let mut quality = app.stream.quality as u32;
-        if theme::slider_u32(
-            ui,
-            t,
-            t!(app.lang, "качество", "quality"),
-            &mut quality,
-            30..=95,
-        ) {
-            app.stream.quality = quality.min(95) as u8;
-            app.save_soon();
-        }
-        ui.horizontal(|ui| {
-            if theme::switch(ui, &mut app.stream.input, t).changed() {
-                app.save_soon();
-            }
-            ui.label(
-                RichText::new(t!(app.lang, "мышь и клавиатура", "mouse and keyboard"))
-                    .size(12.5)
-                    .color(t.muted),
-            );
-        });
-        if app.stream.input {
+    if app.stream.input {
+        // The keyboard field sits under the picture, outside the settings
+        // card: on the deck that card reaches past the bottom bar, and a field
+        // there would be a field nobody can see.
+        ui.add_space(8.0);
+        theme::card(ui, t, |ui| {
             // A line typed here goes to the computer's focused window: a
             // search field, a password, a terminal — without the on-screen
             // keyboard covering the picture.
@@ -2741,7 +2716,39 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 let text = std::mem::take(&mut app.stream_text);
                 app.send_text(text);
             }
+        });
+    }
+
+    ui.add_space(10.0);
+    theme::card(ui, t, |ui| {
+        monitor_settings(ui, app, t);
+        ui.add_space(6.0);
+        let mut fps = app.stream.fps;
+        if theme::slider_u32(ui, t, t!(app.lang, "fps", "fps"), &mut fps, 5..=60) {
+            app.stream.fps = fps;
+            app.save_soon();
         }
+        let mut quality = app.stream.quality as u32;
+        if theme::slider_u32(
+            ui,
+            t,
+            t!(app.lang, "качество", "quality"),
+            &mut quality,
+            30..=95,
+        ) {
+            app.stream.quality = quality.min(95) as u8;
+            app.save_soon();
+        }
+        ui.horizontal(|ui| {
+            if theme::switch(ui, &mut app.stream.input, t).changed() {
+                app.save_soon();
+            }
+            ui.label(
+                RichText::new(t!(app.lang, "мышь и клавиатура", "mouse and keyboard"))
+                    .size(12.5)
+                    .color(t.muted),
+            );
+        });
         if !monitor.config_hint.is_empty() {
             ui.add_space(4.0);
             ui.horizontal_top(|ui| {
