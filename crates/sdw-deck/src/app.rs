@@ -654,9 +654,20 @@ pub struct App {
     pub quick_volume: Option<u8>,
     pub quick_muted: bool,
     pub quick_brightness: Option<u8>,
-    /// The panel was opened by a tap on the handle, not by a pull: it is on
-    /// screen at once and needs no slide.
-    pub quick_instant: bool,
+    /// How far the panel sits above its open place, in points: 0 is open,
+    /// `quick_height` is fully off screen. A pull from the top, a push up
+    /// while it is open and the settle after a release all drive this one
+    /// number, so the panel follows the finger instead of snapping.
+    pub quick_off: f32,
+    /// The panel as it was last drawn: how far it has to rise to be out.
+    pub quick_height: f32,
+    /// The settle after the finger left: from, to, and when it started.
+    /// `quick_settle_open` says whether the panel is left open at the end.
+    pub quick_off_from: f32,
+    pub quick_off_to: f32,
+    pub quick_off_at: Instant,
+    pub quick_off_active: bool,
+    pub quick_settle_open: bool,
     /// A read of volume and brightness is on its way; the panel skips the
     /// second one until it lands.
     pub quick_pending: bool,
@@ -934,7 +945,15 @@ impl App {
             quick_volume: None,
             quick_muted: false,
             quick_brightness: None,
-            quick_instant: false,
+            // Where the panel rests when closed, before it was ever drawn:
+            // tall enough to be off screen on the first slide.
+            quick_off: 560.0,
+            quick_height: 560.0,
+            quick_off_from: 0.0,
+            quick_off_to: 0.0,
+            quick_off_at: Instant::now(),
+            quick_off_active: false,
+            quick_settle_open: false,
             quick_pending: false,
             quick_values_deferred: false,
             quick_at: None,
@@ -1230,13 +1249,21 @@ impl App {
                             // scrolls the page, never the panel.
                             let from_top = start.y <= rect.top() + 52.0;
                             let at_top = self.clock_full || self.page_scroll_offset <= 1.0;
-                            if !self.quick_open
-                                && from_top
-                                && at_top
-                                && dy > 10.0
-                                && dy > dx.abs() * 2.0
-                            {
+                            if self.quick_open {
+                                // The page underneath never moves while the
+                                // panel is up: an upward drag pulls the panel
+                                // out under the finger, and the panel's own
+                                // sliders keep their drags to themselves.
+                                self.page_slide = 0.0;
+                                if dy < -6.0 && dy.abs() > dx.abs() * 1.2 {
+                                    self.quick_off = (-dy).clamp(0.0, self.quick_height.max(1.0));
+                                }
+                            } else if from_top && at_top && dy > 10.0 && dy > dx.abs() * 2.0 {
                                 self.quick_pull = dy;
+                                // The panel is revealed as it is pulled, so
+                                // the finger sees the edge coming down.
+                                self.quick_off =
+                                    (self.quick_height - dy).clamp(0.0, self.quick_height);
                                 self.page_slide = 0.0;
                             } else if theme::style().animations
                                 && dx.abs() > 24.0
@@ -1297,11 +1324,19 @@ impl App {
                         let pull = self.quick_pull;
                         if self.quick_open {
                             self.quick_pull = 0.0;
-                            // An open panel is dismissed by a pull up, never
-                            // by turning the page underneath it.
+                            // An open panel is dismissed by a push up, never
+                            // by turning the page underneath it. A third of
+                            // the panel or a flick is enough; anything less
+                            // slides back to where it was.
                             self.page_slide = 0.0;
-                            if !self.swipe_blocked && dy < -70.0 && dy.abs() > dx.abs() * 1.2 {
-                                self.set_quick(false);
+                            let h = self.quick_height.max(1.0);
+                            let flick = at.elapsed() < Duration::from_millis(320) && dy < -56.0;
+                            let close = !self.swipe_blocked
+                                && (dy < -70.0 || self.quick_off > h * 0.3 || flick);
+                            if close {
+                                self.start_quick_settle(h, false);
+                            } else if self.quick_off > 0.5 {
+                                self.start_quick_settle(0.0, true);
                             }
                         } else if !self.swipe_blocked
                             && at.elapsed() < Duration::from_millis(900)
@@ -1310,9 +1345,12 @@ impl App {
                             && dy > dx.abs() * 2.0
                         {
                             self.page_slide = 0.0;
-                            self.quick_pull = pull;
                             self.set_quick(true);
                         } else {
+                            // A pull that stopped short slides back up.
+                            if self.quick_off < self.quick_height - 0.5 {
+                                self.start_quick_settle(self.quick_height.max(1.0), false);
+                            }
                             self.quick_pull = 0.0;
                             let gesture_recent =
                                 self.last_gesture.as_ref().is_some_and(|(_, when)| {
@@ -2329,23 +2367,53 @@ impl App {
     }
 
     /// Open or close the pull-down panel. Opening reads the current values at
-    /// once, so the sliders never show a stale number.
+    /// once, so the sliders never show a stale number. The movement itself is
+    /// a settle, so a tap slides the panel in and a close slides it out
+    /// instead of making it appear and vanish.
     pub fn set_quick(&mut self, open: bool) {
-        let pulled = self.quick_pull > 1.0;
-        self.quick_open = open;
-        self.quick_pull = 0.0;
         if open {
-            // The panel must be on screen on the very frame the pull or the
-            // tap lands, without waiting for animation or a read. A pull
-            // slides in with the finger already on its way; a tap on the
-            // handle shows the panel at once. The Deck's sound and light are
-            // read on a thread, so the panel appears with what it knew last
-            // time and fills the numbers in a frame later.
-            self.quick_instant = !pulled;
+            self.quick_open = true;
+            self.quick_pull = 0.0;
+            // The Deck's sound and light are read on a thread, so the panel
+            // appears with what it knew last time and fills the numbers in a
+            // frame later.
             self.quick_values_deferred = true;
             self.quick_at = None;
+            self.start_quick_settle(0.0, true);
         } else {
-            self.quick_instant = false;
+            self.quick_pull = 0.0;
+            if self.quick_open {
+                self.start_quick_settle(self.quick_height.max(1.0), false);
+            }
+        }
+    }
+
+    /// Carry the panel from where the finger left it to `to`, over a time that
+    /// depends on the distance, and open or close it at the end.
+    fn start_quick_settle(&mut self, to: f32, open_at_end: bool) {
+        if !theme::style().animations {
+            self.quick_off = to;
+            self.quick_off_active = false;
+            self.quick_settle_open = open_at_end;
+            self.finish_quick_settle();
+            return;
+        }
+        self.quick_off_from = self.quick_off;
+        self.quick_off_to = to;
+        self.quick_off_at = Instant::now();
+        self.quick_off_active = true;
+        self.quick_settle_open = open_at_end;
+    }
+
+    /// Land the settle: leave the panel open or out of sight.
+    fn finish_quick_settle(&mut self) {
+        self.quick_off_active = false;
+        if self.quick_settle_open {
+            self.quick_off = 0.0;
+            self.quick_open = true;
+        } else {
+            self.quick_off = self.quick_height.max(1.0);
+            self.quick_open = false;
             self.quick_values_deferred = false;
         }
     }
@@ -3102,6 +3170,22 @@ impl App {
                 }
             } else {
                 self.page_slide = 0.0;
+            }
+        }
+        // The control panel is moved by the same rule as a page: the finger
+        // places it, the release finishes the move. A short settle keeps the
+        // slide smooth without a fixed 0.16 s snap.
+        if self.quick_off_active {
+            let h = self.quick_height.max(1.0);
+            let dist = (self.quick_off_to - self.quick_off_from).abs();
+            let dur = 0.18 + 0.12 * (dist / h).min(1.0);
+            let k = (self.quick_off_at.elapsed().as_secs_f32() / dur).min(1.0);
+            let ease = (k * std::f32::consts::FRAC_PI_2).sin();
+            self.quick_off = self.quick_off_from + (self.quick_off_to - self.quick_off_from) * ease;
+            if k >= 1.0 {
+                self.finish_quick_settle();
+            } else {
+                ctx.request_repaint();
             }
         }
         if self.last_clock.elapsed() >= Duration::from_secs(1) {
@@ -4621,10 +4705,13 @@ impl App {
         }
 
         crate::pages::quick_panel(self, ctx, &t);
-        if self.quick_open
-            || ctx.animate_bool_with_time(Id::new("deck-quick"), self.quick_open, 0.16) > 0.001
-        {
+        // The Deck's values are read every two seconds and the ages move a
+        // minute at a time, so four frames a second are enough while the panel
+        // just sits there; a settle or a finger asks for every frame by itself.
+        if self.quick_off_active {
             ctx.request_repaint();
+        } else if self.quick_open || self.quick_pull > 0.0 {
+            ctx.request_repaint_after(Duration::from_millis(250));
         }
     }
 

@@ -1320,34 +1320,24 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
 /// the close button, a tap outside or B.
 pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
     let lang = app.lang;
-    // A tap on the handle opens the panel on the same frame, not 0.16 s
-    // later: the slide is for a pull, where the finger is already moving.
-    let instant = app.quick_instant;
-    let anim = if instant {
-        if app.quick_open {
-            1.0
-        } else {
-            0.0
-        }
-    } else {
-        ctx.animate_bool_with_time(egui::Id::new("deck-quick"), app.quick_open, 0.16)
-    };
-    if !app.quick_open && anim <= 0.001 {
+    // `quick_off` is the whole state of the slide: a pull from the top, a push
+    // up while it is open and the settle after a release all move this one
+    // number, so the panel follows the finger and nothing is animated twice.
+    let height = app.quick_height.max(1.0);
+    let off = app.quick_off;
+    if !app.quick_open && off >= height - 0.5 {
         return;
     }
+    let reveal = (1.0 - off / height).clamp(0.0, 1.0);
     let rect = ctx.content_rect();
     let width = (rect.width() - 24.0).clamp(320.0, 860.0);
-    // The panel starts above the screen and slides down fast, then settles:
-    // a linear 0.16 s slide looked like a snap on the Deck's 60 Hz panel.
-    let eased = 1.0 - (1.0 - anim) * (1.0 - anim);
-    let slide = (1.0 - eased) * 540.0;
-    let pos = egui::pos2(rect.center().x - width / 2.0, rect.top() + 6.0 - slide);
+    let pos = egui::pos2(rect.center().x - width / 2.0, rect.top() + 6.0 - off);
     let mut close = false;
     let mut shade_clicked = false;
 
     // A dim layer behind the panel; a tap on it closes the panel. It fades out
     // together with the panel instead of vanishing on the closing frame.
-    if anim > 0.001 {
+    if reveal > 0.001 {
         egui::Area::new(egui::Id::new("deck-quick-shade"))
             .fixed_pos(rect.min)
             .order(egui::Order::Middle)
@@ -1361,7 +1351,7 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                 ui.painter().rect_filled(
                     rect,
                     CornerRadius::ZERO,
-                    Color32::from_black_alpha((96.0 * anim).round() as u8),
+                    Color32::from_black_alpha((96.0 * reveal).round() as u8),
                 );
                 if resp.clicked() {
                     close = true;
@@ -1376,16 +1366,20 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
     let panel = egui::Area::new(egui::Id::new("deck-quick-panel"))
         .fixed_pos(pos)
         .order(egui::Order::Foreground)
+        // The panel has to leave the screen when it is pulled up: with the
+        // default constraint egui pinned it to the top edge and only the
+        // fade was left, which is why the close looked like a snap.
+        .constrain(false)
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(if t.dark {
-                    Color32::from_rgba_premultiplied(0x12, 0x18, 0x20, (252.0 * anim) as u8)
+                    Color32::from_rgba_premultiplied(0x12, 0x18, 0x20, (252.0 * reveal) as u8)
                 } else {
-                    Color32::from_rgba_premultiplied(0xf7, 0xf9, 0xfc, (252.0 * anim) as u8)
+                    Color32::from_rgba_premultiplied(0xf7, 0xf9, 0xfc, (252.0 * reveal) as u8)
                 })
                 .stroke(Stroke::new(
                     1.0,
-                    t.line_strong.gamma_multiply(anim.max(0.15)),
+                    t.line_strong.gamma_multiply(reveal.max(0.15)),
                 ))
                 .corner_radius(CornerRadius::ZERO)
                 .inner_margin(Margin::symmetric(18, 12))
@@ -1596,6 +1590,10 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                     }
                 });
         });
+    // How far the panel has to rise to be fully out of sight, plus the 6 px
+    // it sits below the top edge when open. A drag clamps to it and the settle
+    // closes over it.
+    app.quick_height = panel.response.rect.height() + 6.0;
 
     if shade_clicked {
         app.quick_clicked = true;
