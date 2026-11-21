@@ -68,7 +68,7 @@ Gamepad input itself is not HTTP: the Deck sends compact binary state packets to
 | `GET` | `/api/v1/monitor` | `MonitorStatus`: running, backend, position, width, height, fps, quality, output, error. |
 | `POST` | `/api/v1/monitor/start` | `MonitorStart`: mode (`virtual`/`mirror`), backend, position, output, size, fps, quality, input flag. |
 | `POST` | `/api/v1/monitor/stop` | Stops the monitor and removes the virtual output. |
-| `POST` | `/api/v1/monitor/input` | Pointer/keyboard events for forwarded input. |
+| `POST` | `/api/v1/monitor/input` | `MonitorInput`: normalized `x`/`y`, an `action` — `move`, `down`, `up`, `click`, `double_click`, `right_click`, `middle_click`, `scroll_up`/`down`/`left`/`right` with `amount` wheel steps, or `text` with the `text` to type. |
 | `GET` | `/api/v1/monitor/frame` | Latest JPEG frame. |
 
 Position values: `auto`, `right`, `left`, `above`, `below`.

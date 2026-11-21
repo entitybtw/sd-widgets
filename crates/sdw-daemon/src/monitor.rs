@@ -728,6 +728,9 @@ impl MonitorManager {
         if !enabled {
             return Err("Управление мышью выключено в настройках экрана".into());
         }
+        if input.action == "text" {
+            return inject_text(&compositor, &input.text);
+        }
         let x = rect.0 + (input.x.clamp(0.0, 1.0) * rect.2 as f32) as i32;
         let y = rect.1 + (input.y.clamp(0.0, 1.0) * rect.3 as f32) as i32;
         inject_pointer(&compositor, x, y, &input.action, input.amount)
@@ -2218,25 +2221,80 @@ fn inject_pointer(
             "up" => click_ydotool("0x80"),
             "click" => click_ydotool("0xC0"),
             "move" => Ok(()),
+            "double_click" => click_ydotool("0xC0").and_then(|_| click_ydotool("0xC0")),
             "right_click" => click_ydotool("0xC1"),
-            "scroll_up" => scroll_ydotool(amount.max(1)),
-            "scroll_down" => scroll_ydotool(-amount.max(1)),
+            "middle_click" => click_ydotool("0xC2"),
+            "scroll_up" => scroll_ydotool(0, amount.max(1)),
+            "scroll_down" => scroll_ydotool(0, -amount.max(1)),
+            "scroll_left" => scroll_ydotool(-amount.max(1), 0),
+            "scroll_right" => scroll_ydotool(amount.max(1), 0),
             _ => Ok(()),
         }
     } else if has_xdotool {
         sdw_core::util::run("xdotool", &["mousemove", &x.to_string(), &y.to_string()])?;
+        let button = |b: &str| sdw_core::util::run("xdotool", &["click", b]).map(|_| ());
         match action {
             "down" => sdw_core::util::run("xdotool", &["mousedown", "1"]).map(|_| ()),
             "up" => sdw_core::util::run("xdotool", &["mouseup", "1"]).map(|_| ()),
-            "click" => sdw_core::util::run("xdotool", &["click", "1"]).map(|_| ()),
+            "click" => button("1"),
             "move" => Ok(()),
-            "right_click" => sdw_core::util::run("xdotool", &["click", "3"]).map(|_| ()),
-            "scroll_up" => sdw_core::util::run("xdotool", &["click", "4"]).map(|_| ()),
-            "scroll_down" => sdw_core::util::run("xdotool", &["click", "5"]).map(|_| ()),
+            "double_click" => sdw_core::util::run(
+                "xdotool",
+                &["click", "--repeat", "2", "--delay", "110", "1"],
+            )
+            .map(|_| ()),
+            "right_click" => button("3"),
+            "middle_click" => button("2"),
+            // X11 wheel buttons: 4/5 vertical, 6/7 horizontal.
+            "scroll_up" => repeat_wheel("4", amount.max(1)),
+            "scroll_down" => repeat_wheel("5", amount.max(1)),
+            "scroll_left" => repeat_wheel("6", amount.max(1)),
+            "scroll_right" => repeat_wheel("7", amount.max(1)),
             _ => Ok(()),
         }
     } else {
         Err("Для управления мышью установите ydotool (Wayland) или xdotool (X11)".into())
+    }
+}
+
+/// Type a line on the computer. Every character is treated as data: the
+/// command is an argument list, never a shell string.
+fn inject_text(compositor: &str, text: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    if cfg!(windows) {
+        // SendKeys treats some characters as commands; each is wrapped in
+        // braces so a password or a path with ( ) { } + ^ % ~ types as itself.
+        let mut escaped = String::with_capacity(text.len() * 2);
+        for c in text.chars() {
+            if matches!(c, '+' | '^' | '%' | '~' | '(' | ')' | '{' | '}' | '[' | ']') {
+                escaped.push('{');
+                escaped.push(c);
+                escaped.push('}');
+            } else if c == '\n' {
+                escaped.push_str("{ENTER}");
+            } else {
+                escaped.push(c);
+            }
+        }
+        let script = format!(
+            r#"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{escaped}')"#
+        );
+        return sdw_core::util::run("powershell", &["-NoProfile", "-Command", &script]).map(|_| ());
+    }
+    let has_ydotool = sdw_core::util::has("ydotool");
+    let has_xdotool = sdw_core::util::has("xdotool");
+    if has_ydotool && compositor != "x11" {
+        sdw_core::util::run("ydotool", &["type", "--", text]).map(|_| ())
+    } else if has_xdotool {
+        sdw_core::util::run(
+            "xdotool",
+            &["type", "--clearmodifiers", "--delay", "12", "--", text],
+        )
+        .map(|_| ())
+    } else {
+        Err("Для ввода с клавиатуры установите ydotool (Wayland) или xdotool (X11)".into())
     }
 }
 
@@ -2262,19 +2320,35 @@ fn click_ydotool(btn: &str) -> Result<(), String> {
         .map_err(|e| format!("ydotool click: {e}"))
 }
 
-fn scroll_ydotool(amount: i32) -> Result<(), String> {
+fn scroll_ydotool(x: i32, y: i32) -> Result<(), String> {
     sdw_core::util::run(
         "ydotool",
-        &["mousemove", "-w", "-x", "0", "-y", &amount.to_string()],
+        &[
+            "mousemove",
+            "-w",
+            "-x",
+            &x.to_string(),
+            "-y",
+            &y.to_string(),
+        ],
     )
     .map(|_| ())
     .map_err(|e| format!("ydotool scroll: {e}"))
 }
 
+/// One wheel click per step: `xdotool click` takes a single button, and a
+/// repeated call is what every desktop sees as a real wheel.
+fn repeat_wheel(button: &str, steps: i32) -> Result<(), String> {
+    for _ in 0..steps.clamp(1, 20) {
+        sdw_core::util::run("xdotool", &["click", button])?;
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn windows_pointer(x: i32, y: i32, action: &str, amount: i32) -> Result<(), String> {
     let script = format!(
-        r#"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point({x},{y}); $s = '[DllImport("user32.dll")] public static extern void mouse_event(int f, int x, int y, int d, int e);'; Add-Type -MemberDefinition $s -Name W -Namespace N; $f = 0; switch ('{action}') {{ 'down' {{ $f = 2 }} 'up' {{ $f = 4 }} 'click' {{ $f = 6 }} 'right_click' {{ $f = 0x18 }} 'scroll_up' {{ $f = 0x800; $d = {amount} * 120 }} 'scroll_down' {{ $f = 0x800; $d = -{amount} * 120 }} }}; if ($f -ne 0) {{ [N.W]::mouse_event($f,0,0,$d,0) }}"#
+        r#"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point({x},{y}); $s = '[DllImport("user32.dll")] public static extern void mouse_event(int f, int x, int y, int d, int e);'; Add-Type -MemberDefinition $s -Name W -Namespace N; $f = 0; $n = 1; switch ('{action}') {{ 'down' {{ $f = 2 }} 'up' {{ $f = 4 }} 'click' {{ $f = 6 }} 'double_click' {{ $f = 6; $n = 2 }} 'right_click' {{ $f = 0x18 }} 'middle_click' {{ $f = 0x20 }} 'scroll_up' {{ $f = 0x800; $d = {amount} * 120 }} 'scroll_down' {{ $f = 0x800; $d = -{amount} * 120 }} 'scroll_left' {{ $f = 0x1000; $d = {amount} * 120 }} 'scroll_right' {{ $f = 0x1000; $d = -{amount} * 120 }} }}; if ($f -ne 0) {{ for ($i = 0; $i -lt $n; $i++) {{ [N.W]::mouse_event($f,0,0,$d,0) }} }}"#
     );
     sdw_core::util::run("powershell", &["-NoProfile", "-Command", &script]).map(|_| ())
 }
@@ -2563,5 +2637,43 @@ mod tests {
     fn resolutions() {
         assert_eq!(parse_resolution("2560 x 1440"), Some((2560, 1440)));
         assert_eq!(parse_resolution("1920 x 1080 (Retina)"), Some((1920, 1080)));
+    }
+
+    /// Every remote action names a real xdotool button, so a right click is
+    /// never silently a left one.
+    #[test]
+    fn x11_actions_reach_xdotool() {
+        let dir = std::env::temp_dir().join(format!("sdw-xdotool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("calls");
+        let script = dir.join("xdotool");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perm = std::fs::metadata(&script).unwrap().permissions();
+            perm.set_mode(0o755);
+            std::fs::set_permissions(&script, perm).unwrap();
+        }
+        let old = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{old}", dir.display()));
+        let r = inject_pointer("x11", 10, 20, "double_click", 2);
+        let r2 = inject_pointer("x11", 10, 20, "scroll_down", 2);
+        let r3 = inject_pointer("x11", 10, 20, "middle_click", 0);
+        std::env::set_var("PATH", old);
+        r.unwrap();
+        r2.unwrap();
+        r3.unwrap();
+        let calls = std::fs::read_to_string(&log).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(calls.contains("mousemove 10 20"), "{calls}");
+        assert!(calls.contains("click --repeat 2 --delay 110 1"), "{calls}");
+        assert_eq!(calls.matches("click 5").count(), 2, "{calls}");
+        assert!(calls.contains("click 2"), "{calls}");
     }
 }

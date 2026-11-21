@@ -2579,6 +2579,7 @@ impl App {
                                 y,
                                 action: "click".into(),
                                 amount: 0,
+                                text: String::new(),
                             };
                             let lang = self.lang;
                             self.spawn(move || {

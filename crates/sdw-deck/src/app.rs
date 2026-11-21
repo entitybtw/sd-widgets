@@ -164,6 +164,17 @@ pub struct StreamState {
     pub input: bool,
     pub last_pointer: Instant,
     pub pointer_down: bool,
+    /// The last place the finger touched the picture, normalized. The remote
+    /// buttons click where the cursor already is.
+    pub cursor: Vec2,
+    /// A press that has not moved yet: after a moment it becomes a right
+    /// click, which is the shortest way to a context menu on a touch screen.
+    pub press_at: Instant,
+    pub press_pos: Option<egui::Pos2>,
+    pub long_sent: bool,
+    /// Scroll is sent in steps, throttled so a trackpad glide is a handful of
+    /// wheel clicks instead of one per frame.
+    pub scroll_at: Instant,
 }
 
 pub struct StreamFeed {
@@ -649,6 +660,8 @@ pub struct App {
 
     pub stream: StreamState,
     pub share: ShareState,
+    /// What the user typed for the computer's keyboard, before it is sent.
+    pub stream_text: String,
     /// Capture of this deck's own output while somebody watches its screen.
     pub share_audio: Option<crate::share_audio::ShareAudio>,
     pub share_audio_err: String,
@@ -902,7 +915,13 @@ impl App {
                 input: cfg.stream.input,
                 last_pointer: Instant::now() - Duration::from_secs(1),
                 pointer_down: false,
+                cursor: Vec2::new(0.5, 0.5),
+                press_at: Instant::now(),
+                press_pos: None,
+                long_sent: false,
+                scroll_at: Instant::now() - Duration::from_secs(1),
             },
+            stream_text: String::new(),
             share_audio: None,
             share_audio_err: String::new(),
             share: ShareState {
@@ -2187,6 +2206,23 @@ impl App {
     }
 
     pub fn send_pointer(&mut self, action: &str, pos: egui::Pos2) {
+        self.send_pointer_amount(action, pos, 0);
+    }
+
+    /// A click where the remote cursor already is: what the on-picture buttons
+    /// do, so a tap on "пкм" opens a menu exactly where the finger last was.
+    pub fn send_pointer_here(&mut self, action: &str) {
+        let Some(rect) = self.last_frame_rect else {
+            return;
+        };
+        let pos = egui::pos2(
+            rect.left() + self.stream.cursor.x * rect.width(),
+            rect.top() + self.stream.cursor.y * rect.height(),
+        );
+        self.send_pointer_amount(action, pos, 1);
+    }
+
+    pub fn send_pointer_amount(&mut self, action: &str, pos: egui::Pos2, amount: i32) {
         let Some(rect) = self.last_frame_rect else {
             return;
         };
@@ -2195,6 +2231,7 @@ impl App {
         }
         let x = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
         let y = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
+        self.stream.cursor = Vec2::new(x, y);
         if action == "move" {
             if self.stream.last_pointer.elapsed() < Duration::from_millis(45) {
                 return;
@@ -2208,7 +2245,32 @@ impl App {
             x,
             y,
             action: action.to_string(),
+            amount,
+            text: String::new(),
+        };
+        self.spawn(move || {
+            Task::Msg(
+                c.monitor_input(&input)
+                    .map(|_| String::new())
+                    .map_err(|e| e.to_string()),
+            )
+        });
+    }
+
+    /// Type a whole line on the computer, where the cursor is.
+    pub fn send_text(&mut self, text: String) {
+        let Some(c) = self.client() else {
+            return;
+        };
+        if text.is_empty() {
+            return;
+        }
+        let input = MonitorInput {
+            x: self.stream.cursor.x,
+            y: self.stream.cursor.y,
+            action: "text".to_string(),
             amount: 0,
+            text,
         };
         self.spawn(move || {
             Task::Msg(
@@ -4976,10 +5038,48 @@ impl App {
             Sense::click_and_drag(),
         );
         self.stream_drag_id = Some(resp.id);
-        if resp.clicked() {
-            if let Some(pos) = resp.interact_pointer_pos() {
+        let pointer_pos = resp.interact_pointer_pos();
+        // The remote buttons sit on top of the picture; a press there is a
+        // button, never a click on the computer behind it.
+        let bar = stream_bar_rect(rect);
+        let over_bar = pointer_pos.map(|p| bar.contains(p)).unwrap_or(false);
+        if let Some(pos) = pointer_pos {
+            self.stream.cursor = Vec2::new(
+                ((pos.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0),
+                ((pos.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0),
+            );
+        }
+        // A tap is a left click, two taps in a row a double click — what a
+        // person does on a touch screen without a mouse.
+        if resp.double_clicked() && !over_bar {
+            if let Some(pos) = pointer_pos {
+                self.send_pointer("double_click", pos);
+            }
+        } else if resp.clicked() && !over_bar {
+            if let Some(pos) = pointer_pos {
                 self.send_pointer("click", pos);
             }
+        }
+        // A finger held still opens the context menu: the shortest way to a
+        // right click when there is no second button under it.
+        let held = resp.is_pointer_button_down_on() && !over_bar;
+        if held && self.stream.press_pos.is_none() {
+            self.stream.press_pos = pointer_pos;
+            self.stream.press_at = Instant::now();
+            self.stream.long_sent = false;
+        }
+        if held
+            && !self.stream.pointer_down
+            && !self.stream.long_sent
+            && self.stream.press_at.elapsed() > Duration::from_millis(620)
+        {
+            if let Some(pos) = self.stream.press_pos {
+                self.send_pointer("right_click", pos);
+                self.stream.long_sent = true;
+            }
+        }
+        if !held {
+            self.stream.press_pos = None;
         }
         if resp.dragged() && self.page_anchor.is_none() {
             if !self.stream.pointer_down {
@@ -4987,7 +5087,7 @@ impl App {
                 let origin = ui.input(|i| i.pointer.press_origin());
                 self.send_pointer("down", origin.unwrap_or(rect.center()));
             }
-            if let Some(pos) = resp.interact_pointer_pos() {
+            if let Some(pos) = pointer_pos {
                 self.send_pointer("move", pos);
             }
         }
@@ -4995,18 +5095,100 @@ impl App {
         // already pressed: let it go before the page leaves.
         if self.page_anchor.is_some() && self.stream.pointer_down {
             self.stream.pointer_down = false;
-            if let Some(pos) = resp.interact_pointer_pos() {
+            if let Some(pos) = pointer_pos {
                 self.send_pointer("up", pos);
             }
         }
         if resp.drag_stopped() && self.stream.pointer_down {
             self.stream.pointer_down = false;
-            if let Some(pos) = resp.interact_pointer_pos() {
+            if let Some(pos) = pointer_pos {
                 self.send_pointer("up", pos);
+            }
+        }
+        // A wheel or a trackpad glide over the picture scrolls the computer,
+        // one wheel step per ~50 px.
+        if resp.hovered() && !over_bar && !self.stream.pointer_down && self.page_anchor.is_none() {
+            let (dx, dy) = ui.input(|i| (i.smooth_scroll_delta.x, i.smooth_scroll_delta.y));
+            if (dx.abs() > 4.0 || dy.abs() > 4.0)
+                && self.stream.scroll_at.elapsed() > Duration::from_millis(60)
+            {
+                self.stream.scroll_at = Instant::now();
+                let steps = |v: f32| ((v.abs() / 50.0).round() as i32).clamp(1, 6);
+                let action = if dy.abs() >= dx.abs() {
+                    if dy > 0.0 {
+                        "scroll_up"
+                    } else {
+                        "scroll_down"
+                    }
+                } else if dx > 0.0 {
+                    "scroll_right"
+                } else {
+                    "scroll_left"
+                };
+                let n = steps(if dy.abs() >= dx.abs() { dy } else { dx });
+                if let Some(pos) = pointer_pos.or_else(|| {
+                    Some(egui::pos2(
+                        rect.left() + self.stream.cursor.x * rect.width(),
+                        rect.top() + self.stream.cursor.y * rect.height(),
+                    ))
+                }) {
+                    self.send_pointer_amount(action, pos, n);
+                }
             }
         }
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        self.stream_buttons(ui, t, rect);
+    }
+
+    /// The remote mouse under the picture: a click goes exactly where the
+    /// finger last was, so a context menu or a middle click is one tap away.
+    fn stream_buttons(&mut self, ui: &mut Ui, t: &Tokens, rect: Rect) {
+        let buttons: [(&str, &str); 6] = [
+            ("click", t!(self.lang, "лкм", "left")),
+            ("double_click", "2×"),
+            ("right_click", t!(self.lang, "пкм", "right")),
+            ("middle_click", t!(self.lang, "скм", "middle")),
+            ("scroll_up", "↑"),
+            ("scroll_down", "↓"),
+        ];
+        let bar = stream_bar_rect(rect);
+        let mut pressed: Option<&str> = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(bar), |ui| {
+            egui::Frame::new()
+                .fill(Color32::from_black_alpha(190))
+                .stroke(Stroke::new(1.0, t.line_strong))
+                .corner_radius(CornerRadius::ZERO)
+                .inner_margin(Margin::symmetric(4, 3))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for (action, label) in buttons {
+                            let resp = ui.add(
+                                egui::Button::new(RichText::new(label).size(11.5).color(t.ink))
+                                    .fill(Color32::TRANSPARENT)
+                                    .stroke(Stroke::new(1.0, t.line_strong))
+                                    .corner_radius(CornerRadius::ZERO)
+                                    .min_size(Vec2::new(0.0, 24.0)),
+                            );
+                            if resp.clicked() {
+                                pressed = Some(action);
+                            }
+                        }
+                    });
+                });
+        });
+        if let Some(action) = pressed {
+            let amount = if action.starts_with("scroll") { 3 } else { 0 };
+            let Some(rect) = self.last_frame_rect else {
+                return;
+            };
+            let pos = egui::pos2(
+                rect.left() + self.stream.cursor.x * rect.width(),
+                rect.top() + self.stream.cursor.y * rect.height(),
+            );
+            self.send_pointer_amount(action, pos, amount);
         }
     }
 
@@ -5440,6 +5622,14 @@ impl eframe::App for App {
         self.pump_share(&ctx);
         self.pump_share_audio();
     }
+}
+
+/// Where the remote buttons float over a picture.
+fn stream_bar_rect(picture: Rect) -> Rect {
+    Rect::from_center_size(
+        picture.center_bottom() + Vec2::new(0.0, -22.0),
+        Vec2::new(360.0, 34.0),
+    )
 }
 
 /// A share failure as a sentence a person reads. The transport error stays

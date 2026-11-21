@@ -603,10 +603,14 @@ pub struct MonitorInput {
     /// Normalized 0..1 coordinates inside the streamed output.
     pub x: f32,
     pub y: f32,
-    /// move | down | up | click | right_click | scroll_up | scroll_down
+    /// move | down | up | click | double_click | right_click | middle_click |
+    /// scroll_up | scroll_down | scroll_left | scroll_right | text
     pub action: String,
     #[serde(default)]
     pub amount: i32,
+    /// What to type, for the `text` action.
+    #[serde(default)]
+    pub text: String,
 }
 
 // ---------------------------------------------------------------- notifications
