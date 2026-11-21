@@ -1356,7 +1356,7 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
     }
     let reveal = (1.0 - off / height).clamp(0.0, 1.0);
     let rect = ctx.content_rect();
-    let width = (rect.width() - 24.0).clamp(320.0, 860.0);
+    let width = (rect.width() - 24.0).clamp(320.0, 980.0);
     let pos = egui::pos2(rect.center().x - width / 2.0, rect.top() + 6.0 - off);
     let mut close = false;
     let mut shade_clicked = false;
@@ -1546,13 +1546,14 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                     ));
                     ui.add_space(2.0);
                     let newest: Vec<Notification> =
-                        app.notifications.iter().rev().take(3).cloned().collect();
+                        app.notifications.iter().rev().take(4).cloned().collect();
                     for n in newest {
                         let color = notification_color(t, &n);
                         let card = egui::Frame::new()
                             .fill(t.card)
                             .stroke(Stroke::new(1.0, color.gamma_multiply(0.35)))
                             .corner_radius(CornerRadius::ZERO)
+                            .inner_margin(Margin::symmetric(14, 11))
                             // A tap anywhere on the card opens it on the
                             // computer, the way clicking it there would.
                             .show(ui, |ui| {
@@ -1560,10 +1561,45 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                                 ui.horizontal(|ui| {
                                     ui.label(theme::icon(
                                         notif_glyph(&n.app, &n.icon),
-                                        18.0,
+                                        20.0,
                                         color,
                                     ));
+                                    ui.add_space(3.0);
                                     ui.vertical(|ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new(if n.app.is_empty() {
+                                                    t!(lang, "уведомление", "notification")
+                                                } else {
+                                                    &n.app
+                                                })
+                                                .size(10.5)
+                                                .strong()
+                                                .color(color),
+                                            );
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    if theme::icon_button(
+                                                        ui,
+                                                        theme::icon::CLOSE,
+                                                        t,
+                                                        22.0,
+                                                        false,
+                                                    )
+                                                    .clicked()
+                                                    {
+                                                        dismiss = Some(n.id);
+                                                    }
+                                                    ui.label(
+                                                        RichText::new(age(n.ts, lang))
+                                                            .family(FontFamily::Monospace)
+                                                            .size(10.0)
+                                                            .color(t.faint),
+                                                    );
+                                                },
+                                            );
+                                        });
                                         ui.add(
                                             egui::Label::new(
                                                 RichText::new(if n.summary.is_empty() {
@@ -1571,7 +1607,7 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                                                 } else {
                                                     &n.summary
                                                 })
-                                                .size(14.0)
+                                                .size(15.0)
                                                 .strong()
                                                 .color(t.strong),
                                             )
@@ -1580,32 +1616,13 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                                         if !n.body.is_empty() {
                                             ui.add(
                                                 egui::Label::new(
-                                                    RichText::new(util::truncate(&n.body, 90))
+                                                    RichText::new(util::truncate(&n.body, 160))
                                                         .size(12.0)
                                                         .color(t.muted),
                                                 )
-                                                .truncate(),
+                                                .wrap(),
                                             );
                                         }
-                                    });
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if theme::icon_button(
-                                            ui,
-                                            theme::icon::CLOSE,
-                                            t,
-                                            22.0,
-                                            false,
-                                        )
-                                        .clicked()
-                                        {
-                                            dismiss = Some(n.id);
-                                        }
-                                        ui.label(
-                                            RichText::new(age(n.ts, lang))
-                                                .family(FontFamily::Monospace)
-                                                .size(10.0)
-                                                .color(t.faint),
-                                        );
                                     });
                                 });
                             });
