@@ -167,7 +167,7 @@ Allowed commands:
 - `volume_up`, `volume_down`, `volume_mute`
 - `lock`, `sleep` (alias `suspend`), `reboot`, `shutdown`, `screen_off`
 - `monitor_start`, `monitor_stop`
-- `open:https://…` (http and https only)
+- `open:https://…` (http, https and `steam://` only)
 - `launch:<desktop-id>` (validated characters only)
 - `addon:<id>:<action>` — an action declared by an installed **and enabled**
   addon. See [`ADDONS.md`](ADDONS.md#http).

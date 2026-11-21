@@ -683,10 +683,16 @@ fn remote_command(state: Arc<AppState>, mut req: Request) {
                 crate::apps::power(action)
             } else if let Some(url) = command.strip_prefix("open:") {
                 let url = url.trim();
-                if url.starts_with("http://") || url.starts_with("https://") {
+                // Only schemes that a browser or Steam handles on purpose.
+                // `file:` and friends stay closed: the deck is not allowed to
+                // turn a bind into arbitrary local data access.
+                if url.starts_with("http://")
+                    || url.starts_with("https://")
+                    || url.starts_with("steam://")
+                {
                     sdw_core::util::open_url(url).map(|_| "opened".into())
                 } else {
-                    Err("Можно открывать только http(s) ссылки".into())
+                    Err("Можно открывать только http(s) или steam ссылки".into())
                 }
             } else if let Some(rest) = command.strip_prefix("addon:") {
                 let (id, action) = rest.split_once(':').unwrap_or((rest, ""));
