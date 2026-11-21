@@ -10,6 +10,7 @@ mod audio_ui;
 mod binds;
 mod clock;
 mod deck_view;
+mod ha_link;
 mod input;
 mod pages;
 mod sound;

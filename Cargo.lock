@@ -3077,9 +3077,11 @@ dependencies = [
  "evdev",
  "image",
  "libc",
+ "qrcode",
  "sdw-core",
  "serde",
  "serde_json",
+ "tiny_http",
  "ureq",
 ]
 

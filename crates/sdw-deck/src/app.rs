@@ -287,6 +287,12 @@ pub struct BindsState {
     /// that opened the editor cannot become the recorded control.
     pub capture_since: Option<Instant>,
     pub filter: String,
+    /// Search text of the application picker in a Launch action. Kept apart
+    /// from `filter` so the bind list keeps its own search.
+    pub launch_filter: String,
+    /// Set by a headless check (`SDW_BIND`): a bind id and an action kind to
+    /// open in the editor right away.
+    pub open: Option<(String, crate::binds::ActionKind)>,
 }
 
 pub struct Toast {
@@ -630,6 +636,9 @@ pub struct App {
     pub stream: StreamState,
     pub share: ShareState,
     pub ha: HaState,
+    /// The temporary web page that takes the Home Assistant token from a
+    /// phone, while it is open.
+    pub ha_link: Option<crate::ha_link::HaLink>,
     pub media: MediaUiState,
     /// The audio visualizer's bands, shared with the PCM player thread.
     pub viz: crate::viz::Shared,
@@ -911,6 +920,7 @@ impl App {
                 presets_open: false,
                 preset_name: String::new(),
             },
+            ha_link: None,
             media: MediaUiState {
                 state: MediaState::default(),
                 pending: false,
@@ -929,6 +939,15 @@ impl App {
                 capture: false,
                 capture_since: None,
                 filter: String::new(),
+                launch_filter: String::new(),
+                open: std::env::var("SDW_BIND").ok().map(|v| {
+                    let (id, kind) = v.split_once(':').unwrap_or((v.as_str(), "launch"));
+                    let kind = match kind {
+                        "shell" => crate::binds::ActionKind::Shell,
+                        _ => crate::binds::ActionKind::Launch,
+                    };
+                    (id.to_string(), kind)
+                }),
             },
             update: UpdateState {
                 info: None,
@@ -2247,15 +2266,148 @@ impl App {
         }
     }
 
+    /// A Home Assistant connection kept by the deck itself. When an address
+    /// and a token are set, the deck talks to Home Assistant directly and does
+    /// not need the computer at all.
+    pub fn ha_direct(&self) -> Option<sdw_core::ha::HaClient> {
+        if self.cfg.ha_url.trim().is_empty() || self.cfg.ha_token.trim().is_empty() {
+            return None;
+        }
+        Some(sdw_core::ha::HaClient::new(
+            &self.cfg.ha_url,
+            &self.cfg.ha_token,
+        ))
+    }
+
+    /// What the Home Assistant page shows: the deck's own connection when it
+    /// has one, otherwise the computer's.
+    pub fn ha_status(&self) -> sdw_core::model::HaStatus {
+        if let Some(direct) = self.ha_direct() {
+            let error = if self.ha.error.is_empty() {
+                self.ha.stale_error.clone()
+            } else {
+                self.ha.error.clone()
+            };
+            return sdw_core::model::HaStatus {
+                configured: true,
+                connected: self.ha.connected,
+                url: direct.base().to_string(),
+                entities: self.ha.entities.len(),
+                last_sync_ms: 0,
+                error,
+                favorites: Vec::new(),
+            };
+        }
+        self.status
+            .as_ref()
+            .map(|s| s.ha.clone())
+            .unwrap_or_default()
+    }
+
     pub fn load_ha(&mut self) {
-        if self.ha.pending || self.client().is_none() {
+        if self.ha.pending {
             return;
         }
         self.ha.pending = true;
         self.ha.last_fetch = Instant::now();
-        if let Some(c) = self.client() {
-            self.spawn(move || Task::Ha(c.ha_states().map_err(|e| e.to_string())));
+        if let Some(direct) = self.ha_direct() {
+            self.spawn(move || {
+                let result = direct.snapshot().map(|mut states| {
+                    states.connected = true;
+                    states.fetched_ms = sdw_core::model::now_ms();
+                    states
+                });
+                Task::Ha(result)
+            });
+            return;
         }
+        match self.client() {
+            Some(c) => {
+                self.spawn(move || Task::Ha(c.ha_states().map_err(|e| e.to_string())));
+            }
+            None => self.ha.pending = false,
+        }
+    }
+
+    /// Open the temporary page that takes the address and token from a phone.
+    pub fn start_ha_link(&mut self) {
+        if self.ha_link.is_some() {
+            return;
+        }
+        match crate::ha_link::HaLink::start(self.lang) {
+            Ok(link) => {
+                self.ha_link = Some(link);
+            }
+            Err(e) => self.toast(format!("{}: {e}", t!(self.lang, "страница", "page")), false),
+        }
+    }
+
+    pub fn cancel_ha_link(&mut self) {
+        if let Some(mut link) = self.ha_link.take() {
+            link.stop();
+        }
+    }
+
+    /// Forget the deck's own Home Assistant connection, so the form and the
+    /// phone page are reachable again.
+    pub fn forget_ha(&mut self) {
+        self.cfg.ha_url.clear();
+        self.cfg.ha_token.clear();
+        self.save();
+        self.ha.entities.clear();
+        self.ha.areas.clear();
+        self.ha.views.clear();
+        self.ha.connected = false;
+        self.ha.loaded = false;
+        self.ha.error.clear();
+        self.ha.stale_error.clear();
+        self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
+    }
+
+    /// Take the answer from the phone page, if it is there.
+    pub fn poll_ha_link(&mut self) {
+        if self.ha_link.is_none() {
+            return;
+        }
+        if self.ha_link.as_ref().is_some_and(|link| link.expired()) {
+            if let Some(mut link) = self.ha_link.take() {
+                link.stop();
+            }
+            self.toast(
+                t!(
+                    self.lang,
+                    "страница ввода токена истекла",
+                    "the token page has expired"
+                ),
+                false,
+            );
+            return;
+        }
+        let Some((url, token)) = self.ha_link.as_mut().and_then(|link| link.take()) else {
+            return;
+        };
+        if let Some(mut link) = self.ha_link.take() {
+            link.stop();
+        }
+        self.cfg.ha_url = url;
+        self.cfg.ha_token = token;
+        self.save();
+        self.ha.entities.clear();
+        self.ha.areas.clear();
+        self.ha.views.clear();
+        self.ha.connected = false;
+        self.ha.loaded = false;
+        self.ha.error.clear();
+        self.ha.stale_error.clear();
+        self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
+        self.toast(
+            t!(
+                self.lang,
+                "home assistant подключён",
+                "home assistant connected"
+            ),
+            true,
+        );
     }
 
     /// Read every store catalogue in one worker. Network work never runs on
@@ -3099,6 +3251,17 @@ impl App {
     }
 
     pub fn ha_call(&mut self, call: HaCall) {
+        if let Some(direct) = self.ha_direct() {
+            self.spawn(move || {
+                Task::Msg(
+                    direct
+                        .call(&call)
+                        .map(|_| String::new())
+                        .map_err(|e| e.to_string()),
+                )
+            });
+            return;
+        }
         let Some(c) = self.client() else {
             return;
         };
@@ -3472,6 +3635,12 @@ impl App {
         if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(4)
         {
             self.load_ha();
+        }
+        if self.page == Page::HomeAssistant {
+            self.poll_ha_link();
+        } else {
+            // The page belongs to the card that opened it; leaving closes it.
+            self.cancel_ha_link();
         }
         if self.page == Page::Media {
             self.poll_media();

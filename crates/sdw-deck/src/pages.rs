@@ -4927,12 +4927,39 @@ fn ha_card(
         });
 }
 
+/// Draw a QR code in the Grid language: a white field, black square modules,
+/// no rounding. The page it points to carries a random path, so a photo of the
+/// screen is useless once the card is closed.
+fn qr_code(ui: &mut Ui, text: &str, side: f32) {
+    let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else {
+        return;
+    };
+    let n = code.width();
+    let colors = code.to_colors();
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, CornerRadius::ZERO, Color32::WHITE);
+    let pad = 8.0;
+    let module = (side - pad * 2.0) / n as f32;
+    let origin = rect.min + Vec2::splat(pad);
+    for y in 0..n {
+        for x in 0..n {
+            if colors[y * n + x] == qrcode::Color::Dark {
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        origin + Vec2::new(x as f32 * module, y as f32 * module),
+                        Vec2::splat(module),
+                    ),
+                    CornerRadius::ZERO,
+                    Color32::BLACK,
+                );
+            }
+        }
+    }
+}
+
 pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
-    let ha = app
-        .status
-        .as_ref()
-        .map(|s| s.ha.clone())
-        .unwrap_or_default();
+    let ha = app.ha_status();
     let favorites = ha.favorites.clone();
     let categories = app.ha.categories.clone();
     page_title(
@@ -4967,6 +4994,13 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 {
                     app.ha.last_fetch =
                         std::time::Instant::now() - std::time::Duration::from_secs(60);
+                }
+                // The deck keeps its own connection; offer a way back to the
+                // form when the address or the token changed.
+                if app.ha_direct().is_some()
+                    && theme::ghost(ui, t!(app.lang, "изменить", "change"), t).clicked()
+                {
+                    app.forget_ha();
                 }
             });
         });
@@ -5012,6 +5046,56 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .strong()
                 .color(t.strong),
             );
+            // While the phone page is open the form steps back: the token is
+            // being typed somewhere else, and two ways in at once would only
+            // confuse.
+            if app.ha_link.is_some() {
+                ui.label(
+                    RichText::new(t!(
+                        app.lang,
+                        "откройте страницу на телефоне или компьютере и вставьте токен — дека подхватит его сама.",
+                        "open the page on your phone or computer and paste the token — the deck takes it from there."
+                    ))
+                    .size(13.0)
+                    .color(t.muted),
+                );
+                let url = app
+                    .ha_link
+                    .as_ref()
+                    .map(|link| link.url.clone())
+                    .unwrap_or_default();
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    qr_code(ui, &url, 168.0);
+                    ui.add_space(14.0);
+                    ui.vertical(|ui| {
+                        ui.label(theme::hud(t!(app.lang, "адрес", "address"), t.faint));
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(&url)
+                                    .family(FontFamily::Monospace)
+                                    .size(13.0)
+                                    .color(t.strong),
+                            )
+                            .truncate(),
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(
+                                RichText::new(t!(app.lang, "ждём токен", "waiting for the token"))
+                                    .size(12.5)
+                                    .color(t.muted),
+                            );
+                        });
+                        ui.add_space(8.0);
+                        if theme::ghost(ui, t!(app.lang, "отмена", "cancel"), t).clicked() {
+                            app.cancel_ha_link();
+                        }
+                    });
+                });
+                return;
+            }
             ui.label(
                 RichText::new(t!(
                     app.lang,
@@ -5046,24 +5130,42 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             if !app.ha.error.is_empty() {
                 ui.label(RichText::new(&app.ha.error).size(12.5).color(t.bad));
             }
-            if theme::primary(ui, t!(app.lang, "подключить", "connect"), t).clicked() {
-                let url = app.ha.url.trim().to_string();
-                let token = app.ha.token.trim().to_string();
-                if let Some(c) = app.client() {
-                    let lang = app.lang;
-                    app.spawn(move || {
-                        Task::Msg(
-                            c.ha_config(&url, &token, &[])
-                                .map(|_| {
-                                    t!(lang, "home assistant подключён", "home assistant connected")
-                                        .to_string()
-                                })
-                                .map_err(|e| e.to_string()),
-                        )
-                    });
+            ui.horizontal(|ui| {
+                if theme::primary(ui, t!(app.lang, "подключить", "connect"), t).clicked()
+                {
+                    let url = app.ha.url.trim().to_string();
+                    let token = app.ha.token.trim().to_string();
+                    if !url.is_empty() && !token.is_empty() {
+                        // The deck keeps the connection itself: no computer
+                        // needed, and the token never leaves this device.
+                        app.cfg.ha_url = url;
+                        app.cfg.ha_token = token;
+                        app.ha.token.clear();
+                        app.ha.loaded = false;
+                        app.ha.connected = false;
+                        app.ha.last_fetch =
+                            std::time::Instant::now() - std::time::Duration::from_secs(60);
+                        app.save();
+                        app.toast(
+                            t!(
+                                app.lang,
+                                "home assistant подключён",
+                                "home assistant connected"
+                            ),
+                            true,
+                        );
+                    }
                 }
-                app.last_status = std::time::Instant::now() - std::time::Duration::from_secs(5);
-            }
+                if theme::ghost(
+                    ui,
+                    t!(app.lang, "ввести с телефона", "enter from a phone"),
+                    t,
+                )
+                .clicked()
+                {
+                    app.start_ha_link();
+                }
+            });
         });
         return;
     }

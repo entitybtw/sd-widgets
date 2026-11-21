@@ -64,6 +64,17 @@ impl HaClient {
     }
 
     fn get(&self, path: &str) -> Result<Value, String> {
+        let (status, text) = self.get_text(path)?;
+        if status != 200 {
+            return Err(format!(
+                "Home Assistant: HTTP {status}: {}",
+                crate::util::truncate(&text, 240)
+            ));
+        }
+        serde_json::from_str(&text).map_err(|e| e.to_string())
+    }
+
+    fn get_text(&self, path: &str) -> Result<(u16, String), String> {
         let mut r = self
             .agent
             .get(&format!("{}{}", self.base, path))
@@ -72,13 +83,7 @@ impl HaClient {
             .map_err(|e| e.to_string())?;
         let status = r.status().as_u16();
         let text = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
-        if status != 200 {
-            return Err(format!(
-                "Home Assistant: HTTP {status}: {}",
-                crate::util::truncate(&text, 240)
-            ));
-        }
-        serde_json::from_str(&text).map_err(|e| e.to_string())
+        Ok((status, text))
     }
 
     pub fn ping(&self) -> Result<String, String> {
@@ -91,6 +96,10 @@ impl HaClient {
 
     /// Render a Home Assistant template. Used for area (room) names, which the
     /// plain REST API does not expose.
+    ///
+    /// `/api/template` lives on the front end, so it is not there on every
+    /// installation and a 404 for it is normal: the caller then keeps the
+    /// rooms as plain entities instead of failing the whole fetch.
     pub fn template(&self, tpl: &str) -> Result<String, String> {
         let mut r = self
             .agent
