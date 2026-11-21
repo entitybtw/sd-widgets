@@ -183,67 +183,142 @@ fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui,
             app,
             t,
-            Vec2::new(
-                ui.available_width().min(420.0),
-                app.cfg.viz.height.clamp(10, 48) as f32,
-            ),
+            crate::viz::size(app, Some(Vec2::new(ui.available_width().min(420.0), 60.0))),
         );
         ui.add_space(6.0);
+        let mut changed = false;
         ui.horizontal_wrapped(|ui| {
-            if theme::switch(ui, &mut app.cfg.viz.nav, t).changed() {
-                app.save_soon();
+            for (on, ru, en) in [
+                (&mut app.cfg.viz.nav, "в шапке", "in the top bar"),
+                (&mut app.cfg.viz.shade, "в шторе", "in the shade"),
+                (&mut app.cfg.viz.clock, "в часах", "on the clock"),
+                (&mut app.cfg.viz.media, "по медиа с пк", "from pc media"),
+            ] {
+                changed |= theme::switch(ui, on, t).changed();
+                ui.label(
+                    RichText::new(t!(app.lang, ru, en))
+                        .size(12.5)
+                        .color(t.muted),
+                );
+                ui.add_space(10.0);
             }
+            ui.add_space(4.0);
+            changed |= theme::switch(ui, &mut app.cfg.viz.mirror, t).changed();
             ui.label(
-                RichText::new(t!(app.lang, "в шапке", "in the top bar"))
+                RichText::new(t!(app.lang, "зеркально", "mirrored"))
                     .size(12.5)
                     .color(t.muted),
             );
-            ui.add_space(14.0);
-            if theme::switch(ui, &mut app.cfg.viz.shade, t).changed() {
-                app.save_soon();
-            }
+            ui.add_space(10.0);
+            changed |= theme::switch(ui, &mut app.cfg.viz.peak, t).changed();
             ui.label(
-                RichText::new(t!(app.lang, "в шторе", "in the shade"))
-                    .size(12.5)
-                    .color(t.muted),
-            );
-            ui.add_space(14.0);
-            if theme::switch(ui, &mut app.cfg.viz.media, t).changed() {
-                app.save_soon();
-            }
-            ui.label(
-                RichText::new(t!(app.lang, "по медиа с пк", "from pc media"))
+                RichText::new(t!(app.lang, "пик", "peak"))
                     .size(12.5)
                     .color(t.muted),
             );
         });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                RichText::new(t!(app.lang, "вид", "shape"))
+                    .size(12.5)
+                    .color(t.faint),
+            );
+            for (key, ru, en) in [
+                ("bars", "полоски", "bars"),
+                ("dots", "точки", "dots"),
+                ("wave", "волна", "wave"),
+            ] {
+                let active = app.cfg.viz.style == key;
+                let resp = ui.add(
+                    egui::Button::new(
+                        RichText::new(t!(app.lang, ru, en))
+                            .size(12.5)
+                            .color(if active { t.strong } else { t.muted }),
+                    )
+                    .fill(if active { t.accent_soft } else { t.well })
+                    .stroke(Stroke::new(1.0, if active { t.accent } else { t.line }))
+                    .corner_radius(0.0)
+                    .min_size(Vec2::new(0.0, 30.0)),
+                );
+                if resp.clicked() && !active {
+                    app.cfg.viz.style = key.to_string();
+                    changed = true;
+                }
+            }
+            ui.add_space(10.0);
+            let mut raw = app.cfg.viz.color.clone();
+            if color_field(ui, t, &mut raw) {
+                app.cfg.viz.color = raw;
+                changed = true;
+            }
+            ui.label(
+                RichText::new(t!(app.lang, "цвет", "colour"))
+                    .size(12.5)
+                    .color(t.muted),
+            );
+            if !app.cfg.viz.color.trim().is_empty()
+                && theme::ghost(ui, t!(app.lang, "сбросить цвет", "reset colour"), t).clicked()
+            {
+                app.cfg.viz.color.clear();
+                changed = true;
+            }
+        });
         ui.add_space(2.0);
         let mut bars = app.cfg.viz.bars as u32;
-        if theme::slider_u32(ui, t, t!(app.lang, "полосок", "bars"), &mut bars, 6..=24) {
-            app.cfg.viz.bars = bars.clamp(6, 24) as u8;
-            app.save_soon();
+        if theme::slider_u32(ui, t, t!(app.lang, "полосок", "bars"), &mut bars, 4..=24) {
+            app.cfg.viz.bars = bars.clamp(4, 24) as u8;
+            changed = true;
+        }
+        let mut width = app.cfg.viz.width as u32;
+        if theme::slider_u32(ui, t, t!(app.lang, "ширина", "width"), &mut width, 40..=400) {
+            app.cfg.viz.width = width.clamp(40, 400) as u16;
+            changed = true;
         }
         let mut height = app.cfg.viz.height as u32;
+        if theme::slider_u32(ui, t, t!(app.lang, "высота", "height"), &mut height, 6..=48) {
+            app.cfg.viz.height = height.clamp(6, 48) as u8;
+            changed = true;
+        }
+        let mut gap = app.cfg.viz.gap as u32;
+        if theme::slider_u32(ui, t, t!(app.lang, "промежуток", "gap"), &mut gap, 0..=8) {
+            app.cfg.viz.gap = gap.min(8) as u8;
+            changed = true;
+        }
+        let mut opacity = app.cfg.viz.opacity as u32;
         if theme::slider_u32(
             ui,
             t,
-            t!(app.lang, "высота", "height"),
-            &mut height,
-            10..=48,
+            t!(app.lang, "непрозрачность", "opacity"),
+            &mut opacity,
+            20..=100,
         ) {
-            app.cfg.viz.height = height.clamp(10, 48) as u8;
+            app.cfg.viz.opacity = opacity.clamp(20, 100) as u8;
+            changed = true;
+        }
+        if changed {
             app.save_soon();
         }
         theme::small(
             ui,
             t!(
                 app.lang,
-                "звук с пк рисуется по настоящим сэмплам, а трек без звука на деке — по громкости и названию.",
-                "sound on the deck uses the real samples; a track that stays on the pc moves with its volume and title."
+                "звук с пк рисуется по настоящим сэмплам, а трек без звука на деке — по громкости и названию. в шапке полоса сжимается сама, если экран маленький.",
+                "sound on the deck uses the real samples; a track that stays on the pc moves with its volume and title. in the top bar the strip shrinks when the window is small."
             ),
             t.faint,
         );
     });
+}
+
+/// `#rrggbb` as a swatch that opens the usual picker; empty means "theme".
+fn color_field(ui: &mut Ui, t: &Tokens, raw: &mut String) -> bool {
+    let mut current = theme::parse_color(raw.trim()).unwrap_or(t.accent);
+    if ui.color_edit_button_srgba(&mut current).changed() {
+        *raw = format!("#{:02x}{:02x}{:02x}", current.r(), current.g(), current.b());
+        return true;
+    }
+    false
 }
 
 fn source_card(app: &mut App, ui: &mut Ui, t: &Tokens, running: bool) {

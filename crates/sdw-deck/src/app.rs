@@ -3470,35 +3470,6 @@ impl App {
         match action {
             Action::None => {}
             Action::Page { page } => self.set_page(Page::from_key(page)),
-            Action::Launch { target } => {
-                // The editor picks this target from the computer's own
-                // catalogue, so it must start there. Running it locally ran
-                // `gtk-launch` on the deck and looked like a dead bind.
-                let Some(c) = self.client() else {
-                    self.toast(t!(self.lang, "нет компьютера", "no computer"), false);
-                    return;
-                };
-                let target = target.trim().to_string();
-                if target.is_empty() {
-                    self.toast(t!(self.lang, "пустое приложение", "empty app name"), false);
-                    return;
-                }
-                self.toast(t!(self.lang, "выполняется…", "running…").to_string(), true);
-                let lang = self.lang;
-                self.spawn(move || {
-                    Task::Msg(
-                        launch_on_computer(&c, &target)
-                            .map(|name| {
-                                format!(
-                                    "{}: {}",
-                                    sdw_core::util::truncate(&name, 48),
-                                    t!(lang, "запущено", "started")
-                                )
-                            })
-                            .map_err(|e| e.to_string()),
-                    )
-                });
-            }
             Action::Remote { host, command } => {
                 let Some(c) = self.client_for(host.as_deref()) else {
                     self.toast(t!(self.lang, "нет компьютера", "no computer"), false);
@@ -3568,12 +3539,11 @@ impl App {
                 });
             }
             other => {
-                // Shell and the device controls are the deck's own; an app is
-                // launched on the computer above. A shell command can run for
-                // seconds, and doing that on the UI thread froze the whole
+                // Local actions spawn processes and a shell command can run
+                // for seconds; doing that on the UI thread froze the whole
                 // deck, so a bind looked like the app had hung. Tell the user
                 // it started, then report the result when the thread is done.
-                if matches!(other, Action::Shell { .. }) {
+                if matches!(other, Action::Shell { .. } | Action::Launch { .. }) {
                     self.toast(t!(self.lang, "выполняется…", "running…").to_string(), true);
                 }
                 let action = other.clone();
@@ -4734,12 +4704,16 @@ impl App {
             }
             if self.cfg.viz.enabled && self.cfg.viz.nav {
                 ui.add_space(12.0);
-                crate::viz::ui(
-                    ui,
-                    self,
-                    t,
-                    egui::vec2(124.0, self.cfg.viz.height.clamp(10, 48) as f32),
-                );
+                // The right-hand group takes its own width first; the strip
+                // takes what is left of the row and never grows over the
+                // clock, the language and the bell.
+                let wanted = crate::viz::size(self, None).x;
+                let room = (ui.available_size().x - self.shortcut_width(ui, t, wanted)).max(0.0);
+                if room >= 24.0 {
+                    let slot =
+                        crate::viz::size(self, Some(egui::vec2(room, ui.available_size().y)));
+                    crate::viz::ui(ui, self, t, slot);
+                }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Notifications are one press away on every page, not only in
@@ -4843,8 +4817,10 @@ impl App {
                     );
                 }
                 if self.cfg.show_clock {
+                    // A plain time, not the date: at the largest scale the
+                    // row is short, and this must fit beside the strip.
                     ui.label(
-                        RichText::new(&self.clock)
+                        RichText::new(self.clock.clone())
                             .family(FontFamily::Monospace)
                             .size(12.5)
                             .color(t.faint),
@@ -4852,6 +4828,63 @@ impl App {
                 }
             });
         });
+    }
+
+    /// How much of the top row the right-hand shortcuts need: the bell, the
+    /// three glyph buttons, the language, the battery and the clock, laid out
+    /// right to left exactly as [`Self::top_bar`] adds them. The width is
+    /// measured with the real widgets so a theme font, a language toggle or a
+    /// battery figure cannot be left out; `spare` is the strip's width, added
+    /// only when it is drawn.
+    fn shortcut_width(&self, ui: &Ui, t: &Tokens, spare: f32) -> f32 {
+        let mut ui = egui::Ui::new(
+            ui.ctx().clone(),
+            egui::Id::new(("deck-top-measure", self.page_epoch)),
+            egui::UiBuilder::new()
+                .max_rect(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(10_000.0, 40.0),
+                ))
+                .layout(Layout::right_to_left(Align::Center)),
+        );
+        let width = ui.available_width();
+        let chip = |text: RichText| {
+            egui::Button::new(text)
+                .fill(Color32::TRANSPARENT)
+                .stroke(Stroke::NONE)
+                .corner_radius(CornerRadius::ZERO)
+        };
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.add(chip(theme::icon(theme::icon::NOTIFICATIONS, 16.0, t.faint)));
+        ui.spacing_mut().item_spacing.x = 4.0;
+        for glyph in [
+            theme::icon::SETTINGS,
+            theme::icon::BINDS,
+            theme::icon::LIGHT,
+        ] {
+            ui.add(chip(theme::icon(glyph, 16.0, t.faint)));
+        }
+        ui.add(chip(
+            RichText::new(self.lang.code().to_uppercase())
+                .family(FontFamily::Monospace)
+                .size(11.0),
+        ));
+        if self.battery.is_some() {
+            ui.label(
+                RichText::new("100%")
+                    .family(FontFamily::Monospace)
+                    .size(11.5),
+            );
+        }
+        if self.cfg.show_clock {
+            ui.label(
+                RichText::new("00:00")
+                    .family(FontFamily::Monospace)
+                    .size(12.5),
+            );
+        }
+        let used = (width - ui.available_width()).max(0.0);
+        used + if spare > 0.0 { spare + 12.0 } else { 0.0 }
     }
 
     /// Minimal floating dock with one glyph per page.
@@ -5939,57 +5972,6 @@ pub fn ha_domain_action(domain: &str) -> &'static str {
         "scene" | "script" | "button" => "turn_on",
         _ => "toggle",
     }
-}
-
-/// Start an application on the paired computer.
-///
-/// The normal path is the catalogue id the bind editor picked. A bind typed by
-/// hand may hold a `.desktop` name, a program name or a `steam://` link; those
-/// go through the daemon's declared remote commands, still on the computer.
-/// Nothing falls back to the deck: an app bind that runs locally is the bug
-/// this function exists to prevent.
-fn launch_on_computer(client: &Client, target: &str) -> Result<String, String> {
-    match client.app_launch(target) {
-        Ok(_) => Ok(target.to_string()),
-        Err(first) => {
-            let Some(command) = remote_launch_command(target) else {
-                return Err(first.message);
-            };
-            client
-                .remote(&command)
-                .map(|_| target.to_string())
-                .map_err(|e| {
-                    if e.message.is_empty() {
-                        first.message
-                    } else {
-                        e.message
-                    }
-                })
-        }
-    }
-}
-
-/// The remote command that starts a typed target, when it is one the daemon
-/// accepts. The daemon validates the same shape again.
-fn remote_launch_command(target: &str) -> Option<String> {
-    if target.is_empty() || target.len() > 200 {
-        return None;
-    }
-    if target.starts_with("http://")
-        || target.starts_with("https://")
-        || target.starts_with("steam://")
-    {
-        return Some(format!("open:{target}"));
-    }
-    let name = target.strip_suffix(".desktop").unwrap_or(target);
-    if !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-    {
-        return Some(format!("launch:{name}"));
-    }
-    None
 }
 
 pub fn notification_color(t: &Tokens, n: &Notification) -> Color32 {

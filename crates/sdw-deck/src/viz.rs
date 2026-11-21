@@ -11,12 +11,13 @@
 
 use crate::app::App;
 use crate::theme::Tokens;
-use eframe::egui::{self, Rect, Sense, Ui, Vec2};
+use eframe::egui::{self, Color32, Rect, Sense, Ui, Vec2};
+use sdw_core::model::VizCfg;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How many bands the analyzer produces. The visible bar count is a setting
-/// between 6 and this; the bands are grouped when fewer are shown.
+/// between 4 and this; the bands are grouped when fewer are shown.
 pub const BANDS: usize = 24;
 
 /// Centre frequencies from bass to treble, roughly logarithmic.
@@ -98,7 +99,7 @@ pub fn feed(shared: &Shared, pcm: &[u8], rate: u32) {
 /// The bars a player would show right now: real PCM first, the computer's
 /// track second, silence last.
 fn levels(app: &App, time: f32) -> Vec<f32> {
-    let bars = app.cfg.viz.bars.clamp(6, BANDS as u8) as usize;
+    let bars = app.cfg.viz.bars.clamp(4, BANDS as u8) as usize;
     let live = app
         .viz
         .lock()
@@ -122,7 +123,7 @@ fn levels(app: &App, time: f32) -> Vec<f32> {
 /// Group the 24 analyzer bands into `n` visible bars by taking the loudest
 /// member, so a narrow visible bar never loses a peak between two bands.
 fn group(bands: &[f32; BANDS], n: usize) -> Vec<f32> {
-    let n = n.clamp(2, BANDS);
+    let n = n.clamp(1, BANDS);
     (0..n)
         .map(|i| {
             let from = i * BANDS / n;
@@ -160,22 +161,77 @@ fn synthetic(app: &App, time: f32) -> [f32; BANDS] {
     out
 }
 
-/// Draw the strip. `size` is the slot the caller reserved; the bars always
-/// fill it from the hairline baseline up.
+/// The strip's footprint: the width and height the user chose. `avail` lets a
+/// caller hand in the slot it actually has (the top bar), so a wide strip is
+/// shrunk there instead of pushing the shortcuts off the window.
+pub fn size(app: &App, avail: Option<Vec2>) -> Vec2 {
+    let cfg = &app.cfg.viz;
+    let mut w = cfg.width.clamp(40, 400) as f32;
+    let h = cfg.height.clamp(6, 48) as f32;
+    if let Some(avail) = avail {
+        if avail.x.is_finite() && avail.x > 0.0 && avail.y.is_finite() && avail.y > 0.0 {
+            w = w.min(avail.x);
+            // A very small scale leaves a few points in the top bar; never
+            // ask for more than that, or the row would grow past the window.
+            return Vec2::new(w.max(8.0).min(avail.x), h.min(avail.y.max(4.0)));
+        }
+    }
+    Vec2::new(w.max(8.0), h)
+}
+
+/// The strip itself. `size` is the slot the caller reserved; the bars fill it
+/// from the hairline baseline up, mirrored around the middle when asked.
 pub fn ui(ui: &mut Ui, app: &App, t: &Tokens, size: Vec2) {
     if !app.cfg.viz.enabled {
         return;
     }
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let time = ui.input(|i| i.time) as f32;
-    draw(ui, t, rect, &levels(app, time));
+    paint(ui, app, t, rect);
 }
 
-fn draw(ui: &Ui, t: &Tokens, rect: Rect, bars: &[f32]) {
+/// Paint the strip into a rect the caller already owns. The clock draws it
+/// over its own canvas this way, without moving the page's layout.
+pub fn paint(ui: &Ui, app: &App, t: &Tokens, rect: Rect) {
+    if !app.cfg.viz.enabled || rect.width() < 8.0 || rect.height() < 4.0 {
+        return;
+    }
+    let time = ui.input(|i| i.time) as f32;
+    // The custom colour gets a dimmed partner for the quiet bars; the theme
+    // accent keeps its own soft tone.
+    let (hot, soft) = if app.cfg.viz.color.trim().is_empty() {
+        (t.accent, t.accent_soft)
+    } else {
+        let c = accent(app, t);
+        (c, c.gamma_multiply(0.6))
+    };
+    let lv = levels(app, time);
+    eprintln!(
+        "VZ paint rect={:?} media avail={} playing={} first={:?}",
+        rect,
+        app.media.state.available,
+        app.media.state.playing(),
+        lv.first()
+    );
+    draw(ui, t, rect, &lv, &app.cfg.viz, hot, soft);
+}
+
+/// The accent the bars use: the user's own colour, or the theme accent.
+fn accent(app: &App, t: &Tokens) -> Color32 {
+    crate::theme::parse_color(app.cfg.viz.color.trim()).unwrap_or(t.accent)
+}
+
+fn with_alpha(c: Color32, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha)
+}
+
+fn draw(ui: &Ui, t: &Tokens, rect: Rect, bars: &[f32], cfg: &VizCfg, hot: Color32, soft: Color32) {
     if rect.width() < 8.0 || rect.height() < 4.0 || bars.is_empty() {
         return;
     }
     let painter = ui.painter_at(rect);
+    let alpha = (cfg.opacity.clamp(20, 100) as f32 / 100.0 * 255.0) as u8;
+    let hot = with_alpha(hot, alpha);
+    let soft = with_alpha(soft, alpha);
     let base = rect.bottom() - 1.0;
     // The baseline is always there: the strip never collapses or jumps when
     // the music stops.
@@ -184,32 +240,96 @@ fn draw(ui: &Ui, t: &Tokens, rect: Rect, bars: &[f32]) {
         0.0,
         t.line,
     );
-    let gap = 2.0;
-    let slot = (rect.width() - gap * (bars.len().saturating_sub(1)) as f32) / bars.len() as f32;
+    let gap = (cfg.gap.min(8) as f32).min(rect.width() / 8.0);
+    let style = cfg.style.as_str();
+    let mirror = cfg.mirror && style != "wave";
+    // A mirrored strip grows up and down from the middle line.
+    let mid = rect.center().y;
+    let full = if mirror {
+        (rect.height() * 0.5 - 1.0).max(1.0)
+    } else {
+        (rect.height() - 2.0).max(1.0)
+    };
+    let n = bars.len().max(1);
+    let slot = (rect.width() - gap * (n.saturating_sub(1)) as f32) / n as f32;
     if slot < 1.0 {
         return;
     }
+    if style == "wave" {
+        // A hairline through the tips turns them into one line of sound.
+        let pts: Vec<egui::Pos2> = bars
+            .iter()
+            .enumerate()
+            .map(|(i, level)| {
+                let x = rect.left() + i as f32 * (slot + gap) + slot * 0.5;
+                egui::pos2(x, base - full * level.clamp(0.0, 1.0))
+            })
+            .collect();
+        if pts.len() > 1 {
+            painter.add(egui::Shape::line(pts, egui::Stroke::new(1.0, hot)));
+        }
+    }
     for (i, level) in bars.iter().enumerate() {
         let x = rect.left() + i as f32 * (slot + gap);
-        let h = (rect.height() - 2.0) * level.clamp(0.0, 1.0);
-        if h < 1.0 {
+        let level = level.clamp(0.0, 1.0);
+        let h = full * level;
+        if h < 1.0 && style != "wave" {
             continue;
         }
-        painter.rect_filled(
-            Rect::from_min_size(egui::pos2(x, base - h), Vec2::new(slot, h)),
-            0.0,
-            if *level > 0.72 {
-                t.accent
+        let color = if level > 0.72 { hot } else { soft };
+        if style == "dots" {
+            let side = slot.max(1.0).min(8.0);
+            let top = (base - h - side).clamp(rect.top(), base - side);
+            painter.rect_filled(
+                Rect::from_min_size(egui::pos2(x, top), Vec2::new(side, side)),
+                0.0,
+                color,
+            );
+            if mirror {
+                let below = (mid + h).min(base - side);
+                painter.rect_filled(
+                    Rect::from_min_size(egui::pos2(x, below), Vec2::new(side, side)),
+                    0.0,
+                    color,
+                );
+            }
+            continue;
+        }
+        if style != "wave" {
+            let (y, hh) = if mirror {
+                (mid - h.round(), h)
             } else {
-                t.accent_soft
-            },
-        );
-        // A one-point cap makes even a quiet bar read as a bar.
-        painter.rect_filled(
-            Rect::from_min_size(egui::pos2(x, base - h), Vec2::new(slot, 1.0)),
-            0.0,
-            t.accent,
-        );
+                (base - h, h)
+            };
+            painter.rect_filled(
+                Rect::from_min_size(egui::pos2(x, y), Vec2::new(slot, hh)),
+                0.0,
+                color,
+            );
+            if mirror {
+                painter.rect_filled(
+                    Rect::from_min_size(egui::pos2(x, mid), Vec2::new(slot, h)),
+                    0.0,
+                    color,
+                );
+            }
+        }
+        if cfg.peak && style != "wave" {
+            // A one-point cap makes even a quiet bar read as a bar.
+            let cap = if mirror { mid - h.round() } else { base - h };
+            painter.rect_filled(
+                Rect::from_min_size(egui::pos2(x, cap), Vec2::new(slot, 1.0)),
+                0.0,
+                hot,
+            );
+            if mirror {
+                painter.rect_filled(
+                    Rect::from_min_size(egui::pos2(x, mid + h - 1.0), Vec2::new(slot, 1.0)),
+                    0.0,
+                    hot,
+                );
+            }
+        }
     }
 }
 

@@ -1885,6 +1885,8 @@ pub struct ClockCfg {
     pub follow_theme: bool,
     /// One Material symbol shown in the clock's corner, or empty for none.
     pub icon: String,
+    /// Draw the sound visualizer on the face, bottom-left.
+    pub viz: bool,
 }
 
 impl Default for ClockCfg {
@@ -1911,8 +1913,44 @@ impl Default for ClockCfg {
             font: "auto".into(),
             follow_theme: true,
             icon: String::new(),
+            viz: false,
         }
     }
+}
+
+/// Material symbols offered as the clock badge, as `(glyph, ru, en)`. The
+/// deck's picker paints them and the config migration resolves the readable
+/// names that older presets stored, so both read one list.
+pub const CLOCK_ICONS: [(&str, &str, &str); 12] = [
+    ("\u{e8b5}", "часы", "clock"),
+    ("\u{e81a}", "солнце", "sun"),
+    ("\u{ef5e}", "луна", "moon"),
+    ("\u{f09a}", "звезда", "star"),
+    ("\u{e90f}", "идея", "idea"),
+    ("\u{e405}", "музыка", "music"),
+    ("\u{e86f}", "код", "code"),
+    ("\u{ea28}", "игры", "games"),
+    ("\u{f0d3}", "человек", "person"),
+    ("\u{e310}", "наушники", "headphones"),
+    ("\u{e9b2}", "дом", "home"),
+    ("\u{e65f}", "сцена", "scene"),
+];
+
+/// The Material symbol held by [`ClockCfg::icon`]. A readable name that an old
+/// preset stored ("star", "звезда") resolves to its glyph, so the small badge
+/// never paints the letters of the name; an empty or unknown value has no icon.
+/// A single character is taken as a glyph the picker did not know about.
+pub fn clock_icon(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    for (glyph, ru, en) in CLOCK_ICONS {
+        if value == glyph || value.eq_ignore_ascii_case(en) || value == ru {
+            return Some(glyph);
+        }
+    }
+    (value.chars().count() == 1).then_some(value)
 }
 
 /// How the Deck receives PC audio. The confirmation count is a deck-side
@@ -1981,13 +2019,30 @@ pub struct VizCfg {
     pub nav: bool,
     /// Show the bars in the pull-down control centre.
     pub shade: bool,
+    /// Paint the bars on the clock face as well.
+    pub clock: bool,
     /// Animate when the computer reports media even if its sound is not on
     /// the deck: the visualizer then follows the track, not the cable.
     pub media: bool,
-    /// How many bars, 6..=24.
+    /// How many bars, 4..=24.
     pub bars: u8,
-    /// Height of the strip in points, 10..=48.
+    /// Height of the strip in points, 6..=48.
     pub height: u8,
+    /// Width of the strip in points, 40..=400. The top bar shrinks it when the
+    /// window is narrow instead of letting it push the shortcuts aside.
+    pub width: u16,
+    /// Space between the bars in points, 0..=8.
+    pub gap: u8,
+    /// Bar opacity, 20..=100 percent.
+    pub opacity: u8,
+    /// bars, dots or wave
+    pub style: String,
+    /// Mirror the bars around the centre line.
+    pub mirror: bool,
+    /// A one-point cap on top of each bar.
+    pub peak: bool,
+    /// Accent colour, `#rrggbb`. Empty means "take the theme accent".
+    pub color: String,
 }
 
 impl Default for VizCfg {
@@ -1996,9 +2051,17 @@ impl Default for VizCfg {
             enabled: true,
             nav: true,
             shade: true,
+            clock: false,
             media: true,
             bars: 14,
             height: 18,
+            width: 124,
+            gap: 2,
+            opacity: 100,
+            style: "bars".into(),
+            mirror: false,
+            peak: true,
+            color: String::new(),
         }
     }
 }

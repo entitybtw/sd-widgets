@@ -11,7 +11,7 @@ use crate::theme::{self, Tokens};
 use eframe::egui::{
     self, pos2, vec2, Align2, Color32, FontFamily, FontId, Rect, Sense, Stroke, TextEdit, Ui,
 };
-use sdw_core::model::ClockCfg;
+use sdw_core::model::{clock_icon, ClockCfg, CLOCK_ICONS};
 use sdw_core::{t, Lang};
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -28,7 +28,7 @@ pub fn ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let time = ui.input(|i| i.time) as f32;
     {
         let face = face_of(app, lang, time);
-        canvas(ui, rect, t, &cfg, &face);
+        canvas(ui, rect, app, t, &cfg, &face);
     }
 
     // The same clock, one tap away from the whole screen.
@@ -72,7 +72,7 @@ pub struct Face<'a> {
 
 /// Paint the selected face into `rect`. The page and the full-bleed overlay
 /// share this so both look the same at any size.
-pub fn canvas(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
+pub fn canvas(ui: &mut Ui, rect: Rect, app: &App, t: &Tokens, cfg: &ClockCfg, f: &Face) {
     match cfg.style.as_str() {
         "digital" => digital(ui, rect, t, cfg, f),
         "analog" => analog(ui, rect, t, cfg, f),
@@ -80,7 +80,23 @@ pub fn canvas(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
         _ => grid(ui, rect, t, cfg, f),
     }
     let pal = palette(cfg, t);
+    // The sound strip sits in the face's bottom corner, away from the time,
+    // the info chips and the bottom progress line.
+    crate::viz::paint(ui, app, t, viz_rect(app, rect));
     info_strip(ui, rect, t, cfg, f, &pal);
+}
+
+/// Where the optional visualizer goes on the clock face: bottom-left, a
+/// quarter of the face at most, with the user's own strip size when it fits.
+fn viz_rect(app: &App, rect: Rect) -> Rect {
+    if !app.cfg.viz.enabled || !app.cfg.viz.clock {
+        return Rect::NOTHING;
+    }
+    let want = crate::viz::size(app, Some(vec2(rect.width() * 0.34, rect.height() * 0.2)));
+    let w = want.x.clamp(60.0, (rect.width() * 0.34).max(60.0));
+    let h = want.y.clamp(6.0, 32.0);
+    let pad = (rect.width() * 0.03).clamp(10.0, 26.0);
+    Rect::from_min_size(pos2(rect.left() + pad, rect.bottom() - h - pad), vec2(w, h))
 }
 
 /// The clock over the whole window, with the chrome hidden. Any tap, a click
@@ -97,7 +113,7 @@ pub fn fullscreen(app: &mut App, root: &mut Ui, ctx: &egui::Context) {
         .frame(egui::Frame::new().fill(t.bg))
         .show(root, |ui| {
             let rect = ui.available_rect_before_wrap();
-            canvas(ui, rect, &t, &cfg, &face);
+            canvas(ui, rect, app, &t, &cfg, &face);
 
             // The same shortcuts every other page has: notifications and the
             // control centre. Leaving is the hint below (a tap anywhere or
@@ -586,22 +602,6 @@ fn minimal(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
 
 // ---------------------------------------------------------------- controls
 
-/// Material symbols offered as the clock badge: time, weather, a mood.
-const CLOCK_ICONS: [(&str, &str, &str); 12] = [
-    (theme::icon::CLOCK, "часы", "clock"),
-    (theme::icon::SUN, "солнце", "sun"),
-    (theme::icon::MOON, "луна", "moon"),
-    (theme::icon::STAR, "звезда", "star"),
-    (theme::icon::BULB, "идея", "idea"),
-    (theme::icon::MUSIC, "музыка", "music"),
-    (theme::icon::CODE, "код", "code"),
-    (theme::icon::GAMEPAD, "игры", "games"),
-    (theme::icon::PERSON, "человек", "person"),
-    (theme::icon::HEADPHONES, "наушники", "headphones"),
-    (theme::icon::HOME, "дом", "home"),
-    (theme::icon::SCENE, "сцена", "scene"),
-];
-
 /// A stable, readable name for a clock preset: the caption when it is set,
 /// otherwise the face and the day.
 fn preset_name(cfg: &ClockCfg) -> String {
@@ -676,6 +676,9 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 );
                 if resp.clicked() {
                     cfg = preset;
+                    // A preset written by an older build may carry the badge
+                    // as a name; keep the config in glyphs from here on.
+                    cfg.icon = clock_icon(&cfg.icon).unwrap_or_default().to_string();
                 }
             }
         });
@@ -824,7 +827,8 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ui.add_space(2.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(rt(t!(app.lang, "значок", "icon"), 12.0, t.faint));
-            let none = cfg.icon.trim().is_empty();
+            let current = clock_icon(&cfg.icon).map(str::to_string);
+            let none = current.is_none();
             if ui
                 .selectable_label(none, rt(t!(app.lang, "нет", "none"), 12.0, t.muted))
                 .clicked()
@@ -832,7 +836,7 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 cfg.icon.clear();
             }
             for (glyph, ru, en) in CLOCK_ICONS {
-                let active = cfg.icon == glyph;
+                let active = current.as_deref() == Some(glyph);
                 let resp = ui
                     .add(
                         egui::Button::new(theme::icon(
@@ -1031,8 +1035,8 @@ fn brightness(c: Color32) -> f32 {
 /// Headset battery and a one-line notification summary, as hairline chips in
 /// the top-left corner of the canvas. Every part can be switched off.
 fn info_strip(ui: &Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face, pal: &Palette) {
-    let badge = cfg.icon.trim();
-    if !cfg.show_headset && !cfg.show_notifications && badge.is_empty() {
+    let badge = clock_icon(&cfg.icon);
+    if !cfg.show_headset && !cfg.show_notifications && badge.is_none() {
         return;
     }
     let painter = ui.painter_at(rect);
@@ -1047,7 +1051,7 @@ fn info_strip(ui: &Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face, pal: &P
     // Leave the corner free for the full-screen button on the page.
     let avail = (rect.width() - 60.0).max(80.0);
 
-    if !badge.is_empty() {
+    if let Some(badge) = badge {
         let side = 26.0;
         let box_rect = Rect::from_min_size(pos2(x, y - 2.0), vec2(side, side));
         painter.rect_filled(

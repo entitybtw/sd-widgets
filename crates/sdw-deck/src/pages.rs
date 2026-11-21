@@ -1444,9 +1444,9 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                             ui,
                             app,
                             t,
-                            Vec2::new(
-                                ui.available_width().min(420.0),
-                                app.cfg.viz.height.clamp(10, 48) as f32,
+                            crate::viz::size(
+                                app,
+                                Some(Vec2::new(ui.available_width().min(420.0), 60.0)),
                             ),
                         );
                         ui.add_space(6.0);
