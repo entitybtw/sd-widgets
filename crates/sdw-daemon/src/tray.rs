@@ -344,17 +344,46 @@ impl Menu {
         if event_id != "clicked" {
             return;
         }
+        let lang = self.lang();
+        let log = &self.state.logger;
         match id {
-            MENU_OPEN => crate::config::request("show"),
+            MENU_OPEN => {
+                // The window exists only in a GUI session. A daemon started
+                // with --headless has no thread to open one, and a silent
+                // request file would look like a dead button.
+                if crate::config::window_marker().exists() {
+                    log.info(t!(
+                        lang,
+                        "трей: окно открывается",
+                        "tray: opening the window"
+                    ));
+                    crate::config::request("show");
+                } else {
+                    log.info(t!(
+                        lang,
+                        "трей: демон запущен без окна (--headless); запустите sdw-daemon без флага, чтобы вернуть окно",
+                        "tray: the daemon runs without a window (--headless); start sdw-daemon without the flag to get it back"
+                    ));
+                }
+            }
             MENU_WEB => {
                 let url = format!("http://127.0.0.1:{}", self.state.cfg().api_port);
-                let _ = std::process::Command::new("xdg-open")
-                    .arg(&url)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+                log.info(format!(
+                    "{} {url}",
+                    t!(lang, "трей: веб-интерфейс", "tray: web interface")
+                ));
+                if sdw_core::util::has("xdg-open") {
+                    let _ = std::process::Command::new("xdg-open")
+                        .arg(&url)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                }
             }
-            MENU_QUIT => crate::config::request("quit"),
+            MENU_QUIT => {
+                log.info(t!(lang, "трей: выход", "tray: quit"));
+                crate::config::request("quit");
+            }
             _ => {}
         }
     }
