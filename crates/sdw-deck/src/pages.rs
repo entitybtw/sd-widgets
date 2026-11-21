@@ -6726,8 +6726,8 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ui.label(
             RichText::new(t!(
                 app.lang,
-                "демон на пк показывает этот экран на странице «стим дек». кадры идут, только пока эта страница открыта.",
-                "the daemon shows this screen on its “steam deck” page. frames arrive only while that page is open."
+                "кадры идут в родном разрешении экрана, по одному за раз: медленная сеть просто снижает плавность. пк показывает их на странице «стим дек».",
+                "frames go at the screen's own resolution, one at a time: a slow link lowers the smoothness. the pc shows them on its “steam deck” page."
             ))
             .size(11.5)
             .color(t.faint),
@@ -6739,9 +6739,9 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 t,
                 t!(app.lang, "кадров в секунду", "frames per second"),
                 &mut fps,
-                1..=15,
+                1..=sdw_core::model::DECK_SHARE_FPS_MAX,
             ) {
-                app.cfg.mirror_fps = fps.min(15);
+                app.cfg.mirror_fps = fps.min(sdw_core::model::DECK_SHARE_FPS_MAX);
                 app.save_soon();
             }
             ui.add_space(12.0);

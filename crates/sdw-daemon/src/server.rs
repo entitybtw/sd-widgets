@@ -61,7 +61,7 @@ fn handle(state: Arc<AppState>, mut req: Request) {
             200,
             &json!({
                 "want": state.mirror.is_watched(),
-                "fps": sdw_core::model::DECK_SHARE_FPS,
+                "fps": sdw_core::model::DECK_SHARE_FPS_MAX,
             }),
         );
     }

@@ -124,12 +124,13 @@ computer confirmed.
 ## Deck screen
 
 The deck pushes its own screen here while its settings say so, and only while
-someone watches it. Frames are halved JPEGs; the daemon keeps the newest one plus
-a list of the decks that keep sending.
+someone watches it. Frames are JPEGs at the screen's own resolution; the daemon
+keeps the newest one plus a list of the decks that keep sending, and shows it
+over the whole window when asked.
 
 | Method | Path | Body / result |
 | --- | --- | --- |
-| `GET` | `/api/v1/deck/want` | `{ "want": bool, "fps": 3 }` — is somebody showing this deck right now. |
+| `GET` | `/api/v1/deck/want` | `{ "want": bool, "fps": 60 }` — is somebody showing this deck right now, and the highest rate it accepts. |
 | `POST` | `/api/v1/deck/frame?device=&name=&page=&version=&width=&height=` | Raw JPEG body (≤ 4 MB, starts with `FF D8`). Marks the deck as watched. |
 | `GET` | `/api/v1/deck` | `DeckMirrorState`: live flag, frame age, page, size, seq, watched flag and the client list. |
 | `GET` | `/api/v1/deck/frame` | Newest JPEG, `404` before the first frame. |

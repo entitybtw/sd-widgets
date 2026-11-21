@@ -193,6 +193,10 @@ pub mod icon {
     pub const HEADPHONES: &str = "\u{e310}";
     pub const AUDIO: &str = "\u{e32d}";
     pub const DOWNLOAD: &str = "\u{f090}";
+    /// Material "fullscreen".
+    pub const FULLSCREEN: &str = "\u{e5d0}";
+    /// Material "fullscreen_exit".
+    pub const FULLSCREEN_EXIT: &str = "\u{e5d1}";
 }
 
 /// One Material symbol, sized and coloured like body text.

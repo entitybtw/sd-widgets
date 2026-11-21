@@ -639,10 +639,15 @@ pub struct NotificationStatus {
 
 // ---------------------------------------------------------------- deck mirror
 
-/// Frames per second a deck sends while somebody on the computer is watching
-/// its screen. The frame is halved and JPEG-packed, so this is roughly
-/// 100 KB/s on a 1280×800 deck — fine for Wi-Fi, enough to follow the ui.
-pub const DECK_SHARE_FPS: u32 = 3;
+/// Frames per second a deck asks for while somebody on the computer is
+/// watching its screen, and the ceiling the settings slider offers. The frame
+/// goes at the deck's own resolution; the deck sends the next one only after
+/// the previous landed, so the real rate is the slower of this and the link.
+pub const DECK_SHARE_FPS: u32 = 60;
+
+/// Highest share rate a deck accepts, so a typo in a config cannot flood the
+/// link.
+pub const DECK_SHARE_FPS_MAX: u32 = 60;
 
 /// One deck sending its screen to the daemon: who it is, what it shows and
 /// how much it has sent. Filled by `POST /api/v1/deck/frame`.
@@ -2037,8 +2042,9 @@ pub struct DeckConfig {
     /// on the deck. On by default: the frame only goes to the paired computer.
     #[serde(default = "default_true")]
     pub mirror_deck: bool,
-    /// Share rate in frames per second. The frame is a full screen and the
-    /// link is Wi-Fi, so this stays modest by default.
+    /// Share rate in frames per second, 1..=60. The frame goes at the deck's
+    /// own resolution; one frame is in flight at a time, so a slow link lowers
+    /// the rate instead of piling pictures up.
     #[serde(default = "default_mirror_fps")]
     pub mirror_fps: u32,
     /// JPEG quality of a shared frame (30..=95).
@@ -2090,7 +2096,7 @@ fn default_columns() -> u32 {
     3
 }
 fn default_mirror_fps() -> u32 {
-    3
+    60
 }
 fn default_mirror_quality() -> u8 {
     62
@@ -2120,7 +2126,7 @@ impl Default for DeckConfig {
             notify_popup: true,
             notify_fullscreen: true,
             mirror_deck: true,
-            mirror_fps: 3,
+            mirror_fps: 60,
             mirror_quality: 62,
             grid: true,
             style: ThemeCfg::default(),

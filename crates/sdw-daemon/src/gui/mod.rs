@@ -191,6 +191,8 @@ pub struct App {
     // the deck's own screen
     deck_tex: Option<egui::TextureHandle>,
     deck_seq: u64,
+    /// The deck picture fills the window, with no panels around it.
+    deck_full: bool,
     show_hint: bool,
 
     // audio
@@ -419,7 +421,12 @@ impl App {
             lang: Lang::from_code(&cfg.lang),
             dark: cfg.dark,
             applied_dark: cfg.dark,
-            page: Page::Overview,
+            page: match std::env::var("SDW_PAGE").as_deref() {
+                Ok("deck") => Page::Deck,
+                Ok("screen") => Page::Screen,
+                Ok("audio") => Page::Audio,
+                _ => Page::Overview,
+            },
             status,
             last_poll: Instant::now(),
             toast: None,
@@ -447,6 +454,7 @@ impl App {
             last_frames: 0,
             deck_tex: None,
             deck_seq: 0,
+            deck_full: false,
             show_hint: false,
             audio_source: "system".into(),
             audio_apps: Vec::new(),
@@ -966,7 +974,10 @@ impl eframe::App for App {
         self.update_preview(ctx);
         self.update_deck_preview(ctx);
 
-        if self.status.monitor.running || self.page == Page::Deck {
+        if self.deck_full {
+            // A live picture: ask again next frame instead of twice a second.
+            ctx.request_repaint_after(Duration::from_millis(16));
+        } else if self.status.monitor.running || self.page == Page::Deck {
             ctx.request_repaint_after(Duration::from_millis(120));
         } else {
             ctx.request_repaint_after(Duration::from_millis(700));
@@ -1124,6 +1135,10 @@ impl eframe::App for App {
                             ui.add_space(30.0);
                         });
                 });
+        }
+
+        if self.deck_full && self.page == Page::Deck {
+            self.deck_fullscreen(ctx, &t);
         }
 
         if let Some(toast) = &self.toast {
@@ -5279,6 +5294,52 @@ impl App {
         }
     }
 
+    /// The deck picture over the whole window: native pixels, nothing around
+    /// it. A click or Esc leaves. The frame keeps coming because the page
+    /// under it is still the deck page, so `watching` is still held.
+    fn deck_fullscreen(&mut self, ctx: &egui::Context, t: &Tokens) {
+        let size = ctx.content_rect().size();
+        egui::Area::new(egui::Id::new("deck-full"))
+            .fixed_pos(egui::pos2(0.0, 0.0))
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+                ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+                if let Some(tex) = &self.deck_tex {
+                    let aspect = rect.width() / rect.height().max(1.0);
+                    let tex_aspect = match self.state.mirror.frame_size() {
+                        Some((w, h)) if h > 0 && w > 0 => w as f32 / h as f32,
+                        _ => aspect,
+                    };
+                    // Fit without stretching: the picture keeps its shape.
+                    let fit = if tex_aspect > aspect {
+                        egui::vec2(rect.width(), rect.width() / tex_aspect)
+                    } else {
+                        egui::vec2(rect.height() * tex_aspect, rect.height())
+                    };
+                    let target = egui::Rect::from_center_size(rect.center(), fit);
+                    ui.painter().image(
+                        tex.id(),
+                        target,
+                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                ui.painter().text(
+                    rect.right_bottom() - egui::vec2(14.0, 10.0),
+                    egui::Align2::RIGHT_BOTTOM,
+                    t!(self.lang, "клик или esc — выйти", "click or esc to leave"),
+                    egui::FontId::proportional(12.0),
+                    t.faint,
+                );
+                let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                if resp.clicked() || esc || self.deck_tex.is_none() {
+                    self.deck_full = false;
+                }
+            });
+    }
+
     fn deck_ui(&mut self, ui: &mut Ui, t: &Tokens) {
         let m = self.state.mirror.state();
         self.page_header(
@@ -5328,7 +5389,20 @@ impl App {
                 1.6
             };
             let size = egui::vec2(avail, avail / aspect.max(0.4));
-            let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+            let (rect, picture) = ui.allocate_exact_size(
+                size,
+                if self.deck_tex.is_some() {
+                    egui::Sense::click()
+                } else {
+                    egui::Sense::hover()
+                },
+            );
+            if picture.hovered() && self.deck_tex.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if picture.clicked() {
+                self.deck_full = true;
+            }
             ui.painter().rect_filled(rect, 0.0, t.well);
             match &self.deck_tex {
                 Some(tex) => {
@@ -5356,15 +5430,40 @@ impl App {
             ui.painter()
                 .rect_stroke(rect, 0.0, t.hairline(), egui::StrokeKind::Inside);
             ui.add_space(6.0);
-            small(
-                ui,
-                t!(
-                    self.lang,
-                    "кадры идут, только пока открыта эта страница: дека спрашивает и не тратит сеть зря.",
-                    "frames arrive only while this page is open: the deck asks first and does not waste the network."
-                ),
-                t.faint,
-            );
+            ui.horizontal(|ui| {
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "дека присылает свою картинку в родном разрешении, пока открыта эта страница. нажмите на неё, чтобы развернуть.",
+                        "the deck sends its picture at its own resolution while this page is open. click it to fill the window."
+                    ),
+                    t.faint,
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if self.deck_tex.is_some()
+                        && ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new(format!(
+                                        "{}  {}",
+                                        theme::icon::FULLSCREEN,
+                                        t!(self.lang, "на весь экран", "fullscreen")
+                                    ))
+                                    .size(12.5)
+                                    .color(t.ink),
+                                )
+                                .fill(Color32::TRANSPARENT)
+                                .stroke(Stroke::new(1.0, t.line_strong))
+                                .corner_radius(0.0)
+                                .min_size(egui::vec2(0.0, 26.0)),
+                            )
+                            .clicked()
+                    {
+                        self.deck_full = true;
+                    }
+                });
+            });
         });
 
         ui.add_space(10.0);

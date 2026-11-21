@@ -58,7 +58,8 @@
   RFB client, frame buffer. niri gets a native virtual output when the running
   compositor offers `create-virtual-output` (biri), otherwise a VKMS connector.
 - `mirror.rs` — the decks that send their screen, the newest frame and the
-  `watching` window that decides how fast they send. No network, no blocking.
+  `watching` window that decides how fast they send. A frame goes at the deck's
+  own resolution, up to 60 fps, one in flight at a time. No network, no blocking.
 - `notifications.rs` — desktop notification watcher. It advertises `body-markup`,
   so the markup is reduced to plain text here (entities, `<br>`, `<img alt>`,
   D-Bus octal escapes) once, and the Deck only renders UTF-8.

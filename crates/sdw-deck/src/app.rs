@@ -2641,10 +2641,10 @@ impl App {
 
     /// Send one frame of this screen to the computer.
     ///
-    /// The picture comes from egui itself (`request_screenshot`), is halved
-    /// and packed as JPEG on a worker, and goes to the daemon as a plain POST.
-    /// Only one request is in the air at a time: a slow link slows the
-    /// picture down instead of piling frames up.
+    /// The picture comes from egui itself (`request_screenshot`), is packed as
+    /// JPEG at its own size on a worker, and goes to the daemon as a plain
+    /// POST. Only one request is in the air at a time: a slow link lowers the
+    /// rate instead of piling frames up.
     pub fn pump_share(&mut self, ctx: &egui::Context) {
         if !self.cfg.mirror_deck {
             return;
@@ -2666,11 +2666,14 @@ impl App {
         if !self.share.want && self.share.quiet.elapsed() < Duration::from_secs(5) {
             return;
         }
+        // At full speed the deck sends as fast as one round-trip allows: a
+        // frame is only built when the previous one has landed, so a slow
+        // link lowers the rate instead of piling pictures up.
         let fps = if self.share.want {
-            sdw_core::model::DECK_SHARE_FPS
+            self.cfg.mirror_fps.clamp(1, 60) as u64
         } else {
             1
-        } as u64;
+        };
         if self.share.last_request.elapsed() < Duration::from_millis(1000 / fps) {
             return;
         }
@@ -2689,11 +2692,13 @@ impl App {
                 .name("sdw-share".into())
                 .spawn(move || {
                     let (w, h) = (image.size[0], image.size[1]);
-                    let jpeg = jpeg_half(&image, quality);
+                    // The screen goes at its own size: the viewer on the
+                    // computer shows native pixels, not a softened half.
+                    let jpeg = jpeg_full(&image, quality);
                     let result = if jpeg.is_empty() || w < 4 || h < 4 {
                         Err("не удалось снять кадр".to_string())
                     } else {
-                        let (dw, dh) = ((w / 2) as u32, (h / 2) as u32);
+                        let (dw, dh) = (w as u32, h as u32);
                         c.push_deck_frame(&id, &name, &page, dw, dh, jpeg)
                             .map(|_| (dw, dh))
                             .map_err(|e| e.to_string())
@@ -5423,20 +5428,20 @@ fn share_reason(lang: Lang, error: &str) -> String {
     .replace("{error}", error)
 }
 
-/// Halve a screenshot and pack it as JPEG. Halving keeps the Grid text
-/// readable in the daemon window while cutting both the pixels and the bytes
-/// by four, which is what makes a few frames per second fine over Wi-Fi.
-fn jpeg_half(image: &egui::ColorImage, quality: u8) -> Vec<u8> {
+/// Pack a screenshot as JPEG at its own size, so the viewer on the computer
+/// shows native pixels. The rate is capped separately and only one frame is in
+/// flight, which keeps the Wi-Fi bill honest without touching the picture.
+fn jpeg_full(image: &egui::ColorImage, quality: u8) -> Vec<u8> {
     let (w, h) = (image.size[0], image.size[1]);
     if w < 2 || h < 2 {
         return Vec::new();
     }
-    let (dw, dh) = (w / 2, h / 2);
+    let (dw, dh) = (w, h);
     let mut rgb = Vec::with_capacity(dw * dh * 3);
     for y in 0..dh {
-        let row = y * 2 * w;
+        let row = y * w;
         for x in 0..dw {
-            let p = image.pixels[row + x * 2];
+            let p = image.pixels[row + x];
             // The frame is opaque; the alpha is folded in so a future
             // translucent chrome cannot turn into black boxes.
             let a = p.a() as u16;

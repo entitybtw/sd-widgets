@@ -6,11 +6,10 @@
 //! Nothing here talks to the network or blocks a frame: the store is a mutex
 //! over a few kilobytes and a clone on read.
 //!
-//! A frame is a whole deck screen, and moving a few of them a second on top of
-//! the stream and the status poll is not free. So the daemon says out loud
-//! when the picture is on screen: `watching` is held only while the window or
-//! the API is actually showing it, and the deck shares more slowly when it
-//! lapses.
+//! A frame is a whole deck screen, and moving up to sixty of them a second on
+//! top of the stream and the status poll is not free. So the daemon says out
+//! loud when the picture is on screen: `watching` is held only while the window
+//! or the API is actually showing it, and the deck goes quiet when it lapses.
 
 use sdw_core::model::{now_ms, DeckMirrorClient, DeckMirrorState};
 use std::collections::HashMap;
@@ -137,6 +136,12 @@ impl Mirror {
     pub fn frame(&self) -> Option<(Vec<u8>, u64)> {
         let inner = self.inner.lock().ok()?;
         inner.frame.as_ref().map(|f| (f.bytes.clone(), f.seq))
+    }
+
+    /// Width and height of the newest frame, if one arrived.
+    pub fn frame_size(&self) -> Option<(u32, u32)> {
+        let inner = self.inner.lock().ok()?;
+        inner.frame.as_ref().map(|f| (f.width, f.height))
     }
 
     pub fn seq(&self) -> u64 {
