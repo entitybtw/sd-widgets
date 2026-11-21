@@ -171,7 +171,13 @@ pub struct StreamState {
     /// click, which is the shortest way to a context menu on a touch screen.
     pub press_at: Instant,
     pub press_pos: Option<egui::Pos2>,
-    pub long_sent: bool,
+    /// The picture reported the button down on the previous frame.
+    pub was_held: bool,
+    /// A page swipe took the gesture over: the remote pointer stays still
+    /// until the finger lifts.
+    pub pointer_cancelled: bool,
+    /// The finger has moved far enough for a drag, so the release is not a tap.
+    pub press_moved: bool,
     /// Scroll is sent in steps, throttled so a trackpad glide is a handful of
     /// wheel clicks instead of one per frame.
     pub scroll_at: Instant,
@@ -918,7 +924,9 @@ impl App {
                 cursor: Vec2::new(0.5, 0.5),
                 press_at: Instant::now(),
                 press_pos: None,
-                long_sent: false,
+                was_held: false,
+                pointer_cancelled: false,
+                press_moved: false,
                 scroll_at: Instant::now() - Duration::from_secs(1),
             },
             stream_text: String::new(),
@@ -5049,54 +5057,90 @@ impl App {
                 ((pos.y - rect.top()) / rect.height().max(1.0)).clamp(0.0, 1.0),
             );
         }
-        // A tap is a left click, two taps in a row a double click — what a
-        // person does on a touch screen without a mouse.
-        if resp.double_clicked() && !over_bar {
-            if let Some(pos) = pointer_pos {
-                self.send_pointer("double_click", pos);
-            }
-        } else if resp.clicked() && !over_bar {
-            if let Some(pos) = pointer_pos {
-                self.send_pointer("click", pos);
-            }
-        }
         // A finger held still opens the context menu: the shortest way to a
-        // right click when there is no second button under it.
+        // right click when there is no second button under it. This runs
+        // before the click branches, so the click egui reports on release is
+        // known to belong to a hold and can be swallowed.
         let held = resp.is_pointer_button_down_on() && !over_bar;
-        if held && self.stream.press_pos.is_none() {
-            self.stream.press_pos = pointer_pos;
+        // The gesture starts on the first frame the picture reports the button
+        // down: gamescope can send a second press event as the finger lifts, so
+        // the press event itself is not a reliable start, while the down state
+        // is. Movement is measured from that point: a finger that stays put is
+        // a tap, however long egui calls it a drag.
+        let now_pos = ui.input(|i| i.pointer.interact_pos());
+        let pressed_now = held && !self.stream.was_held;
+        self.stream.was_held = held;
+        if pressed_now {
+            let at = pointer_pos.unwrap_or_else(|| {
+                egui::pos2(
+                    rect.left() + self.stream.cursor.x * rect.width(),
+                    rect.top() + self.stream.cursor.y * rect.height(),
+                )
+            });
+            self.stream.press_pos = Some(at);
             self.stream.press_at = Instant::now();
-            self.stream.long_sent = false;
+            self.stream.press_moved = false;
         }
-        if held
-            && !self.stream.pointer_down
-            && !self.stream.long_sent
-            && self.stream.press_at.elapsed() > Duration::from_millis(620)
-        {
-            if let Some(pos) = self.stream.press_pos {
-                self.send_pointer("right_click", pos);
-                self.stream.long_sent = true;
-            }
-        }
-        if !held {
-            self.stream.press_pos = None;
-        }
-        if resp.dragged() && self.page_anchor.is_none() {
+        let moved = match (self.stream.press_pos, now_pos) {
+            (Some(origin), Some(now)) => origin.distance(now) > 10.0,
+            _ => false,
+        };
+        if held && moved && !self.stream.pointer_cancelled {
             if !self.stream.pointer_down {
                 self.stream.pointer_down = true;
-                let origin = ui.input(|i| i.pointer.press_origin());
-                self.send_pointer("down", origin.unwrap_or(rect.center()));
+                let origin = self.stream.press_pos.unwrap_or(rect.center());
+                self.send_pointer("down", origin);
             }
-            if let Some(pos) = pointer_pos {
+            if let Some(pos) = now_pos {
                 self.send_pointer("move", pos);
             }
+            self.stream.press_moved = true;
+        }
+        // How the press ends decides what the computer gets: a tap is a left
+        // click, a tap held past 620 ms a right click (the shortest way to a
+        // context menu without a second button), a moved finger a drag, whose
+        // button is released here.
+        let ended = resp.clicked() || resp.double_clicked();
+        let live = self.stream.press_pos.is_some();
+        if ended && !over_bar {
+            if self.stream.pointer_down {
+                self.stream.pointer_down = false;
+                if let Some(pos) = now_pos.or(pointer_pos) {
+                    self.send_pointer("up", pos);
+                }
+            } else if !self.stream.press_moved {
+                let at = self.stream.press_pos.or(pointer_pos);
+                if let Some(pos) = at {
+                    let long = live && self.stream.press_at.elapsed() >= Duration::from_millis(620);
+                    if long {
+                        self.send_pointer("right_click", pos);
+                    } else {
+                        // A double tap is two clicks, not click + double_click:
+                        // the computer would see three presses and select a
+                        // word instead of opening a file.
+                        self.send_pointer("click", pos);
+                    }
+                }
+            }
+        }
+        // A gesture lives exactly as long as the finger is down; a cancelled
+        // press must not turn the next quick tap into a right click.
+        if !held {
+            self.stream.press_pos = None;
+            self.stream.press_moved = false;
+            self.stream.pointer_cancelled = false;
         }
         // The drag turned out to be a page swipe after the remote pointer was
-        // already pressed: let it go before the page leaves.
-        if self.page_anchor.is_some() && self.stream.pointer_down {
-            self.stream.pointer_down = false;
-            if let Some(pos) = pointer_pos {
-                self.send_pointer("up", pos);
+        // already pressed: let it go once, then stay out of the way until the
+        // finger lifts. Pressing again every frame would send a stream of
+        // clicks to the computer and fight the page turn.
+        if self.page_anchor.is_some() {
+            self.stream.pointer_cancelled = true;
+            if self.stream.pointer_down {
+                self.stream.pointer_down = false;
+                if let Some(pos) = pointer_pos {
+                    self.send_pointer("up", pos);
+                }
             }
         }
         if resp.drag_stopped() && self.stream.pointer_down {
