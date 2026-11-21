@@ -278,6 +278,8 @@ pub struct UpdateState {
     pub view: crate::theme::ProgressView,
     /// The previous byte reading and when it was taken, for the speed.
     pub sampled: Option<(u64, Instant)>,
+    /// The new file is in place and only a restart is left.
+    pub installed: bool,
 }
 
 pub struct BindsState {
@@ -961,6 +963,7 @@ impl App {
                 notified: false,
                 view: crate::theme::ProgressView::default(),
                 sampled: None,
+                installed: false,
             },
             settings_name: cfg.device_name.clone(),
             theme_import: String::new(),
@@ -3210,6 +3213,36 @@ impl App {
         self.spawn(|| Task::Update(update::check()));
     }
 
+    /// Start the freshly installed file and leave. Inside an AppImage the
+    /// runtime exposes the real file in `$APPIMAGE`; anywhere else the running
+    /// executable is the one that was replaced.
+    pub fn restart_app(&mut self) {
+        self.save();
+        let exe = std::env::var_os("APPIMAGE")
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file())
+            .or_else(|| std::env::current_exe().ok());
+        let Some(exe) = exe else {
+            self.toast(
+                t!(
+                    self.lang,
+                    "не нашёл файл приложения — запустите его вручную",
+                    "could not find the app file — start it by hand"
+                ),
+                false,
+            );
+            return;
+        };
+        let name = exe.to_string_lossy().to_string();
+        match sdw_core::util::spawn_detached(&name, &[]) {
+            Ok(_) => std::process::exit(0),
+            Err(e) => self.toast(
+                format!("{}: {e}", t!(self.lang, "перезапуск", "restart")),
+                false,
+            ),
+        }
+    }
+
     pub fn download_update(&mut self) {
         if self.update.downloading {
             return;
@@ -3232,6 +3265,7 @@ impl App {
         self.update.total = asset.size;
         self.update.view = crate::theme::ProgressView::default();
         self.update.sampled = None;
+        self.update.installed = false;
         self.update.progress = Arc::new(AtomicU64::new(0));
         let progress = self.update.progress.clone();
         self.spawn(move || {
@@ -3893,7 +3927,13 @@ impl App {
                 self.update.downloading = false;
                 self.toast(e, false);
             }
-            Task::Installed(Ok(msg)) => self.toast(msg, true),
+            Task::Installed(Ok(msg)) => {
+                // The file is in place; the only thing left is a restart, and
+                // the page now offers it instead of telling the user to do it
+                // by hand.
+                self.update.installed = true;
+                self.toast(msg, true);
+            }
             Task::Installed(Err(e)) => self.toast(e, false),
             Task::Notifications(Ok(list)) => {
                 self.notif_pending = false;

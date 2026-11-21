@@ -6193,35 +6193,56 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             if !app.update.path.is_empty() {
                 ui.add_space(6.0);
                 theme::separator(ui, t);
-                ui.label(
-                    RichText::new(t!(
-                        app.lang,
-                        "обновление скачано и готово к установке",
-                        "the update is downloaded and ready to install"
-                    ))
-                    .size(13.5)
-                    .color(t.good),
-                );
-                ui.label(
-                    RichText::new(&app.update.path)
-                        .family(FontFamily::Monospace)
-                        .size(10.5)
-                        .color(t.faint),
-                );
-                ui.horizontal(|ui| {
-                    if theme::primary(ui, t!(app.lang, "установить", "install"), t).clicked()
+                if app.update.installed {
+                    ui.label(
+                        RichText::new(t!(
+                            app.lang,
+                            "обновление установлено — остался перезапуск",
+                            "the update is installed — only a restart is left"
+                        ))
+                        .size(13.5)
+                        .color(t.good),
+                    );
+                    ui.add_space(4.0);
+                    if theme::primary(ui, t!(app.lang, "перезапустить", "restart"), t).clicked()
                     {
-                        let path = app.update.path.clone();
-                        app.spawn(move || {
-                            Task::Installed(sdw_core::update::install(std::path::Path::new(&path)))
-                        });
+                        app.restart_app();
                     }
-                    if theme::ghost(ui, t!(app.lang, "открыть папку", "open folder"), t).clicked()
-                    {
-                        let _ =
-                            util::open_url(&sdw_core::update::updates_dir().display().to_string());
-                    }
-                });
+                } else {
+                    ui.label(
+                        RichText::new(t!(
+                            app.lang,
+                            "обновление скачано и готово к установке",
+                            "the update is downloaded and ready to install"
+                        ))
+                        .size(13.5)
+                        .color(t.good),
+                    );
+                    ui.label(
+                        RichText::new(&app.update.path)
+                            .family(FontFamily::Monospace)
+                            .size(10.5)
+                            .color(t.faint),
+                    );
+                    ui.horizontal(|ui| {
+                        if theme::primary(ui, t!(app.lang, "установить", "install"), t).clicked()
+                        {
+                            let path = app.update.path.clone();
+                            app.spawn(move || {
+                                Task::Installed(sdw_core::update::install(std::path::Path::new(
+                                    &path,
+                                )))
+                            });
+                        }
+                        if theme::ghost(ui, t!(app.lang, "открыть папку", "open folder"), t)
+                            .clicked()
+                        {
+                            let _ = util::open_url(
+                                &sdw_core::update::updates_dir().display().to_string(),
+                            );
+                        }
+                    });
+                }
             }
         }
     });
