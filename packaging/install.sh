@@ -340,10 +340,12 @@ Description=sd-widgets daemon
 Documentation=$BASE
 After=graphical-session.target network-online.target
 Wants=network-online.target
+PartOf=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=$BIN/sdw-daemon --headless
+# Starts hidden: the tray and `sdw-daemon --show` bring the window back.
+ExecStart=$BIN/sdw-daemon --hidden
 Restart=on-failure
 RestartSec=2
 # Notifications and screen capture need the session bus and the display, so no
@@ -351,7 +353,7 @@ RestartSec=2
 Environment=RUST_BACKTRACE=1
 
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
 UNIT
     systemctl --user daemon-reload
     systemctl --user enable sdw-daemon

@@ -389,14 +389,21 @@ pub fn log_path() -> PathBuf {
     sdw_core::util::data_dir().join("daemon.log")
 }
 
-pub fn niri_config_path() -> PathBuf {
-    dirs::config_dir()
+/// niri and Hyprland read `$XDG_CONFIG_HOME` only when it is set; otherwise
+/// their configs live under `$HOME/.config`. `dirs::config_dir` always answers
+/// `$HOME/.config` on Linux, which would miss a session that sets the variable.
+pub fn session_config_dir() -> PathBuf {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::config_dir)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("niri/config.kdl")
+}
+
+pub fn niri_config_path() -> PathBuf {
+    session_config_dir().join("niri/config.kdl")
 }
 
 pub fn hypr_config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("hypr/hyprland.conf")
+    session_config_dir().join("hypr/hyprland.conf")
 }

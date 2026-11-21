@@ -5843,8 +5843,8 @@ impl App {
                 ),
                 t!(
                     self.lang,
-                    "запись в автозапуске и строка в конфиге niri/hyprland; при входе демон стартует без окна",
-                    "an autostart entry and a line in the niri/hyprland config; at login the daemon starts without a window"
+                    "служба systemd --user, запись автозапуска рабочего стола и строка в конфиге niri/hyprland; при входе демон стартует без окна",
+                    "a systemd --user service, an autostart entry and a line in the niri/hyprland config; at login the daemon starts without a window"
                 ),
                 |ui| {
                     let mut on = cfg.autostart;

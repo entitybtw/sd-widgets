@@ -37,18 +37,24 @@ the wrapper survives.
 ### The daemon
 
 `install.sh daemon` writes a **systemd user unit** and runs
-`systemctl --user enable --now sdw-daemon`. When user systemd is unavailable it
+`systemctl --user enable` plus a `restart`, so the freshly installed build is
+the one running. When user systemd is unavailable it
 falls back to `~/.config/autostart/sdw-daemon.desktop` and starts the daemon
 once. The daemon opens `http://<computer>:47830` for the first-run setup; the
 console prints the address with your LAN IP.
 
 The daemon also has a **start with the system** switch in its settings. It
-writes the XDG autostart entry and, because niri and Hyprland ignore that
-folder, one line in their own config (`spawn-at-startup` or `exec-once`).
-Turning the switch off removes both again. The command carries `--hidden`, so
-at login the daemon sits in the tray instead of opening a window; the tray,
-`sdw-daemon --show` and starting the daemon again bring the window back.
-Debug builds under `target/` never write themselves into the session config.
+writes a **systemd user unit** (`~/.config/systemd/user/sdw-daemon.service`,
+`WantedBy=graphical-session.target`, enabled but not started — the daemon is
+already running), the XDG autostart entry as the fallback for a machine with no
+user systemd, and, because niri and Hyprland ignore that folder, one line in
+their own config (`spawn-at-startup` or `exec-once`). Turning the switch off
+removes all three again; when user systemd disappears later, the unit is
+removed on the next start and the desktop entry keeps working. The command
+carries `--hidden`, so at login the daemon sits in the tray instead of opening
+a window; the tray, `sdw-daemon --show` and starting the daemon again bring the
+window back. Debug builds under `target/` never write themselves into the
+session config.
 
 ### The Deck and the Steam library
 

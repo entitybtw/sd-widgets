@@ -82,46 +82,64 @@ fn ours(line: &str) -> bool {
 }
 
 fn without_ours(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut after_mark = false;
+    let mut out: Vec<&str> = Vec::with_capacity(text.lines().count());
+    let mut skip_pending = false;
     for line in text.lines() {
         let t = line.trim();
         if t == NIRI_MARK.trim() || t == HYPR_MARK.trim() {
+            // The blank line above the block belongs to it; without this the
+            // user's config would gain a blank line on every on/off pair.
+            if out.last().map(|l| l.trim().is_empty()).unwrap_or(false) {
+                out.pop();
+            }
             // The marker owns exactly the next non-empty line, whatever the
             // binary is called: an AppImage can have any file name.
-            after_mark = true;
+            skip_pending = true;
             continue;
         }
-        if after_mark {
+        if skip_pending {
             if t.is_empty() {
                 continue;
             }
-            after_mark = false;
+            skip_pending = false;
             continue;
         }
         if ours(line) {
             continue;
         }
-        out.push_str(line);
-        out.push('\n');
+        out.push(line);
     }
-    out
+    // A marker at the very top leaves its separator blank line behind.
+    while out.first().map(|l| l.trim().is_empty()).unwrap_or(false) {
+        out.remove(0);
+    }
+    let mut text = out.join("\n").trim_end_matches('\n').to_string();
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text
 }
 
-fn write_if_changed(path: &Path, text: &str, logger: &Logger) {
+fn write_if_changed(path: &Path, text: &str, logger: &Logger) -> bool {
     match std::fs::read_to_string(path) {
-        Ok(old) if old == text => return,
+        Ok(old) if old == text => return false,
         _ => {}
     }
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
     match std::fs::write(path, text) {
-        Ok(()) => logger.info(format!("автозапуск: {}", path.display())),
-        Err(e) => logger.warn(format!(
-            "автозапуск: не удалось записать {}: {e}",
-            path.display()
-        )),
+        Ok(()) => {
+            logger.info(format!("автозапуск: {}", path.display()));
+            true
+        }
+        Err(e) => {
+            logger.warn(format!(
+                "автозапуск: не удалось записать {}: {e}",
+                path.display()
+            ));
+            false
+        }
     }
 }
 
@@ -135,6 +153,39 @@ fn remove_if_present(path: &Path, logger: &Logger) {
             )),
         }
     }
+}
+
+/// The body of a systemd user unit. The service is only useful while the
+/// user's session exists (sound, notifications and the session bus live
+/// there), so it is bound to `graphical-session.target`. The command already
+/// carries `--hidden`: systemd starts it in the tray, and `sdw-daemon --show`
+/// brings the window back.
+fn systemd_unit(cmd: &str) -> String {
+    format!(
+        "[Unit]\n\
+         Description=sd-widgets daemon\n\
+         Documentation=https://git.entitybtw.ru/entitybtw/sd-widgets\n\
+         PartOf=graphical-session.target\n\
+         After=graphical-session.target\n\
+         \n\
+         [Service]\n\
+         Type=simple\n\
+         ExecStart={cmd}\n\
+         Restart=on-failure\n\
+         RestartSec=2\n\
+         Environment=RUST_BACKTRACE=1\n\
+         \n\
+         [Install]\n\
+         WantedBy=graphical-session.target\n"
+    )
+}
+
+/// `systemctl --user` works only on a real user systemd. A machine without it
+/// (a session started by hand, a container, OpenRC) reports failure here, and
+/// the caller then says so plainly instead of claiming the service is on.
+fn user_systemd() -> bool {
+    sdw_core::util::has("systemctl")
+        && sdw_core::util::run("systemctl", &["--user", "show-environment"]).is_ok()
 }
 
 fn xdg_entry(cmd: &str) -> String {
@@ -153,11 +204,12 @@ fn xdg_entry(cmd: &str) -> String {
 /// Put the session in the requested state. Safe to call on every start: it
 /// only writes a file when the content actually changes.
 pub fn apply(enabled: bool, logger: &Logger) -> Outcome {
-    let entry = dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("autostart/sdw-daemon.desktop");
+    // `$XDG_CONFIG_HOME` when the session sets it, `~/.config` otherwise, so
+    // the entry and the compositor lines land where the desktop looks.
+    let entry = crate::config::session_config_dir().join("autostart/sdw-daemon.desktop");
     if !enabled {
         remove_if_present(&entry, logger);
+        systemd_off(logger);
         for (path, _mark) in compositor_configs() {
             if let Ok(text) = std::fs::read_to_string(&path) {
                 let next = without_ours(&text);
@@ -177,6 +229,7 @@ pub fn apply(enabled: bool, logger: &Logger) -> Outcome {
         return Outcome::Skipped;
     };
     write_if_changed(&entry, &xdg_entry(&xdg_cmd), logger);
+    systemd_on(&xdg_cmd, logger);
 
     let niri = crate::config::niri_config_path();
     if niri.exists() {
@@ -192,15 +245,132 @@ pub fn apply(enabled: bool, logger: &Logger) -> Outcome {
     let hypr = crate::config::hypr_config_path();
     if hypr.exists() {
         if let Ok(text) = std::fs::read_to_string(&hypr) {
-            let mut body = without_ours(&text).trim_start_matches('\n').to_string();
-            if !body.is_empty() && !body.ends_with('\n') {
+            // Exactly one blank line separates the user's config from the
+            // block: `without_ours` removes it together with the block.
+            let mut body = without_ours(&text).trim_matches('\n').to_string();
+            if !body.is_empty() {
+                body.push('\n');
                 body.push('\n');
             }
-            let next = format!("{body}\n{HYPR_MARK}\n{hypr_line}\n");
+            let next = format!("{body}{HYPR_MARK}\n{hypr_line}\n");
             write_if_changed(&hypr, &next, logger);
         }
     }
     Outcome::Written
+}
+
+/// Where the user unit lives: the path `systemctl --user` reads.
+fn unit_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config/systemd/user/sdw-daemon.service")
+}
+
+/// Write and enable the user unit. The XDG entry stays as the fallback for a
+/// machine with no user systemd at all; with both, systemd starts the daemon
+/// and the desktop entry finds it already running and exits.
+fn systemd_on(cmd: &str, logger: &Logger) {
+    let unit = unit_path();
+    if !user_systemd() {
+        if unit_path().exists() {
+            // No user systemd any more: the unit would sit there dead and
+            // make the switch look on. The desktop entry is the live fallback.
+            remove_if_present(&unit_path(), logger);
+            logger.info(
+                "автозапуск: systemd --user недоступен, служба убрана; работает \
+                 запись автозапуска рабочего стола",
+            );
+        }
+        return;
+    }
+    let written = write_if_changed(&unit, &systemd_unit(cmd), logger);
+    if written {
+        let _ = sdw_core::util::run("systemctl", &["--user", "daemon-reload"]);
+    }
+    let enabled = sdw_core::util::run("systemctl", &["--user", "is-enabled", "sdw-daemon.service"])
+        .map(|out| out.trim() == "enabled")
+        .unwrap_or(false);
+    if enabled {
+        return;
+    }
+    // `enable` only: the daemon is already running (this is its own switch),
+    // and `--now` would start a second copy that cannot bind the port.
+    match sdw_core::util::run("systemctl", &["--user", "enable", "sdw-daemon.service"]) {
+        Ok(_) => logger.info("автозапуск: служба systemd --user sdw-daemon включена"),
+        Err(e) => logger.warn(format!("автозапуск: systemctl --user enable: {e}")),
+    }
+}
+
+fn systemd_off(logger: &Logger) {
+    let unit = unit_path();
+    if !unit.exists() {
+        return;
+    }
+    let _ = sdw_core::util::run(
+        "systemctl",
+        &["--user", "disable", "--now", "sdw-daemon.service"],
+    );
+    remove_if_present(&unit, logger);
+    let _ = sdw_core::util::run("systemctl", &["--user", "daemon-reload"]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The unit is valid systemd syntax, starts the daemon with its path
+    /// quoted and does not start a second window.
+    #[test]
+    fn unit_is_a_valid_user_service() {
+        // The unit receives the same command as the desktop entry, which is
+        // `"<path>" --hidden`.
+        let unit = systemd_unit("\"/home/x/Apps/sdw-daemon.AppImage\" --hidden");
+        assert!(unit.starts_with("[Unit]\n"));
+        assert!(unit.contains("ExecStart=\"/home/x/Apps/sdw-daemon.AppImage\" --hidden\n"));
+        // The session command already ends with the flag; repeating it is
+        // harmless to systemd but reads as a bug in every unit file.
+        assert!(!unit.contains("--hidden --hidden"));
+        assert!(unit.contains("WantedBy=graphical-session.target"));
+        assert!(unit.contains("PartOf=graphical-session.target"));
+        for section in ["[Unit]", "[Service]", "[Install]"] {
+            assert!(unit.contains(section), "{section} missing");
+        }
+        // Every line is either a section, empty or key=value.
+        for line in unit.lines().filter(|l| !l.trim().is_empty()) {
+            assert!(
+                line.starts_with('[') && line.ends_with(']') || line.contains('='),
+                "bad line: {line}"
+            );
+        }
+    }
+
+    /// Adding our line and taking it away again must leave the user's config
+    /// exactly as it was, with no gap growing at the top on every login.
+    #[test]
+    fn compositor_config_round_trips() {
+        let original = "// user config\ninput {\n}\n";
+        let added = format!(
+            "{NIRI_MARK}\nspawn-at-startup \"/opt/x/sdw-daemon\" \"--hidden\"\n\n{original}"
+        );
+        assert_eq!(without_ours(&added), original);
+        // Every write leaves one blank line between the user's config and our
+        // block, so removal sees the same shape either way.
+        let hypr = format!("{original}\n{HYPR_MARK}\nexec-once = /opt/x/sdw-daemon --hidden\n");
+        let added = format!("{original}\nadded = 1\n\n{HYPR_MARK}\nexec-once = /x\n");
+        assert_eq!(without_ours(&hypr), original);
+        assert_eq!(without_ours(&added), format!("{original}\nadded = 1\n"));
+        // A file that never had our line is untouched.
+        assert_eq!(without_ours(original), original);
+    }
+
+    #[test]
+    fn no_debug_build_ever_autostarts() {
+        // A path under target/debug is a development build.
+        let exe = std::env::current_exe().unwrap_or_default();
+        if exe.to_string_lossy().contains("target/debug") {
+            assert!(command().is_none());
+        }
+    }
 }
 
 fn compositor_configs() -> Vec<(PathBuf, &'static str)> {
