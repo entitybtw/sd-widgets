@@ -130,6 +130,9 @@ pub struct Client {
     base: String,
     token: String,
     agent: ureq::Agent,
+    /// Polls and lists that must answer quickly. A stuck daemon should not
+    /// leave the deck waiting twelve seconds before it can say "offline".
+    fast: ureq::Agent,
 }
 
 impl Client {
@@ -138,6 +141,7 @@ impl Client {
             base: normalize_base(base),
             token: token.to_string(),
             agent: agent(Duration::from_secs(12)),
+            fast: agent(Duration::from_secs(5)),
         }
     }
 
@@ -159,23 +163,39 @@ impl Client {
         path: &str,
         body: Option<&Value>,
     ) -> ApiResult<T> {
+        self.request_with(&self.agent, method, path, body)
+    }
+
+    /// A short-timeout request for a poll: status, lists, a screen frame.
+    fn request_fast<T: DeserializeOwned>(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> ApiResult<T> {
+        self.request_with(&self.fast, method, path, body)
+    }
+
+    fn request_with<T: DeserializeOwned>(
+        &self,
+        agent: &ureq::Agent,
+        method: &str,
+        path: &str,
+        body: Option<&Value>,
+    ) -> ApiResult<T> {
         let url = self.url(path);
         let auth = format!("Bearer {}", self.token);
         let mut r = match method {
             "POST" => {
-                let req = self.agent.post(&url).header("Authorization", &auth);
+                let req = agent.post(&url).header("Authorization", &auth);
                 req.send_json(body.unwrap_or(&Value::Null))
             }
             "PATCH" => {
-                let req = self.agent.patch(&url).header("Authorization", &auth);
+                let req = agent.patch(&url).header("Authorization", &auth);
                 req.send_json(body.unwrap_or(&Value::Null))
             }
-            "DELETE" => self
-                .agent
-                .delete(&url)
-                .header("Authorization", &auth)
-                .call(),
-            _ => self.agent.get(&url).header("Authorization", &auth).call(),
+            "DELETE" => agent.delete(&url).header("Authorization", &auth).call(),
+            _ => agent.get(&url).header("Authorization", &auth).call(),
         }
         .map_err(|e| ApiError {
             status: 0,
@@ -199,7 +219,7 @@ impl Client {
     }
 
     pub fn status(&self) -> ApiResult<DaemonStatus> {
-        self.request("GET", "/api/v1/status", None)
+        self.request_fast("GET", "/api/v1/status", None)
     }
 
     pub fn config(&self) -> ApiResult<Value> {
@@ -212,7 +232,7 @@ impl Client {
 
     /// Bluetooth adapter and known devices.
     pub fn bluetooth(&self) -> ApiResult<BluetoothStatus> {
-        self.request("GET", "/api/v1/bluetooth", None)
+        self.request_fast("GET", "/api/v1/bluetooth", None)
     }
 
     /// Scan, connect, pair, trust or remove a Bluetooth device.
@@ -223,7 +243,7 @@ impl Client {
 
     /// Applications installed on the computer.
     pub fn apps(&self) -> ApiResult<Vec<AppEntry>> {
-        self.request("GET", "/api/v1/apps", None)
+        self.request_fast("GET", "/api/v1/apps", None)
     }
 
     /// Start one of the applications returned by [`Client::apps`].
@@ -274,7 +294,7 @@ impl Client {
     }
 
     pub fn pads(&self) -> ApiResult<Vec<PadInfo>> {
-        self.request("GET", "/api/v1/pads", None)
+        self.request_fast("GET", "/api/v1/pads", None)
     }
 
     pub fn create_pad(&self, name: &str, kind: PadKind) -> ApiResult<PadCreated> {
@@ -425,7 +445,7 @@ impl Client {
     /// Ask whether anyone on the computer is watching this deck's screen.
     /// The deck only captures frames while the answer is yes.
     pub fn deck_want(&self) -> ApiResult<bool> {
-        let v: Value = self.request("GET", "/api/v1/deck/want", None)?;
+        let v: Value = self.request_fast("GET", "/api/v1/deck/want", None)?;
         Ok(v.get("want").and_then(Value::as_bool).unwrap_or(false))
     }
 
@@ -479,7 +499,7 @@ impl Client {
 
     /// Current media player, system volume and output list.
     pub fn media(&self) -> ApiResult<MediaState> {
-        self.request("GET", "/api/v1/media", None)
+        self.request_fast("GET", "/api/v1/media", None)
     }
 
     /// `action`: play_pause, play, pause, next, prev, stop, seek, volume, mute,

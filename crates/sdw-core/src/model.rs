@@ -176,6 +176,11 @@ pub struct BluetoothDevice {
     pub connected: bool,
     pub trusted: bool,
     pub blocked: bool,
+    /// Reachable right now: connected, or seen with a signal in this scan.
+    /// A paired device that is off or out of range shows as unavailable
+    /// instead of looking ready to connect.
+    #[serde(default = "default_true")]
+    pub available: bool,
     /// Percent, when BlueZ or UPower knows it.
     pub battery: Option<u8>,
     pub rssi: Option<i32>,

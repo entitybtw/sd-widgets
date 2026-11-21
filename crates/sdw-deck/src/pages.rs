@@ -110,7 +110,7 @@ fn quick_action(
 // ---------------------------------------------------------------- home
 
 pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
-    let online = app.status.is_some();
+    let online = app.online();
     let host = app.active_host_name();
     let status = app.status.clone();
     let monitor = monitor_state(app);
@@ -758,7 +758,7 @@ pub fn computers(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut forget: Option<String> = None;
     for host in hosts {
         let is_active = active.as_deref() == Some(host.id.as_str());
-        let reachable = is_active && app.status.is_some();
+        let reachable = is_active && app.online();
         egui::Frame::new()
             .fill(t.card)
             .stroke(Stroke::new(
@@ -1046,7 +1046,7 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ),
     );
 
-    let online = app.status.is_some();
+    let online = app.online();
     let stale = app
         .control_apps_at
         .map(|at| at.elapsed() > Duration::from_secs(90))
@@ -1208,6 +1208,10 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
             theme::small(ui, t!(lang, "ничего не найдено", "nothing found"), t.muted);
             return;
         }
+        // Pictures come from the computer on demand; the list itself is
+        // already ordered by how often the user starts each program there.
+        app.want_app_icons(&list);
+        app.ensure_app_icons(ui.ctx());
         let cols = if ui.available_width() >= 760.0 { 2 } else { 1 };
         let width = ((ui.available_width() - 8.0 * (cols as f32 - 1.0)) / cols as f32).max(220.0);
         for row in list.chunks(cols) {
@@ -1804,11 +1808,23 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 );
             }
         }
-        if !app.bluetooth_err.is_empty() {
+        if !online {
+            theme::small(
+                ui,
+                t!(
+                    lang,
+                    "нет связи с компьютером — это список с прошлого раза.",
+                    "no connection to the computer — this is the last list."
+                ),
+                t.muted,
+            );
+        } else if !app.bluetooth_err.is_empty() {
+            // A BlueZ hiccup is a note, not a red alarm: the list is still
+            // useful and the next poll usually fixes it.
             ui.label(
                 RichText::new(util::truncate(&app.bluetooth_err, 220))
                     .size(12.0)
-                    .color(t.warn),
+                    .color(t.muted),
             );
         }
     });
@@ -1865,7 +1881,13 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     ui.label(theme::icon(
                         glyph,
                         24.0,
-                        if d.connected { t.good } else { t.faint },
+                        if d.connected {
+                            t.good
+                        } else if d.available {
+                            t.muted
+                        } else {
+                            t.faint
+                        },
                     ));
                     ui.vertical(|ui| {
                         ui.label(RichText::new(&name).size(16.0).strong().color(t.strong));
@@ -1880,6 +1902,13 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                 theme::chip(ui, t!(lang, "подключено", "connected"), t.good);
                             } else if d.paired {
                                 theme::chip(ui, t!(lang, "спарено", "paired"), t.accent);
+                            }
+                            if !d.available && !d.connected {
+                                theme::chip(
+                                    ui,
+                                    t!(lang, "недоступно", "unavailable"),
+                                    t.faint,
+                                );
                             }
                             if let Some(pct) = d.battery {
                                 let color = if pct >= 30 { t.good } else { t.warn };
@@ -2245,7 +2274,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
         .as_ref()
         .map(|p| p.name.clone())
         .unwrap_or_else(|| t!(app.lang, "пад не создан", "no pad").to_string());
-    let online = app.status.is_some();
+    let online = app.online();
     let mut view = DeckViewState {
         cfg: app.deck_view.cfg.clone(),
         selected: app.deck_view.selected,
@@ -3150,7 +3179,7 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
     );
 
     let st = app.media.state.clone();
-    let connected = app.status.is_some();
+    let connected = app.online();
     let art = app.media.art.clone();
     let art_error = app.media.art_error.clone();
 

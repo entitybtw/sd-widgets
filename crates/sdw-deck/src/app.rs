@@ -558,6 +558,9 @@ pub struct App {
     pub status_err: String,
     pub status_pending: bool,
     pub last_status: Instant,
+    /// When the last status really arrived. A computer that stops answering is
+    /// shown offline after a short grace instead of staying "active" forever.
+    pub status_ok_at: Instant,
     /// Debounced config write: a slider drag saves once, not on every frame.
     pub save_at: Option<Instant>,
     /// The clock is drawn over the whole window, without chrome.
@@ -657,6 +660,13 @@ pub struct App {
     pub control_apps_err: String,
     pub control_apps_at: Option<Instant>,
     pub control_filter: String,
+    /// Application pictures, decoded once and kept while the session lives.
+    pub app_icons: HashMap<String, egui::TextureHandle>,
+    /// Pictures that arrived and wait for the UI thread to decode them.
+    pub app_icon_bytes: HashMap<String, Vec<u8>>,
+    /// Ids already asked for, so a missing picture is not requested forever.
+    pub app_icon_wanted: HashSet<String>,
+    pub app_icon_failed: HashSet<String>,
     /// Power action waiting for the second press.
     pub power_confirm: Option<sdw_core::model::PowerAction>,
 
@@ -1792,6 +1802,7 @@ impl App {
         self.status = None;
         self.status_err.clear();
         self.status_pending = false;
+        self.status_ok_at = Instant::now() - Duration::from_secs(60);
         self.last_status = Instant::now() - Duration::from_secs(5);
         self.notifications.clear();
         self.notif_art.clear();
@@ -1850,6 +1861,7 @@ impl App {
         if self.cfg.active_host.as_deref() == Some(id) {
             self.cfg.active_host = self.cfg.hosts.first().map(|h| h.id.clone());
             self.status = None;
+            self.status_ok_at = Instant::now() - Duration::from_secs(60);
             self.gamepad_pad = None;
             self.gamepad_on = false;
             self.input.set_enabled(false);
@@ -2182,6 +2194,13 @@ impl App {
         if let Some(c) = self.client() {
             self.spawn(move || Task::Status(c.status().map_err(|e| e.to_string())));
         }
+    }
+
+    /// Whether the active computer answered recently. A single missed poll
+    /// does not flip the badge: the grace is a few seconds, so a hiccup does
+    /// not flicker, but a computer that is off goes offline at once.
+    pub fn online(&self) -> bool {
+        self.status.is_some() && self.status_ok_at.elapsed() < Duration::from_secs(3)
     }
 
     /// Ask the computer whether it is showing this deck, so an idle deck does
@@ -3426,6 +3445,27 @@ impl App {
             self.on_input(event);
         }
 
+        // A request that never answers must not lock a page forever: the
+        // pending flag is cleared after a generous timeout and the next poll
+        // tries again.
+        if self.status_pending && self.last_status.elapsed() > Duration::from_secs(8) {
+            self.status_pending = false;
+        }
+        if self.bluetooth_pending
+            && self
+                .bluetooth_at
+                .is_some_and(|at| at.elapsed() > Duration::from_secs(8))
+        {
+            self.bluetooth_pending = false;
+        }
+        if self.control_apps_pending
+            && self
+                .control_apps_at
+                .is_some_and(|at| at.elapsed() > Duration::from_secs(8))
+        {
+            self.control_apps_pending = false;
+        }
+
         self.poll_status();
         self.poll_deck_want();
         self.poll_notifications();
@@ -3482,6 +3522,7 @@ impl App {
             Task::Status(Ok(status)) => {
                 self.status_pending = false;
                 self.status_err.clear();
+                self.status_ok_at = Instant::now();
                 // A daemon that restarted has no Home Assistant state at all.
                 // Dropping ours beats showing values from the previous run as
                 // if they were live; the page shows "обновляю…" until the
@@ -4275,7 +4316,7 @@ impl App {
                     .color(t.faint),
             );
             ui.add_space(8.0);
-            let online = self.status.is_some();
+            let online = self.online();
             theme::dot(ui, if online { t.good } else { t.faint }, online);
             let host = self.active_host_name();
             if ui
