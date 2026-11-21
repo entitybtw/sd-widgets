@@ -15,6 +15,7 @@ mod pages;
 mod sound;
 mod sys;
 mod theme;
+mod viz;
 
 use clap::Parser;
 use eframe::egui;

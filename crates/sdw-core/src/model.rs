@@ -1952,6 +1952,38 @@ impl Default for StreamCfg {
     }
 }
 
+/// The little audio visualizer in the top bar and the control centre. Every
+/// part can be turned off, and the bars themselves are adjustable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VizCfg {
+    pub enabled: bool,
+    /// Show the bars in the top bar.
+    pub nav: bool,
+    /// Show the bars in the pull-down control centre.
+    pub shade: bool,
+    /// Animate when the computer reports media even if its sound is not on
+    /// the deck: the visualizer then follows the track, not the cable.
+    pub media: bool,
+    /// How many bars, 6..=24.
+    pub bars: u8,
+    /// Height of the strip in points, 10..=48.
+    pub height: u8,
+}
+
+impl Default for VizCfg {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            nav: true,
+            shade: true,
+            media: true,
+            bars: 14,
+            height: 18,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeckConfig {
@@ -2024,6 +2056,8 @@ pub struct DeckConfig {
     #[serde(default)]
     pub audio: AudioDeckCfg,
     #[serde(default)]
+    pub viz: VizCfg,
+    #[serde(default)]
     pub addons: crate::addons::AddonsCfg,
     /// Lamp colours the user saved on the Deck, whole RGB triples. They sit
     /// next to the built-in palette and survive a restart.
@@ -2087,6 +2121,7 @@ impl Default for DeckConfig {
             ha_url: String::new(),
             ha_token: String::new(),
             audio: AudioDeckCfg::default(),
+            viz: VizCfg::default(),
             addons: crate::addons::AddonsCfg::default(),
             light_colors: Vec::new(),
         }

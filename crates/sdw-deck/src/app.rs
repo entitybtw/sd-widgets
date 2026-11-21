@@ -608,6 +608,10 @@ pub struct App {
     /// Id of the page ScrollArea in the last frame. It always claims drags to
     /// scroll; that must not be mistaken for a control that owns the pointer.
     pub page_scroll_id: Option<egui::Id>,
+    /// Id of the monitor preview while it drives the computer. A drag there is
+    /// the computer's, except when it starts at the screen edge: a page swipe
+    /// must still work over the picture.
+    pub stream_drag_id: Option<egui::Id>,
     /// How far the current page is scrolled down, in points. Pulling the
     /// control centre open is only allowed at the very top, so an ordinary
     /// downward scroll can never open it by accident.
@@ -619,6 +623,8 @@ pub struct App {
     pub share: ShareState,
     pub ha: HaState,
     pub media: MediaUiState,
+    /// The audio visualizer's bands, shared with the PCM player thread.
+    pub viz: crate::viz::Shared,
     pub binds: BindsState,
     pub update: UpdateState,
     pub settings_name: String,
@@ -726,6 +732,10 @@ pub struct App {
     pub pc_volume: Option<(u8, Instant)>,
     /// How many more "yes" presses are needed before audio starts.
     pub audio_confirm_left: u8,
+    /// The confirmation count as typed, kept between frames so the field can
+    /// be emptied and filled again without the value resetting under the
+    /// cursor.
+    pub confirm_text: String,
     pub audio_error: String,
     pub audio_apps: Vec<AudioApp>,
     pub audio_apps_at: Option<Instant>,
@@ -824,6 +834,7 @@ impl App {
             swipe_blocked: false,
             touch_blocked: false,
             page_scroll_id: None,
+            stream_drag_id: None,
             page_scroll_offset: 0.0,
             touch: TouchTrack::default(),
             stream: StreamState {
@@ -896,6 +907,7 @@ impl App {
                 seeking: None,
                 error: String::new(),
             },
+            viz: crate::viz::shared(),
             binds: BindsState {
                 editor: None,
                 capture: false,
@@ -977,6 +989,7 @@ impl App {
             audio_player: None,
             pc_volume: None,
             audio_confirm_left: 0,
+            confirm_text: cfg.audio.confirmations.to_string(),
             audio_error: String::new(),
             audio_apps: Vec::new(),
             audio_apps_at: None,
@@ -1167,7 +1180,7 @@ impl App {
         // drag is a different id. Only the latter blocks the page gesture.
         if !self.touch.points.is_empty() {
             if let Some(id) = ctx.dragged_id() {
-                if Some(id) != self.page_scroll_id {
+                if self.drag_blocks_page(id) {
                     self.touch_blocked = true;
                 }
             }
@@ -1239,6 +1252,15 @@ impl App {
     /// Runs on the raw input, before egui turns the release into a click. A
     /// real drag is announced with a `PointerMoved` event first, so the tile
     /// under the finger can never activate after a swipe.
+    /// Whether a drag claimed by `id` must keep the page from turning. The
+    /// page ScrollArea never blocks, and neither does the monitor preview:
+    /// a horizontal swipe over the picture is still a page turn, while
+    /// clicks and vertical drags reach the computer.
+    fn drag_blocks_page(&self, id: egui::Id) -> bool {
+        Some(id) != self.page_scroll_id && Some(id) != self.stream_drag_id
+    }
+
+    /// A plain mouse drag (the Deck's touchscreen often arrives this way).
     fn swipe_raw(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
         if !deck_mode()
             || self.gamepad_on
@@ -1277,8 +1299,9 @@ impl App {
                     if let Some(id) = ctx.dragged_id() {
                         // The page ScrollArea claims every drag so it can
                         // scroll. A slider or a tile drag is a different id
-                        // and must keep the page swipe away.
-                        if Some(id) != self.page_scroll_id {
+                        // and must keep the page swipe away. The monitor
+                        // preview is not: a swipe over it still turns.
+                        if self.drag_blocks_page(id) {
                             self.swipe_blocked = true;
                         }
                     }
@@ -2039,15 +2062,17 @@ impl App {
     }
 
     pub fn ensure_stream(&mut self) {
-        let running = self.monitor().running;
-        let want = self.page == Page::Screen && running;
+        // A capture that pauses for a mode switch (a fullscreen app, a new
+        // resolution) must not take the picture away: the feed stays while the
+        // page is open, and the last frame remains until a new one arrives.
+        let want = self.page == Page::Screen;
         if want && self.stream.feed.is_none() {
             self.start_feed();
         }
         if !want && self.stream.feed.is_some() {
             self.stream.feed = None;
         }
-        if self.stream.feed.is_none() {
+        if !want {
             self.stream.texture = None;
         }
     }
@@ -3323,6 +3348,10 @@ impl App {
         if self.page == Page::Media {
             self.poll_media();
             self.ensure_media_art(ctx);
+        } else if self.cfg.viz.enabled && self.cfg.viz.media {
+            // The visualizer follows the computer's track even when its sound
+            // stays there, so the media state is read from any page.
+            self.poll_media();
         }
         self.ensure_stream();
         self.pump_frames(ctx);
@@ -4166,6 +4195,15 @@ impl App {
             {
                 self.set_page(Page::Computers);
             }
+            if self.cfg.viz.enabled && self.cfg.viz.nav {
+                ui.add_space(12.0);
+                crate::viz::ui(
+                    ui,
+                    self,
+                    t,
+                    egui::vec2(124.0, self.cfg.viz.height.clamp(10, 48) as f32),
+                );
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Notifications are one press away on every page, not only in
                 // the pull-down: the bell carries the unread marker.
@@ -4461,7 +4499,11 @@ impl App {
             );
             return;
         };
-        let aspect = monitor.width as f32 / monitor.height.max(1) as f32;
+        let aspect = if tex.size_vec2().x > 1.0 && tex.size_vec2().y > 1.0 {
+            tex.size_vec2().x / tex.size_vec2().y
+        } else {
+            monitor.width as f32 / monitor.height.max(1) as f32
+        };
         let mut size = Vec2::new(area.width(), area.width() / aspect);
         if size.y > area.height() {
             size.y = area.height();
@@ -4483,37 +4525,51 @@ impl App {
                 egui::StrokeKind::Inside,
             );
         }
+        // A preview that does not drive the computer must not claim the
+        // pointer: the page swipe has to work even when the finger lands on
+        // the picture. In input mode the surface takes the drag, but a
+        // horizontal swipe is still the deck's own page turn.
+        if !monitor.input_enabled {
+            self.stream_drag_id = None;
+            return;
+        }
         let resp = ui.interact(
             rect,
             ui.id().with("stream-surface"),
             Sense::click_and_drag(),
         );
-        if monitor.input_enabled {
-            if resp.clicked() {
-                if let Some(pos) = resp.interact_pointer_pos() {
-                    self.send_pointer("click", pos);
-                }
+        self.stream_drag_id = Some(resp.id);
+        if resp.clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                self.send_pointer("click", pos);
             }
-            if resp.drag_started() {
-                if let Some(pos) = resp.interact_pointer_pos() {
-                    self.stream.pointer_down = true;
-                    self.send_pointer("down", pos);
-                }
+        }
+        if resp.dragged() && self.page_anchor.is_none() {
+            if !self.stream.pointer_down {
+                self.stream.pointer_down = true;
+                let origin = ui.input(|i| i.pointer.press_origin());
+                self.send_pointer("down", origin.unwrap_or(rect.center()));
             }
-            if resp.dragged() {
-                if let Some(pos) = resp.interact_pointer_pos() {
-                    self.send_pointer("move", pos);
-                }
+            if let Some(pos) = resp.interact_pointer_pos() {
+                self.send_pointer("move", pos);
             }
-            if resp.drag_stopped() && self.stream.pointer_down {
-                self.stream.pointer_down = false;
-                if let Some(pos) = resp.interact_pointer_pos() {
-                    self.send_pointer("up", pos);
-                }
+        }
+        // The drag turned out to be a page swipe after the remote pointer was
+        // already pressed: let it go before the page leaves.
+        if self.page_anchor.is_some() && self.stream.pointer_down {
+            self.stream.pointer_down = false;
+            if let Some(pos) = resp.interact_pointer_pos() {
+                self.send_pointer("up", pos);
             }
-            if resp.hovered() {
-                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+        }
+        if resp.drag_stopped() && self.stream.pointer_down {
+            self.stream.pointer_down = false;
+            if let Some(pos) = resp.interact_pointer_pos() {
+                self.send_pointer("up", pos);
             }
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
     }
 

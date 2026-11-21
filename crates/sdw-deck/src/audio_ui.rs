@@ -56,6 +56,7 @@ pub fn page(app: &mut App, ui: &mut Ui, t: &Tokens) {
     source_card(app, ui, t, running);
     ui.add_space(8.0);
     volume_card(app, ui, t, running);
+    viz_card(app, ui, t);
 }
 
 fn status_card(app: &mut App, ui: &mut Ui, t: &Tokens, status: &AudioStatus, running: bool) {
@@ -147,6 +148,101 @@ fn status_card(app: &mut App, ui: &mut Ui, t: &Tokens, status: &AudioStatus, run
         if !error.is_empty() {
             ui.label(RichText::new(error).size(12.0).color(t.bad));
         }
+    });
+}
+
+/// The visualizer settings: whether it exists, where it lives, and how it
+/// looks. Every switch is saved at once, like the rest of the audio page.
+fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(theme::hud(
+                t!(app.lang, "визуализатор", "visualizer"),
+                t.faint,
+            ));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::switch(ui, &mut app.cfg.viz.enabled, t).changed() {
+                    app.save_soon();
+                }
+            });
+        });
+        if !app.cfg.viz.enabled {
+            theme::small(
+                ui,
+                t!(
+                    app.lang,
+                    "выключен. включите, чтобы полоски показывали звук.",
+                    "off. turn it on to see the sound as bars."
+                ),
+                t.muted,
+            );
+            return;
+        }
+        // A live preview of the current look, using the real meter.
+        crate::viz::ui(
+            ui,
+            app,
+            t,
+            Vec2::new(
+                ui.available_width().min(420.0),
+                app.cfg.viz.height.clamp(10, 48) as f32,
+            ),
+        );
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            if theme::switch(ui, &mut app.cfg.viz.nav, t).changed() {
+                app.save_soon();
+            }
+            ui.label(
+                RichText::new(t!(app.lang, "в шапке", "in the top bar"))
+                    .size(12.5)
+                    .color(t.muted),
+            );
+            ui.add_space(14.0);
+            if theme::switch(ui, &mut app.cfg.viz.shade, t).changed() {
+                app.save_soon();
+            }
+            ui.label(
+                RichText::new(t!(app.lang, "в шторе", "in the shade"))
+                    .size(12.5)
+                    .color(t.muted),
+            );
+            ui.add_space(14.0);
+            if theme::switch(ui, &mut app.cfg.viz.media, t).changed() {
+                app.save_soon();
+            }
+            ui.label(
+                RichText::new(t!(app.lang, "по медиа с пк", "from pc media"))
+                    .size(12.5)
+                    .color(t.muted),
+            );
+        });
+        ui.add_space(2.0);
+        let mut bars = app.cfg.viz.bars as u32;
+        if theme::slider_u32(ui, t, t!(app.lang, "полосок", "bars"), &mut bars, 6..=24) {
+            app.cfg.viz.bars = bars.clamp(6, 24) as u8;
+            app.save_soon();
+        }
+        let mut height = app.cfg.viz.height as u32;
+        if theme::slider_u32(
+            ui,
+            t,
+            t!(app.lang, "высота", "height"),
+            &mut height,
+            10..=48,
+        ) {
+            app.cfg.viz.height = height.clamp(10, 48) as u8;
+            app.save_soon();
+        }
+        theme::small(
+            ui,
+            t!(
+                app.lang,
+                "звук с пк рисуется по настоящим сэмплам, а трек без звука на деке — по громкости и названию.",
+                "sound on the deck uses the real samples; a track that stays on the pc moves with its volume and title."
+            ),
+            t.faint,
+        );
     });
 }
 
@@ -347,17 +443,7 @@ fn volume_card(app: &mut App, ui: &mut Ui, t: &Tokens, playing: bool) {
                 spawn_player(app);
             }
         }
-        let mut n = app.cfg.audio.confirmations as u32;
-        if theme::slider_u32(
-            ui,
-            t,
-            t!(app.lang, "подтверждений", "confirmations"),
-            &mut n,
-            0..=10,
-        ) {
-            app.cfg.audio.confirmations = n.min(10) as u8;
-            app.save_soon();
-        }
+        confirmations_ui(ui, app, t);
         ui.label(
             RichText::new(t!(
                 app.lang,
@@ -380,6 +466,55 @@ fn volume_card(app: &mut App, ui: &mut Ui, t: &Tokens, playing: bool) {
 }
 
 // ---------------------------------------------------------------- actions
+
+/// The confirmation count. The slider covers the everyday 0–10; the field
+/// takes any number of one's own, because a slider stops where the interesting
+/// values begin for someone who wants a real speed bump.
+pub fn confirmations_ui(ui: &mut Ui, app: &mut App, t: &Tokens) {
+    let mut n = app.cfg.audio.confirmations as u32;
+    if theme::slider_u32(
+        ui,
+        t,
+        t!(app.lang, "подтверждений", "confirmations"),
+        &mut n,
+        0..=10,
+    ) {
+        app.cfg.audio.confirmations = n.min(99) as u8;
+        app.confirm_text = app.cfg.audio.confirmations.to_string();
+        app.save_soon();
+    }
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(t!(app.lang, "своё число", "exact number"))
+                .size(12.0)
+                .color(t.muted),
+        );
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut app.confirm_text)
+                .desired_width(64.0)
+                .char_limit(2)
+                .hint_text("0"),
+        );
+        if resp.changed() {
+            if let Ok(v) = app.confirm_text.trim().parse::<u8>() {
+                app.cfg.audio.confirmations = v.min(99);
+                app.save_soon();
+            }
+        }
+        if resp.lost_focus() {
+            app.confirm_text = app.cfg.audio.confirmations.to_string();
+        }
+        ui.label(
+            RichText::new(t!(
+                app.lang,
+                "0 — не спрашивать, 1–99 — сколько раз",
+                "0 — ask nothing, 1–99 — how many times"
+            ))
+            .size(11.0)
+            .color(t.faint),
+        );
+    });
+}
 
 /// Ask for the configured number of confirmations, then start.
 pub fn begin(app: &mut App) {
@@ -447,6 +582,7 @@ pub fn spawn_player(app: &mut App) {
     // Trust the daemon's actual rate when it is known, otherwise the setting.
     let known = app.status.as_ref().map(|s| s.audio.rate).unwrap_or(0);
     let rate = if known > 0 { known } else { app.cfg.audio.rate };
+    let rate_num = rate;
     // Unity gain: the computer's own sink level is the level. The slider on
     // this page moves that level (see `volume_card`), so applying the same
     // number again here would halve the sound.
@@ -519,6 +655,7 @@ pub fn spawn_player(app: &mut App) {
         return;
     };
     let tx = app.task_tx.clone();
+    let meter = app.viz.clone();
     std::thread::spawn(move || match client.audio_stream() {
         Ok(mut reader) => {
             let mut buf = [0u8; 16_384];
@@ -526,6 +663,7 @@ pub fn spawn_player(app: &mut App) {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        crate::viz::feed(&meter, &buf[..n], rate_num);
                         if stdin.write_all(&buf[..n]).is_err() {
                             break;
                         }

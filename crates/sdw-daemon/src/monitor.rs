@@ -631,78 +631,87 @@ impl MonitorManager {
         let stop2 = stop.clone();
         let quality2 = quality;
         std::thread::spawn(move || {
-            let result = match capture {
-                Capture::Grim => capture_grim(
-                    &output,
-                    width,
-                    height,
-                    fps,
-                    quality2,
-                    stop2.clone(),
-                    frame.clone(),
-                    frames.clone(),
-                ),
-                Capture::Spectacle => capture_screenshot(
-                    "spectacle",
-                    width,
-                    height,
-                    fps,
-                    quality2,
-                    stop2.clone(),
-                    frame.clone(),
-                    frames.clone(),
-                ),
-                Capture::Gnome => capture_screenshot(
-                    "gnome-screenshot",
-                    width,
-                    height,
-                    fps,
-                    quality2,
-                    stop2.clone(),
-                    frame.clone(),
-                    frames.clone(),
-                ),
-                Capture::FfmpegX11 => capture_ffmpeg(
-                    FfmpegKind::X11,
-                    rect,
-                    width,
-                    height,
-                    fps,
-                    quality2,
-                    stop2.clone(),
-                    frame.clone(),
-                    frames.clone(),
-                    child_slot.clone(),
-                ),
-                Capture::FfmpegWindows => capture_ffmpeg(
-                    FfmpegKind::Windows,
-                    rect,
-                    width,
-                    height,
-                    fps,
-                    quality2,
-                    stop2.clone(),
-                    frame.clone(),
-                    frames.clone(),
-                    child_slot.clone(),
-                ),
-                Capture::Rfb => rfb_capture(
-                    "127.0.0.1:5900",
-                    width,
-                    height,
-                    fps,
-                    quality2,
-                    stop2.clone(),
-                    frame.clone(),
-                    frames.clone(),
-                ),
-            };
-            if let Err(e) = result {
-                if !stop2.load(Ordering::Relaxed) {
-                    logger.warn(format!("Экран: {e}"));
-                    if let Ok(mut i) = inner.lock() {
-                        i.last_error = e;
-                        i.running = false;
+            // A fullscreen app or a mode switch can take the output away for
+            // a moment. The loop keeps the last frame and tries again instead
+            // of stopping the monitor and blanking the deck.
+            while !stop2.load(Ordering::Relaxed) {
+                let result = match capture {
+                    Capture::Grim => capture_grim(
+                        &output,
+                        width,
+                        height,
+                        fps,
+                        quality2,
+                        stop2.clone(),
+                        frame.clone(),
+                        frames.clone(),
+                    ),
+                    Capture::Spectacle => capture_screenshot(
+                        "spectacle",
+                        width,
+                        height,
+                        fps,
+                        quality2,
+                        stop2.clone(),
+                        frame.clone(),
+                        frames.clone(),
+                    ),
+                    Capture::Gnome => capture_screenshot(
+                        "gnome-screenshot",
+                        width,
+                        height,
+                        fps,
+                        quality2,
+                        stop2.clone(),
+                        frame.clone(),
+                        frames.clone(),
+                    ),
+                    Capture::FfmpegX11 => capture_ffmpeg(
+                        FfmpegKind::X11,
+                        rect,
+                        width,
+                        height,
+                        fps,
+                        quality2,
+                        stop2.clone(),
+                        frame.clone(),
+                        frames.clone(),
+                        child_slot.clone(),
+                    ),
+                    Capture::FfmpegWindows => capture_ffmpeg(
+                        FfmpegKind::Windows,
+                        rect,
+                        width,
+                        height,
+                        fps,
+                        quality2,
+                        stop2.clone(),
+                        frame.clone(),
+                        frames.clone(),
+                        child_slot.clone(),
+                    ),
+                    Capture::Rfb => rfb_capture(
+                        "127.0.0.1:5900",
+                        width,
+                        height,
+                        fps,
+                        quality2,
+                        stop2.clone(),
+                        frame.clone(),
+                        frames.clone(),
+                    ),
+                };
+                match result {
+                    Ok(()) => break,
+                    Err(e) => {
+                        if stop2.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        logger.warn(format!("Экран: {e}"));
+                        if let Ok(mut i) = inner.lock() {
+                            i.last_error = e;
+                        }
+                        std::thread::sleep(Duration::from_millis(900));
                     }
                 }
             }

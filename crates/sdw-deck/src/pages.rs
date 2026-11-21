@@ -8,7 +8,7 @@ use crate::binds::BindEditor;
 use crate::deck_view::{self, DeckInput, DeckViewState};
 use crate::theme::{self, Tile, Tokens};
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, FontFamily, Layout, Margin, RichText, Sense,
+    self, Align, Align2, Color32, CornerRadius, FontFamily, Layout, Margin, Rect, RichText, Sense,
     Stroke, TextEdit, Ui, Vec2,
 };
 use sdw_core::model::*;
@@ -1413,6 +1413,19 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                     });
                     ui.add_space(4.0);
 
+                    if app.cfg.viz.enabled && app.cfg.viz.shade {
+                        crate::viz::ui(
+                            ui,
+                            app,
+                            t,
+                            Vec2::new(
+                                ui.available_width().min(420.0),
+                                app.cfg.viz.height.clamp(10, 48) as f32,
+                            ),
+                        );
+                        ui.add_space(6.0);
+                    }
+
                     // The Deck's own sound and light.
                     if let Some(level) = app.quick_volume {
                         let mut volume = level as f32;
@@ -2563,7 +2576,7 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
         egui::StrokeKind::Inside,
     );
     let inner = rect.shrink(8.0);
-    if monitor.running {
+    if monitor.running || app.stream.texture.is_some() {
         app.draw_stream(ui, t, inner, false);
         if app.stream.frames > 0 {
             ui.painter().text(
@@ -2582,6 +2595,25 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 egui::FontId::monospace(11.0),
                 Color32::from_white_alpha(140),
             );
+        }
+        if !monitor.running {
+            // The capture is restarting after a mode switch: the last frame
+            // stays, and a chip says why it is not moving.
+            let label = t!(app.lang, "кадр с прошлого запуска", "the last frame");
+            let galley = ui.painter().layout_no_wrap(
+                label.to_string(),
+                egui::FontId::proportional(12.0),
+                Color32::from_white_alpha(210),
+            );
+            let pad = Vec2::new(8.0, 4.0);
+            let chip = Rect::from_min_size(
+                inner.left_top() + Vec2::new(10.0, 10.0),
+                galley.size() + pad * 2.0,
+            );
+            ui.painter()
+                .rect_filled(chip, CornerRadius::ZERO, Color32::from_black_alpha(170));
+            ui.painter()
+                .galley(chip.min + pad, galley, Color32::from_white_alpha(210));
         }
     } else {
         ui.painter().text(
@@ -6372,17 +6404,7 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             app.cfg.audio.volume = vol.round().clamp(0.0, 100.0) as u8;
             app.save_soon();
         }
-        let mut n = app.cfg.audio.confirmations as u32;
-        if theme::slider_u32(
-            ui,
-            t,
-            t!(app.lang, "подтверждений", "confirmations"),
-            &mut n,
-            0..=10,
-        ) {
-            app.cfg.audio.confirmations = n.min(10) as u8;
-            app.save_soon();
-        }
+        crate::audio_ui::confirmations_ui(ui, app, t);
         ui.label(
             RichText::new(t!(
                 app.lang,
