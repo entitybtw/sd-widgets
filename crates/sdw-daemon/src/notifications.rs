@@ -85,6 +85,15 @@ impl NotificationStore {
         s
     }
 
+    /// Everything still remembered, newest first. The same records the
+    /// mirror holds, so a tap on the deck reaches the app as before.
+    pub fn log(&self) -> Vec<Notification> {
+        self.inner
+            .lock()
+            .map(|i| i.items.iter().rev().cloned().collect())
+            .unwrap_or_default()
+    }
+
     pub fn enabled(&self) -> bool {
         self.inner.lock().map(|i| i.enabled).unwrap_or(false)
     }

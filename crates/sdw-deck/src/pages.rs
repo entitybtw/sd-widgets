@@ -2860,7 +2860,7 @@ fn notification_thumb(
     art: Option<&egui::TextureHandle>,
     color: Color32,
 ) {
-    let side = 48.0;
+    let side = 34.0;
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), egui::Sense::hover());
     ui.painter().rect_filled(rect, CornerRadius::ZERO, t.well);
     match art {
@@ -2941,9 +2941,49 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ),
     );
 
+    if app.notif_hist && !app.notif_log_loaded && !app.notif_log_pending {
+        app.load_notif_log();
+    }
+
     ui.horizontal(|ui| {
+        // Two views of the same store: what is live now, and what the
+        // computer still remembers.
+        let mut tab = |ui: &mut Ui, hist: bool, label: &str, count: usize| {
+            let on = app.notif_hist == hist;
+            let resp = ui.add(
+                egui::Button::new(
+                    RichText::new(format!("{label} {count}"))
+                        .size(13.5)
+                        .color(if on { Color32::WHITE } else { t.ink }),
+                )
+                .fill(if on { t.accent } else { Color32::TRANSPARENT })
+                .stroke(Stroke::new(1.0, if on { t.accent } else { t.line_strong }))
+                .corner_radius(CornerRadius::ZERO)
+                .min_size(Vec2::new(0.0, 30.0)),
+            );
+            if resp.clicked() {
+                app.notif_hist = hist;
+            }
+        };
+        tab(
+            ui,
+            false,
+            t!(app.lang, "сейчас", "live"),
+            app.notifications.len(),
+        );
+        tab(
+            ui,
+            true,
+            t!(app.lang, "история", "history"),
+            app.notif_log.len(),
+        );
+        ui.add_space(8.0);
         if theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked() {
             app.last_notif = std::time::Instant::now() - std::time::Duration::from_secs(5);
+            app.notif_log_loaded = false;
+            if app.notif_hist {
+                app.load_notif_log();
+            }
         }
         if theme::ghost(ui, t!(app.lang, "проверить", "test"), t).clicked() {
             if let Some(c) = app.client() {
@@ -2959,7 +2999,7 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 });
             }
         }
-        if !app.notifications.is_empty()
+        if !app.notif_log.is_empty()
             && theme::ghost(ui, t!(app.lang, "очистить", "clear"), t).clicked()
         {
             if let Some(c) = app.client() {
@@ -2973,6 +3013,8 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 });
             }
             app.notifications.clear();
+            app.notif_log.clear();
+            app.notif_art.clear();
             app.notif_last_id = 0;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -2992,109 +3034,177 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
             }
         });
     });
-    ui.add_space(6.0);
+    ui.add_space(4.0);
 
-    if app.notifications.is_empty() {
+    if app.notif_hist {
+        let hint = t!(app.lang, "поиск по истории", "search the history");
+        ui.add(
+            TextEdit::singleline(&mut app.notif_query)
+                .hint_text(hint)
+                .desired_width(320.0),
+        );
+        if !app.notif_log_err.is_empty() {
+            ui.label(
+                RichText::new(util::truncate(&app.notif_log_err, 200))
+                    .size(12.0)
+                    .color(t.warn),
+            );
+        }
+        ui.add_space(4.0);
+    }
+
+    // One compact row per notification: a colour hairline on the left, the
+    // picture, two lines of text and the age. No big paddings — a screenful
+    // is a dozen of them.
+    let source: Vec<Notification> = if app.notif_hist {
+        let needle = app.notif_query.trim().to_lowercase();
+        app.notif_log
+            .iter()
+            .filter(|n| {
+                needle.is_empty()
+                    || n.app.to_lowercase().contains(&needle)
+                    || n.summary.to_lowercase().contains(&needle)
+                    || n.body.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .collect()
+    } else {
+        app.notifications.iter().rev().cloned().collect()
+    };
+
+    if source.is_empty() {
         theme::card(ui, t, |ui| {
-            ui.label(
-                RichText::new(t!(app.lang, "пока тихо", "all quiet"))
-                    .size(18.0)
-                    .strong()
-                    .color(t.strong),
-            );
-            ui.label(
-                RichText::new(t!(
-                    app.lang,
-                    "включите зеркалирование в sdw-daemon на пк: notifications → mirror to deck.",
-                    "enable mirroring in sdw-daemon on the PC: notifications → mirror to deck."
-                ))
-                .size(13.0)
-                .color(t.muted),
-            );
+            let (title, sub) = if app.notif_hist {
+                (
+                    t!(app.lang, "история пуста", "the history is empty"),
+                    t!(
+                        app.lang,
+                        "компьютер пока ничего не запомнил — уведомления накапливаются, пока включено зеркалирование.",
+                        "the computer has not kept anything yet — notifications pile up while mirroring is on."
+                    ),
+                )
+            } else {
+                (
+                    t!(app.lang, "пока тихо", "all quiet"),
+                    t!(
+                        app.lang,
+                        "включите зеркалирование в sdw-daemon на пк: notifications → mirror to deck.",
+                        "enable mirroring in sdw-daemon on the PC: notifications → mirror to deck."
+                    ),
+                )
+            };
+            ui.label(RichText::new(title).size(17.0).strong().color(t.strong));
+            ui.label(RichText::new(sub).size(13.0).color(t.muted));
         });
         return;
     }
 
-    let list: Vec<Notification> = app.notifications.iter().rev().cloned().collect();
     let mut dismiss: Option<u64> = None;
     let mut activate: Option<u64> = None;
-    for n in list {
-        let color = notification_color(t, &n);
-        let art = app.notif_texture(ui.ctx(), n.id, &n.image);
-        let card = egui::Frame::new()
-            .fill(t.card)
-            .stroke(Stroke::new(1.0, color.gamma_multiply(0.35)))
-            .corner_radius(CornerRadius::ZERO)
-            .inner_margin(Margin::symmetric(18, 14))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    notification_thumb(ui, t, &n, art.as_ref(), color);
-                    ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(if n.app.is_empty() { "system" } else { &n.app })
-                                    .family(FontFamily::Monospace)
-                                    .size(11.0)
-                                    .color(color),
-                            );
-                            ui.label(
-                                RichText::new(age(n.ts, app.lang))
-                                    .family(FontFamily::Monospace)
-                                    .size(10.5)
-                                    .color(t.faint),
-                            );
-                            if n.urgency >= 2 {
-                                theme::chip(ui, t!(app.lang, "важно", "urgent"), t.bad);
-                            }
-                        });
-                        ui.label(
-                            RichText::new(&n.summary)
-                                .size(16.0)
-                                .strong()
-                                .color(t.strong),
+    egui::ScrollArea::vertical()
+        .id_salt("notif-list")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for n in source {
+                let color = notification_color(t, &n);
+                let art = app.notif_texture(ui.ctx(), n.id, &n.image);
+                let row = egui::Frame::new()
+                    .fill(t.card)
+                    .stroke(Stroke::new(1.0, t.line))
+                    .corner_radius(CornerRadius::ZERO)
+                    .inner_margin(Margin::symmetric(10, 7))
+                    .show(ui, |ui| {
+                        let bar = ui.max_rect().left_top();
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_size(bar, Vec2::new(2.0, ui.max_rect().height())),
+                            CornerRadius::ZERO,
+                            color,
                         );
-                        if !n.body.is_empty() {
-                            ui.add(
-                                egui::Label::new(RichText::new(&n.body).size(13.0).color(t.muted))
-                                    .wrap(),
-                            );
-                        }
+                        ui.horizontal(|ui| {
+                            notification_thumb(ui, t, &n, art.as_ref(), color);
+                            let close = ui.available_width() - 26.0;
+                            ui.vertical(|ui| {
+                                ui.set_max_width(close.max(120.0));
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(if n.app.is_empty() {
+                                            "system"
+                                        } else {
+                                            &n.app
+                                        })
+                                        .family(FontFamily::Monospace)
+                                        .size(10.5)
+                                        .color(color),
+                                    );
+                                    ui.label(
+                                        RichText::new(age(n.ts, app.lang))
+                                            .family(FontFamily::Monospace)
+                                            .size(10.0)
+                                            .color(t.faint),
+                                    );
+                                    if n.urgency >= 2 {
+                                        theme::chip(ui, t!(app.lang, "важно", "urgent"), t.bad);
+                                    }
+                                });
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&n.summary)
+                                            .size(14.0)
+                                            .strong()
+                                            .color(t.strong),
+                                    )
+                                    .truncate(),
+                                );
+                                if !n.body.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(&n.body).size(12.0).color(t.muted),
+                                        )
+                                        .truncate(),
+                                    );
+                                }
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .add(
+                                        egui::Button::new(theme::icon(
+                                            theme::icon::CLOSE,
+                                            15.0,
+                                            t.muted,
+                                        ))
+                                        .fill(Color32::TRANSPARENT)
+                                        .stroke(Stroke::NONE),
+                                    )
+                                    .on_hover_text(t!(app.lang, "скрыть", "dismiss"))
+                                    .clicked()
+                                {
+                                    dismiss = Some(n.id);
+                                }
+                            });
+                        });
                     });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .add(
-                                egui::Button::new(theme::hud("×", t.muted))
-                                    .fill(Color32::TRANSPARENT)
-                                    .stroke(Stroke::NONE),
-                            )
-                            .on_hover_text(t!(app.lang, "скрыть", "dismiss"))
-                            .clicked()
-                        {
-                            dismiss = Some(n.id);
-                        }
-                    });
-                });
-            });
-        // The whole card is the button: a tap opens the notification on the
-        // computer, which is what a person reaching for it means.
-        let hit = ui.interact(
-            card.response.rect,
-            egui::Id::new(("deck-notif", n.id)),
-            Sense::click(),
-        );
-        if hit.clicked() {
-            activate = Some(n.id);
-        }
-        if hit.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        hit.on_hover_text(t!(
-            app.lang,
-            "нажмите, чтобы открыть на компьютере",
-            "tap to open it on the computer"
-        ));
-        ui.add_space(6.0);
-    }
+                // The whole row is the button: a tap opens the notification
+                // on the computer, which is what a person reaching for it
+                // means.
+                let hit = ui.interact(
+                    row.response.rect,
+                    egui::Id::new(("deck-notif", n.id)),
+                    Sense::click(),
+                );
+                if hit.clicked() {
+                    activate = Some(n.id);
+                }
+                if hit.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                hit.on_hover_text(t!(
+                    app.lang,
+                    "нажмите, чтобы открыть на компьютере",
+                    "tap to open it on the computer"
+                ));
+                ui.add_space(4.0);
+            }
+        });
     if let Some(id) = activate {
         app.activate_notif(id);
     }

@@ -335,6 +335,7 @@ pub enum Task {
     Monitor(Result<MonitorStatus, String>),
     MonitorStopped(Result<MonitorStatus, String>),
     Notifications(Result<Vec<Notification>, String>),
+    NotifLog(Result<Vec<Notification>, String>),
     Ha(Result<HaStates, String>),
     Media(Result<MediaState, String>),
     MediaArt {
@@ -574,6 +575,17 @@ pub struct App {
     /// The clock is drawn over the whole window, without chrome.
     pub clock_full: bool,
     pub notifications: Vec<Notification>,
+    /// Notifications the computer still remembers, newest first. The live list
+    /// above is only what the daemon saw since the deck woke up; this one is
+    /// the history that survives a closed lid or a restart on either side.
+    pub notif_log: Vec<Notification>,
+    pub notif_log_pending: bool,
+    pub notif_log_loaded: bool,
+    pub notif_log_err: String,
+    /// Text of the search field over the history.
+    pub notif_query: String,
+    /// The page shows the history instead of what is live now.
+    pub notif_hist: bool,
     pub notif_last_id: u64,
     pub notif_unread: u32,
     pub notif_pending: bool,
@@ -823,6 +835,12 @@ impl App {
             save_at: None,
             clock_full: false,
             notifications: Vec::new(),
+            notif_log: Vec::new(),
+            notif_log_pending: false,
+            notif_log_loaded: false,
+            notif_log_err: String::new(),
+            notif_query: String::new(),
+            notif_hist: false,
             notif_last_id: 0,
             notif_unread: 0,
             notif_pending: false,
@@ -2558,6 +2576,7 @@ impl App {
     /// Drop a notification locally and on the computer.
     pub fn dismiss_notif(&mut self, id: u64) {
         self.notifications.retain(|n| n.id != id);
+        self.notif_log.retain(|n| n.id != id);
         if let Some(c) = self.client() {
             self.spawn(move || {
                 Task::Msg(
@@ -2567,6 +2586,21 @@ impl App {
                 )
             });
         }
+    }
+
+    /// Read the history once per visit to the notifications page. The list is
+    /// a few dozen small records, so one read on arrival is enough; closing a
+    /// row updates it in place instead of refetching.
+    pub fn load_notif_log(&mut self) {
+        let Some(c) = self.client() else {
+            return;
+        };
+        if self.notif_log_pending {
+            return;
+        }
+        self.notif_log_pending = true;
+        self.notif_log_err.clear();
+        self.spawn(move || Task::NotifLog(c.notification_log().map_err(|e| e.to_string())));
     }
 
     /// Run the notification's action on the computer: what a click on the
@@ -3935,6 +3969,20 @@ impl App {
                 self.toast(msg, true);
             }
             Task::Installed(Err(e)) => self.toast(e, false),
+            Task::NotifLog(Ok(list)) => {
+                self.notif_log_pending = false;
+                self.notif_log_loaded = true;
+                self.notif_log = list;
+                // The live list keeps only the ids that are still stored.
+                let have: HashSet<u64> = self.notif_log.iter().map(|n| n.id).collect();
+                self.notifications.retain(|n| have.contains(&n.id));
+                let live: HashSet<u64> = self.notif_log.iter().map(|n| n.id).collect();
+                self.notif_art.retain(|id, _| live.contains(id));
+            }
+            Task::NotifLog(Err(e)) => {
+                self.notif_log_pending = false;
+                self.notif_log_err = e;
+            }
             Task::Notifications(Ok(list)) => {
                 self.notif_pending = false;
                 let mut added = 0;
@@ -3955,6 +4003,7 @@ impl App {
                                 self.popups.remove(0);
                             }
                         }
+                        self.notif_log.push(n.clone());
                         self.notifications.push(n);
                         added += 1;
                     }

@@ -422,6 +422,11 @@ impl Client {
         )
     }
 
+    /// The history the computer still keeps, newest first.
+    pub fn notification_log(&self) -> ApiResult<Vec<Notification>> {
+        self.request("GET", "/api/v1/notifications/log", None)
+    }
+
     pub fn clear_notifications(&self) -> ApiResult<Value> {
         self.request("POST", "/api/v1/notifications/clear", None)
     }

@@ -181,6 +181,13 @@ fn handle(state: Arc<AppState>, mut req: Request) {
                 Err(e) => error(req, 404, &e),
             }
         }
+        // The full history the store still remembers, newest first: what the
+        // deck shows when the user wants to look back, not only what arrived
+        // since the last poll.
+        (Method::Get, "/api/v1/notifications/log") => {
+            let items = state.notifications.log();
+            respond_json(req, 200, &items)
+        }
         (Method::Get, "/api/v1/notifications") => {
             let after_id = query_u64(query, "after_id");
             let since = query_u64(query, "since").unwrap_or(0);
