@@ -141,6 +141,11 @@ pub struct AppEntry {
     /// Desktop categories or the install location; shown as a subtitle.
     #[serde(default)]
     pub source: String,
+    /// The computer found a picture for this application. The deck then asks
+    /// for it at `/api/v1/apps/{id}/icon`; the path itself never leaves the
+    /// computer.
+    #[serde(default)]
+    pub has_icon: bool,
 }
 
 fn app_kind_default() -> AppKind {

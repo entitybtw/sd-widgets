@@ -1229,7 +1229,29 @@ pub fn control(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                             AppKind::Terminal => theme::icon::TERMINAL,
                                             AppKind::Gui => theme::icon::WIDGETS,
                                         };
-                                        ui.label(theme::icon(glyph, 18.0, t.accent));
+                                        // The real icon when the computer has
+                                        // one; the Grid glyph otherwise.
+                                        match app.app_icons.get(&entry.id) {
+                                            Some(tex) => {
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    Vec2::splat(18.0),
+                                                    Sense::hover(),
+                                                );
+                                                let uv = egui::Rect::from_min_max(
+                                                    egui::pos2(0.0, 0.0),
+                                                    egui::pos2(1.0, 1.0),
+                                                );
+                                                ui.painter().image(
+                                                    tex.id(),
+                                                    rect,
+                                                    uv,
+                                                    Color32::WHITE,
+                                                );
+                                            }
+                                            None => {
+                                                ui.label(theme::icon(glyph, 18.0, t.accent));
+                                            }
+                                        }
                                         ui.vertical(|ui| {
                                             ui.add(
                                                 egui::Label::new(
@@ -1651,7 +1673,7 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ),
     );
 
-    let online = app.status.is_some();
+    let online = app.online();
     // While BlueZ is scanning, new devices appear all the time: poll quickly so
     // the list grows under the finger instead of after a twenty-second wait.
     let discovering = app

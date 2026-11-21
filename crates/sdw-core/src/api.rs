@@ -232,6 +232,32 @@ impl Client {
         self.request("POST", "/api/v1/apps/launch", Some(&body))
     }
 
+    /// The picture of one application, when its entry says `has_icon`.
+    pub fn app_icon(&self, id: &str) -> ApiResult<Vec<u8>> {
+        let url = self.url(&format!("/api/v1/apps/{id}/icon"));
+        let mut r = self
+            .fast
+            .get(&url)
+            .header("Authorization", &format!("Bearer {}", self.token))
+            .call()
+            .map_err(|e| ApiError {
+                status: 0,
+                message: e.to_string(),
+            })?;
+        let status = r.status().as_u16();
+        if status != 200 {
+            let text = r.body_mut().read_to_string().unwrap_or_default();
+            return Err(ApiError {
+                status,
+                message: error_from_body(&text),
+            });
+        }
+        r.body_mut().read_to_vec().map_err(|e| ApiError {
+            status,
+            message: e.to_string(),
+        })
+    }
+
     /// Lock, suspend, restart or power off the computer.
     pub fn power(&self, action: PowerAction) -> ApiResult<Value> {
         let body = serde_json::json!({ "action": action.key() });

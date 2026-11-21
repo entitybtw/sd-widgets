@@ -276,6 +276,16 @@ fn handle(state: Arc<AppState>, mut req: Request) {
                     }
                 }
             }
+            if let Some(id) = path.strip_prefix("/api/v1/apps/") {
+                if let Some(id) = id.strip_suffix("/icon") {
+                    if method == Method::Get {
+                        return match crate::apps::icon(id) {
+                            Ok((bytes, mime)) => respond_bytes(req, 200, mime, bytes),
+                            Err(e) => error(req, 404, &e),
+                        };
+                    }
+                }
+            }
             error(req, 404, "Неизвестный маршрут")
         }
     }

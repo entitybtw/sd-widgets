@@ -349,6 +349,11 @@ pub enum Task {
     AddonInstalled(Result<(sdw_core::addons::Addon, String), String>),
     /// Applications listed by the active computer.
     Apps(Result<Vec<sdw_core::model::AppEntry>, String>),
+    /// One application's picture from the computer.
+    AppIcon {
+        id: String,
+        result: Result<Vec<u8>, String>,
+    },
     /// Bluetooth adapter and devices.
     Bluetooth(Result<sdw_core::model::BluetoothStatus, String>),
     /// Result of a Bluetooth action; the page reloads afterwards.
@@ -793,6 +798,7 @@ impl App {
             status_err: String::new(),
             status_pending: false,
             last_status: Instant::now() - Duration::from_secs(5),
+            status_ok_at: Instant::now() - Duration::from_secs(60),
             save_at: None,
             clock_full: false,
             notifications: Vec::new(),
@@ -961,6 +967,10 @@ impl App {
             control_apps_err: String::new(),
             control_apps_at: None,
             control_filter: String::new(),
+            app_icons: HashMap::new(),
+            app_icon_bytes: HashMap::new(),
+            app_icon_wanted: HashSet::new(),
+            app_icon_failed: HashSet::new(),
             power_confirm: None,
             bluetooth: None,
             bluetooth_pending: false,
@@ -1791,6 +1801,13 @@ impl App {
         self.last_notif = Instant::now() - Duration::from_secs(5);
         self.stream.feed = None;
         self.stream.texture = None;
+        // The pictures and the list belong to the computer that just went
+        // away; the next one starts clean.
+        self.control_apps.clear();
+        self.app_icons.clear();
+        self.app_icon_bytes.clear();
+        self.app_icon_wanted.clear();
+        self.app_icon_failed.clear();
         self.gamepad_on = false;
         self.input.set_enabled(false);
         self.input.set_target(None);
@@ -2584,6 +2601,77 @@ impl App {
             return;
         };
         self.spawn(move || Task::Apps(client.apps().map_err(|e| e.to_string())));
+    }
+
+    /// Ask the computer for the pictures of the applications on screen. Only
+    /// the entries that claim a picture are requested, at most a couple of
+    /// dozen at a time, and a failed one is not asked for again this session.
+    pub fn want_app_icons(&mut self, list: &[sdw_core::model::AppEntry]) {
+        let Some(client) = self.client() else {
+            return;
+        };
+        let mut asked = 0;
+        for entry in list {
+            if !entry.has_icon || asked >= 24 {
+                continue;
+            }
+            if self.app_icons.contains_key(&entry.id)
+                || self.app_icon_bytes.contains_key(&entry.id)
+                || self.app_icon_wanted.contains(&entry.id)
+                || self.app_icon_failed.contains(&entry.id)
+            {
+                continue;
+            }
+            asked += 1;
+            let id = entry.id.clone();
+            self.app_icon_wanted.insert(id.clone());
+            let c = client.clone();
+            let want = id.clone();
+            self.spawn(move || Task::AppIcon {
+                id,
+                result: c.app_icon(&want).map_err(|e| e.to_string()),
+            });
+        }
+    }
+
+    /// Decode the pictures that arrived. They are small theme PNGs, so this is
+    /// a few milliseconds for a whole page.
+    pub fn ensure_app_icons(&mut self, ctx: &egui::Context) {
+        if self.app_icon_bytes.is_empty() {
+            return;
+        }
+        let pending: Vec<(String, Vec<u8>)> = self.app_icon_bytes.drain().collect();
+        for (id, bytes) in pending {
+            let Ok(img) = image::load_from_memory(&bytes) else {
+                self.app_icon_failed.insert(id);
+                continue;
+            };
+            let img = img.to_rgba8();
+            let (w, h) = img.dimensions();
+            // A theme icon can be 512 px; 128 is already sharp on the deck.
+            let img = if w.max(h) > 128 {
+                let scale = 128.0 / w.max(h) as f32;
+                let nw = (w as f32 * scale).max(1.0) as u32;
+                let nh = (h as f32 * scale).max(1.0) as u32;
+                image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle)
+            } else {
+                img
+            };
+            let (w, h) = img.dimensions();
+            let color =
+                egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+            // Keep the cache bounded: a long session should not hold every
+            // icon ever shown.
+            if self.app_icons.len() >= 256 {
+                self.app_icons.clear();
+            }
+            let tex = ctx.load_texture(
+                format!("app-icon-{id}"),
+                color,
+                egui::TextureOptions::LINEAR,
+            );
+            self.app_icons.insert(id, tex);
+        }
     }
 
     /// Ask the computer for a declared power action. Reboot and shutdown never
@@ -3811,6 +3899,17 @@ impl App {
             Task::Apps(Err(e)) => {
                 self.control_apps_pending = false;
                 self.control_apps_err = e;
+            }
+            Task::AppIcon { id, result } => {
+                self.app_icon_wanted.remove(&id);
+                match result {
+                    Ok(bytes) => {
+                        self.app_icon_bytes.insert(id, bytes);
+                    }
+                    Err(_) => {
+                        self.app_icon_failed.insert(id);
+                    }
+                }
             }
             Task::Bluetooth(Ok(status)) => {
                 self.bluetooth_pending = false;

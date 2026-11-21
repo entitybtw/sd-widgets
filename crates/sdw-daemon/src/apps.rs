@@ -8,6 +8,8 @@
 use sdw_core::model::{AppEntry, AppKind, PowerAction};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// An application plus what is needed to start it. Only the sanitized
 /// [`AppEntry`] crosses the API.
@@ -18,6 +20,8 @@ pub struct App {
     args: Vec<String>,
     /// A Windows shortcut is opened through the shell, not executed.
     shortcut: bool,
+    /// The picture found for this application, if any.
+    icon: Option<PathBuf>,
 }
 
 impl App {
@@ -27,18 +31,67 @@ impl App {
             program,
             args,
             shortcut,
+            icon: None,
         }
     }
 }
 
+/// The list is read from disk once and then reused for a few seconds. The deck
+/// asks for one icon per application, and a full rescan for every picture
+/// would read hundreds of desktop files each time. A launch clears the cache
+/// so the new order shows at once.
+static SCAN: Mutex<Option<(Instant, Vec<App>)>> = Mutex::new(None);
+const SCAN_TTL: Duration = Duration::from_secs(20);
+
 /// Scan the applications installed for this user, most used first.
 pub fn scan() -> Vec<App> {
+    if let Ok(cache) = SCAN.lock() {
+        if let Some((at, apps)) = cache.as_ref() {
+            if at.elapsed() < SCAN_TTL {
+                return apps.clone();
+            }
+        }
+    }
     #[cfg(windows)]
     let mut apps = scan_windows();
     #[cfg(not(windows))]
     let mut apps = scan_linux();
     order_by_usage(&mut apps);
+    if let Ok(mut cache) = SCAN.lock() {
+        *cache = Some((Instant::now(), apps.clone()));
+    }
     apps
+}
+
+fn invalidate_scan() {
+    if let Ok(mut cache) = SCAN.lock() {
+        *cache = None;
+    }
+}
+
+/// The picture of one application as the deck asks for it: bytes plus the
+/// content type taken from the file's own extension.
+pub fn icon(id: &str) -> Result<(Vec<u8>, &'static str), String> {
+    let app = scan()
+        .into_iter()
+        .find(|a| a.entry.id == id)
+        .ok_or_else(|| "Приложение не найдено; обновите список".to_string())?;
+    let path = app
+        .icon
+        .ok_or_else(|| "У приложения нет значка".to_string())?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("значок: {e}"))?;
+    let mime = match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    };
+    Ok((bytes, mime))
 }
 
 /// Start an application by the id returned from [`scan`].
@@ -64,6 +117,7 @@ pub fn launch(id: &str) -> Result<String, String> {
     sdw_core::util::spawn_detached(program, &args)
         .map(|_| format!("запущено: {}", app.entry.name))?;
     bump_usage(id);
+    invalidate_scan();
     Ok(format!("запущено: {}", app.entry.name))
 }
 
@@ -315,6 +369,7 @@ fn parse_desktop(id: &str, text: &str, path: &Path) -> Option<App> {
     let mut comment = String::new();
     let mut exec = String::new();
     let mut categories = String::new();
+    let mut icon_name = String::new();
     let mut kind = AppKind::Gui;
     let mut hidden = false;
     for raw in text.lines() {
@@ -334,6 +389,7 @@ fn parse_desktop(id: &str, text: &str, path: &Path) -> Option<App> {
             "Name" => name = unescape_desktop(value),
             "Comment" => comment = unescape_desktop(value),
             "Exec" => exec = unescape_desktop(value),
+            "Icon" => icon_name = unescape_desktop(value),
             "Categories" => categories = value.to_string(),
             "Terminal" if value.eq_ignore_ascii_case("true") => kind = AppKind::Terminal,
             "NoDisplay" | "Hidden" if value.eq_ignore_ascii_case("true") => hidden = true,
@@ -366,18 +422,18 @@ fn parse_desktop(id: &str, text: &str, path: &Path) -> Option<App> {
     } else {
         format!("{source} · {}", categories.split(';').next().unwrap_or(""))
     };
-    Some(App::shell(
-        AppEntry {
-            id: id.to_string(),
-            name,
-            comment,
-            kind,
-            source,
-        },
-        program,
-        args,
-        false,
-    ))
+    let icon = resolve_icon(&icon_name);
+    let entry = AppEntry {
+        id: id.to_string(),
+        name,
+        comment,
+        kind,
+        source,
+        has_icon: icon.is_some(),
+    };
+    let mut app = App::shell(entry, program, args, false);
+    app.icon = icon;
+    Some(app)
 }
 
 #[cfg(not(windows))]
@@ -453,6 +509,92 @@ fn unescape_desktop(text: &str) -> String {
     out
 }
 
+#[cfg(not(windows))]
+/// Find the picture a desktop `Icon=` names. The value is either an absolute
+/// path or a theme icon name; both the user's icon themes and the system ones
+/// are searched, together with the Flatpak exports and the old `pixmaps`
+/// directory. Only formats the deck can decode are returned.
+fn resolve_icon(icon: &str) -> Option<PathBuf> {
+    let icon = icon.trim();
+    if icon.is_empty() {
+        return None;
+    }
+    let direct = Path::new(icon);
+    if direct.is_absolute() {
+        return decode_ok(direct).then(|| direct.to_path_buf());
+    }
+    // Some desktop files carry a path relative to the theme, or a name with a
+    // directory in it; the file stem is what the themes index.
+    let name = icon.rsplit(['/', '\\']).next().unwrap_or(icon);
+    let name = name.trim_end_matches(".png");
+    if name.is_empty() {
+        return None;
+    }
+
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(home) = dirs::data_dir() {
+        roots.push(home.join("icons"));
+    }
+    if let Some(home) = dirs::home_dir() {
+        // Flatpak installs its own theme copy under the user's data dir.
+        roots.push(home.join(".local/share/flatpak/exports/share/icons"));
+    }
+    roots.push(PathBuf::from("/var/lib/flatpak/exports/share/icons"));
+    let data_dirs =
+        std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    for dir in data_dirs.split(':').filter(|d| !d.trim().is_empty()) {
+        roots.push(Path::new(dir).join("icons"));
+    }
+
+    // 128 px is the sweet spot: sharp on the deck, cheap to decode.
+    const SIZES: [&str; 7] = [
+        "128x128", "256x256", "96x96", "64x64", "512x512", "48x48", "32x32",
+    ];
+    const THEMES: [&str; 3] = ["hicolor", "Adwaita", "breeze"];
+    for root in &roots {
+        for theme in THEMES {
+            for size in SIZES {
+                for ext in ["png", "jpg", "webp"] {
+                    let path = root
+                        .join(theme)
+                        .join(size)
+                        .join("apps")
+                        .join(format!("{name}.{ext}"));
+                    if path.is_file() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+    }
+    // `pixmaps` is where older applications and games still put their icon.
+    let mut pixmaps: Vec<PathBuf> = vec![PathBuf::from("/usr/share/pixmaps")];
+    if let Some(home) = dirs::data_dir() {
+        pixmaps.push(home.join("pixmaps"));
+    }
+    for dir in &pixmaps {
+        for ext in ["png", "jpg", "webp"] {
+            let path = dir.join(format!("{name}.{ext}"));
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(not(windows))]
+fn decode_ok(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .as_str(),
+        "png" | "jpg" | "jpeg" | "webp"
+    )
+}
+
 // ---------------------------------------------------------------- windows apps
 
 #[cfg(windows)]
@@ -521,6 +663,7 @@ fn walk_shortcuts(root: &Path, dir: &Path, out: &mut Vec<App>) {
                 comment: String::new(),
                 kind: AppKind::Gui,
                 source,
+                has_icon: false,
             },
             path_text.to_string(),
             Vec::new(),
