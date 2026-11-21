@@ -12,6 +12,8 @@ use eframe::egui::{
 use sdw_core::model::{random_id, Action, Bind, GestureKind, GestureSpec, SwipeDir, Trigger};
 use sdw_core::{t, Lang};
 
+/// What kind of action a bind carries. Kept next to the editor because it is
+/// the first choice there; the editor itself lives in the app state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActionKind {
     None,
@@ -287,6 +289,17 @@ fn title(ui: &mut Ui, t: &Tokens, text: &str, sub: &str) {
 // ---------------------------------------------------------------- list
 
 pub fn list_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    // Headless checks can jump straight into an editor: `SDW_BIND=<id>:launch`
+    // or `SDW_BIND=<id>:shell`. It changes nothing on a normal run.
+    if let Some((id, kind)) = app.binds.open.clone() {
+        app.binds.open = None;
+        if let Some(bind) = app.cfg.binds.iter().find(|b| b.id == id).cloned() {
+            let mut editor = BindEditor::from_bind(&bind);
+            editor.action = kind.default_action();
+            app.binds.editor = Some(editor);
+            app.set_bind_capture(false);
+        }
+    }
     title(
         ui,
         t,
@@ -906,13 +919,23 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     ui.label(
                         RichText::new(t!(
                             lang,
-                            "имя приложения, .desktop-файл или steam:// ссылка",
-                            "app name, .desktop file or steam:// link"
+                            "приложение с компьютера — из списка или вручную",
+                            "an application on the computer — from the list or by hand"
                         ))
                         .size(12.5)
                         .color(t.muted),
                     );
-                    ui.add(TextEdit::singleline(target).desired_width(f32::INFINITY));
+                    // The list is the one the control page already reads, so
+                    // the picker costs nothing extra. The typed value stays
+                    // visible: an older bind may name something the scan skips.
+                    if let Some(picked) = launch_picker(app, ui, t, target) {
+                        *target = picked;
+                    }
+                    ui.add(
+                        TextEdit::singleline(target)
+                            .hint_text("steam://rungameid/…")
+                            .desired_width(f32::INFINITY),
+                    );
                 }
                 Action::Volume { delta } => {
                     let mut v = *delta as f32;
@@ -1279,6 +1302,216 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
     }
 }
 
+/// Pick the application a Launch action starts.
+///
+/// The list is the same one the control page shows (ordered by how often the
+/// computer's user starts each program, with the real pictures), so a bind is
+/// chosen from the catalog instead of typed. The text field stays below the
+/// list, because an old bind may name something the scan skips (a
+/// `steam://` link, a terminal command).
+///
+/// Returns `Some(id)` when the user picked an entry.
+fn launch_picker(app: &mut App, ui: &mut Ui, t: &Tokens, target: &str) -> Option<String> {
+    let lang = app.lang;
+    let online = app.online();
+    let stale = app
+        .control_apps_at
+        .map(|at| at.elapsed() > std::time::Duration::from_secs(90))
+        .unwrap_or(true);
+    if online && stale && app.control_apps.is_empty() && !app.control_apps_pending {
+        app.load_control_apps();
+    }
+
+    let mut picked = None;
+    theme::row_ends(
+        ui,
+        |ui| {
+            ui.label(theme::hud(t!(lang, "приложение", "application"), t.faint));
+            if app.control_apps_pending {
+                ui.spinner();
+            }
+        },
+        |ui| {
+            if online {
+                ui.label(
+                    RichText::new(format!(
+                        "{} {}",
+                        app.control_apps.len(),
+                        t!(lang, "на компьютере", "on the computer")
+                    ))
+                    .family(FontFamily::Monospace)
+                    .size(10.5)
+                    .color(t.faint),
+                );
+            } else {
+                ui.label(
+                    RichText::new(t!(lang, "компьютер недоступен", "the computer is offline"))
+                        .size(11.0)
+                        .color(t.warn),
+                );
+            }
+        },
+    );
+
+    if !app.control_apps_err.is_empty() {
+        ui.label(
+            RichText::new(sdw_core::util::truncate(&app.control_apps_err, 200))
+                .size(11.5)
+                .color(t.warn),
+        );
+    }
+
+    ui.add(
+        TextEdit::singleline(&mut app.binds.launch_filter)
+            .hint_text(t!(lang, "поиск приложения", "search applications"))
+            .desired_width((ui.available_width() * 0.62).max(220.0)),
+    );
+
+    if !app.control_apps.is_empty() {
+        let needle = app.binds.launch_filter.trim().to_lowercase();
+        let list: Vec<sdw_core::model::AppEntry> = app
+            .control_apps
+            .iter()
+            .filter(|a| {
+                needle.is_empty()
+                    || a.name.to_lowercase().contains(&needle)
+                    || a.comment.to_lowercase().contains(&needle)
+                    || a.id.to_lowercase().contains(&needle)
+            })
+            .cloned()
+            .collect();
+        if list.is_empty() {
+            theme::small(ui, t!(lang, "ничего не найдено", "nothing found"), t.muted);
+        } else {
+            app.want_app_icons(&list);
+            app.ensure_app_icons(ui.ctx());
+            egui::ScrollArea::vertical()
+                .id_salt("bind-launch-apps")
+                .max_height(216.0)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    let width = ui.available_width();
+                    for entry in &list {
+                        let current = entry.id == target.trim();
+                        let hit = egui::Frame::new()
+                            .fill(if current { t.bg2 } else { t.well })
+                            .stroke(Stroke::new(1.0, if current { t.accent } else { t.line }))
+                            .corner_radius(CornerRadius::ZERO)
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.set_width(width - 22.0);
+                                let inner = ui
+                                    .horizontal(|ui| {
+                                        let glyph = match entry.kind {
+                                            sdw_core::model::AppKind::Terminal => {
+                                                theme::icon::TERMINAL
+                                            }
+                                            sdw_core::model::AppKind::Gui => theme::icon::WIDGETS,
+                                        };
+                                        match app.app_icons.get(&entry.id) {
+                                            Some(tex) => {
+                                                let (rect, _) = ui.allocate_exact_size(
+                                                    Vec2::splat(16.0),
+                                                    egui::Sense::hover(),
+                                                );
+                                                ui.painter().image(
+                                                    tex.id(),
+                                                    rect,
+                                                    egui::Rect::from_min_max(
+                                                        egui::pos2(0.0, 0.0),
+                                                        egui::pos2(1.0, 1.0),
+                                                    ),
+                                                    Color32::WHITE,
+                                                );
+                                            }
+                                            None => {
+                                                ui.label(theme::icon(glyph, 16.0, t.accent));
+                                            }
+                                        }
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&entry.name)
+                                                    .size(13.5)
+                                                    .color(t.strong),
+                                            )
+                                            .truncate(),
+                                        );
+                                        if current {
+                                            ui.with_layout(
+                                                Layout::right_to_left(Align::Center),
+                                                |ui| {
+                                                    ui.label(
+                                                        theme::icon(
+                                                            theme::icon::CHECK,
+                                                            16.0,
+                                                            t.accent,
+                                                        )
+                                                        .size(16.0)
+                                                        .color(t.accent),
+                                                    );
+                                                },
+                                            );
+                                        }
+                                    })
+                                    .response;
+                                let hit = ui
+                                    .interact(
+                                        ui.min_rect(),
+                                        egui::Id::new(("bind-launch", &entry.id)),
+                                        egui::Sense::click(),
+                                    )
+                                    .union(inner);
+                                // The row itself is the target: the whole
+                                // rectangle and the gutters around it, so a
+                                // finger does not have to hit the label.
+                                let pad = ui.spacing().item_spacing;
+                                let hit = ui
+                                    .interact(
+                                        ui.min_rect().expand2(Vec2::new(0.0, pad.y * 0.5)),
+                                        egui::Id::new((
+                                            "bind-launch-row",
+                                            &entry.id,
+                                            ui.available_width() as u32,
+                                        )),
+                                        egui::Sense::click(),
+                                    )
+                                    .union(hit);
+                                if hit.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                }
+                                hit.clicked()
+                            })
+                            .inner;
+                        if hit {
+                            picked = Some(entry.id.clone());
+                        }
+                        ui.add_space(2.0);
+                    }
+                });
+        }
+    } else if !app.control_apps_pending && app.control_apps_err.is_empty() && online {
+        theme::small(
+            ui,
+            t!(
+                lang,
+                "на компьютере не нашлось приложений с ярлыками.",
+                "no applications with shortcuts were found on the computer."
+            ),
+            t.muted,
+        );
+    }
+
+    ui.label(
+        RichText::new(t!(
+            lang,
+            "или вручную: .desktop-файл, команда, steam://",
+            "or by hand: a .desktop file, a command, steam://"
+        ))
+        .size(11.0)
+        .color(t.faint),
+    );
+    picked
+}
 fn gesture_kind_label(kind: GestureKind, lang: Lang) -> &'static str {
     match kind {
         GestureKind::Swipe => t!(lang, "свайп", "swipe"),
