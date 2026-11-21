@@ -530,8 +530,19 @@ pub struct App {
     pub page_turn_from: f32,
     pub page_turn_to: f32,
     pub page_turn_at: Instant,
+    /// How long the turn runs and the speed it starts with: the release keeps
+    /// the speed the finger gave the page and loses it smoothly.
+    pub page_turn_dur: f32,
+    pub page_turn_vel: f32,
     pub page_turn_to_page: Option<Page>,
     pub page_turn_active: bool,
+    /// Where the finger grabbed the page. The preview is measured from this
+    /// point, so the first frame of the gesture does not jump by the
+    /// recognition threshold.
+    pub page_anchor: Option<f32>,
+    /// The page a tap or an arrow just left, its scroll epoch and when: it is
+    /// drawn sliding out while the new page comes in, so nothing vanishes.
+    pub page_from: Option<(Page, u64, f32, Instant)>,
     /// The page was turned by a swipe, so it needs no fade-in of its own: the
     /// finger already showed where it comes from.
     pub page_instant: bool,
@@ -759,8 +770,12 @@ impl App {
             page_turn_from: 0.0,
             page_turn_to: 0.0,
             page_turn_at: Instant::now(),
+            page_turn_dur: 0.3,
+            page_turn_vel: 0.0,
             page_turn_to_page: None,
             page_turn_active: false,
+            page_anchor: None,
+            page_from: None,
             page_instant: false,
             page_silent: false,
             page_at: Instant::now(),
@@ -1135,6 +1150,7 @@ impl App {
                     egui::TouchPhase::Start => {
                         if self.touch.points.is_empty() {
                             self.touch_blocked = false;
+                            self.page_anchor = None;
                         }
                         self.touch.begin(id.0, *pos, rect, now)
                     }
@@ -1165,27 +1181,53 @@ impl App {
             && self.touch.max >= 1
         {
             if let Some(delta) = self.touch.drag_px(rect) {
-                if delta.x.abs() > 24.0 && delta.x.abs() > delta.y.abs() * 1.6 {
-                    let w = rect.width().max(1.0);
-                    self.page_slide = delta.x.clamp(-w * 0.6, w * 0.6);
+                // The gesture is recognised at 24 points; the page starts
+                // moving from the point where it was recognised, not from
+                // zero, so the first preview frame is not a jump.
+                if self.page_anchor.is_none()
+                    && delta.x.abs() > 24.0
+                    && delta.x.abs() > delta.y.abs() * 1.6
+                {
+                    self.page_anchor = Some(delta.x);
+                }
+                if let Some(anchor) = self.page_anchor {
+                    if delta.x.abs() > delta.y.abs() * 1.2 {
+                        let w = rect.width().max(1.0);
+                        self.page_slide = (delta.x - anchor).clamp(-w, w);
+                    }
                 }
             }
         }
         if let Some(spec) = finished {
-            self.page_slide = 0.0;
             if spec.fingers == 1 && spec.kind == GestureKind::Swipe && !self.touch_blocked {
                 // egui-winit also turns the touch into a mouse drag, and the
                 // raw swipe below would turn the page a second time. Remember
                 // the gesture so that fallback stands down for this release.
                 self.last_gesture = Some((spec.clone(), Instant::now()));
-                self.nav_step(if spec.dir == Some(SwipeDir::Left) {
-                    1
+                // The same smooth turn as a mouse swipe: the preview stays
+                // where the finger left it and the release finishes it.
+                let w = rect.width().max(1.0);
+                let dir = if spec.dir == Some(SwipeDir::Left) {
+                    -1.0
                 } else {
-                    -1
-                });
+                    1.0
+                };
+                sound::play(
+                    &self.cfg.sound,
+                    if dir < 0.0 { Cue::Navigate } else { Cue::Back },
+                );
+                self.page_silent = true;
+                self.start_page_turn(
+                    dir * w,
+                    self.step_page(if dir < 0.0 { 1 } else { -1 }),
+                    w,
+                    0.0,
+                );
+                self.page_silent = false;
             } else {
                 self.on_input(DeckEvent::Gesture(spec));
             }
+            self.page_anchor = None;
         }
     }
 
@@ -1222,6 +1264,7 @@ impl App {
                     // A tap during a turn lands it at once: the page must not
                     // keep moving under a finger that already wants it.
                     self.finish_page_turn();
+                    self.page_anchor = None;
                     self.edge_swipe = Some((pos, pos, Instant::now()));
                     out.push(egui::Event::PointerButton {
                         pos,
@@ -1265,14 +1308,25 @@ impl App {
                                 self.quick_off =
                                     (self.quick_height - dy).clamp(0.0, self.quick_height);
                                 self.page_slide = 0.0;
-                            } else if theme::style().animations
-                                && dx.abs() > 24.0
-                                && dx.abs() > dy.abs() * 1.6
-                            {
+                            } else if theme::style().animations {
                                 // Only a clearly horizontal drag previews the
                                 // next page; vertical scrolling stays intact.
-                                let w = rect.width().max(1.0);
-                                self.page_slide = dx.clamp(-w, w);
+                                // The preview starts where the gesture was
+                                // recognised, so it never jumps by 24 points.
+                                if self.page_anchor.is_none()
+                                    && dx.abs() > 24.0
+                                    && dx.abs() > dy.abs() * 1.6
+                                {
+                                    self.page_anchor = Some(dx);
+                                }
+                                if let Some(anchor) = self.page_anchor {
+                                    if dx.abs() > dy.abs() * 1.2 {
+                                        let w = rect.width().max(1.0);
+                                        self.page_slide = (dx - anchor).clamp(-w, w);
+                                    }
+                                } else if self.page_slide != 0.0 {
+                                    self.page_slide = 0.0;
+                                }
                             } else if self.page_slide != 0.0 {
                                 self.page_slide = 0.0;
                             }
@@ -1356,33 +1410,51 @@ impl App {
                                 self.last_gesture.as_ref().is_some_and(|(_, when)| {
                                     when.elapsed() < Duration::from_millis(450)
                                 });
-                            // A page turns when it has been dragged a fifth of
-                            // the way, or on a quick flick: the rest of the
-                            // move is carried by the turn, not by the finger.
-                            let width = rect.width().max(1.0);
-                            let flick =
-                                at.elapsed() < Duration::from_millis(320) && dx.abs() > 56.0;
-                            let commit = !self.swipe_blocked
-                                && !gesture_recent
-                                && dx.abs() > dy.abs() * 1.6
-                                && (dx.abs() > width * 0.2 || flick);
-                            if commit {
-                                // The cue belongs to the flick itself; the
-                                // page lands a fraction of a second later.
-                                sound::play(
-                                    &self.cfg.sound,
-                                    if dx < 0.0 { Cue::Navigate } else { Cue::Back },
-                                );
-                                self.page_silent = true;
-                                let to = if dx < 0.0 { -width } else { width };
-                                self.start_page_turn(
-                                    to,
-                                    self.step_page(if dx < 0.0 { 1 } else { -1 }),
-                                );
-                                self.page_silent = false;
-                            } else {
-                                self.start_page_turn(0.0, None);
+                            // A native touch gesture owns this release; the
+                            // mouse events it also produced must not cancel
+                            // the turn it just started.
+                            if !gesture_recent {
+                                let width = rect.width().max(1.0);
+                                let slide = self.page_slide;
+                                let held = at.elapsed().as_secs_f32().max(0.05);
+                                // The finger's own speed, so the turn starts
+                                // with it instead of yanking the page.
+                                let vel = dx / held;
+                                // A page turns when it has been dragged a
+                                // fifth of the way, or on a quick flick: the
+                                // rest of the move is carried by the turn.
+                                let flick = held < 0.35
+                                    && vel.abs() > 420.0
+                                    && slide.abs() > 20.0
+                                    && slide.signum() == vel.signum();
+                                let commit = !self.swipe_blocked
+                                    && self.page_anchor.is_some()
+                                    && (slide.abs() > width * 0.2 || flick);
+                                if commit {
+                                    // The cue belongs to the flick itself; the
+                                    // page lands a fraction of a second later.
+                                    sound::play(
+                                        &self.cfg.sound,
+                                        if slide < 0.0 {
+                                            Cue::Navigate
+                                        } else {
+                                            Cue::Back
+                                        },
+                                    );
+                                    self.page_silent = true;
+                                    let to = if slide < 0.0 { -width } else { width };
+                                    self.start_page_turn(
+                                        to,
+                                        self.step_page(if slide < 0.0 { 1 } else { -1 }),
+                                        width,
+                                        vel,
+                                    );
+                                    self.page_silent = false;
+                                } else if slide != 0.0 {
+                                    self.start_page_turn(0.0, None, width, vel);
+                                }
                             }
+                            self.page_anchor = None;
                         }
                     }
                     // Keep the release either way: it ends the pointer state.
@@ -1562,6 +1634,12 @@ impl App {
                 Page::ORDER.iter().position(|p| *p == page),
             ) {
                 self.page_dir = if b > a { 1.0 } else { -1.0 };
+            }
+            // A tap or an arrow leaves the old page behind for a moment, so
+            // it slides out instead of disappearing under the new one. A
+            // swipe already has it under the finger and needs no ghost.
+            if theme::style().animations && !self.page_silent && self.binds.editor.is_none() {
+                self.page_from = Some((self.page, self.page_epoch, self.page_dir, Instant::now()));
             }
             self.page_at = Instant::now();
             self.page = page;
@@ -3153,16 +3231,18 @@ impl App {
         let dragging = self.edge_swipe.is_some() || !self.touch.points.is_empty();
         if !dragging {
             if self.page_turn_active {
-                let width = ctx.content_rect().width().max(1.0);
-                let left = (self.page_turn_to - self.page_turn_from).abs();
-                // A long, sine-shaped ease: the page keeps the speed the finger
-                // gave it and loses it smoothly, instead of shooting off and
-                // stopping dead.
-                let dur = 0.20 + 0.22 * (left / width).min(1.0);
+                let dur = self.page_turn_dur.max(0.01);
                 let k = (self.page_turn_at.elapsed().as_secs_f32() / dur).min(1.0);
-                let ease = (k * std::f32::consts::FRAC_PI_2).sin();
-                self.page_slide =
-                    self.page_turn_from + (self.page_turn_to - self.page_turn_from) * ease;
+                // Cubic Hermite: starts with the speed the finger had and
+                // arrives with none, so the release is neither a yank nor a
+                // stop. The start speed is clamped to keep the curve monotone.
+                let k2 = k * k;
+                let k3 = k2 * k;
+                let h01 = 3.0 * k2 - 2.0 * k3;
+                let h10 = k3 - 2.0 * k2 + k;
+                self.page_slide = self.page_turn_from
+                    + (self.page_turn_to - self.page_turn_from) * h01
+                    + dur * self.page_turn_vel * h10;
                 if k >= 1.0 {
                     self.finish_page_turn();
                 } else {
@@ -3170,6 +3250,14 @@ impl App {
                 }
             } else {
                 self.page_slide = 0.0;
+            }
+        }
+        // The page a tap or an arrow left slides out for a third of a second.
+        if let Some((_, _, _, at)) = self.page_from {
+            if at.elapsed() > Duration::from_millis(340) {
+                self.page_from = None;
+            } else {
+                ctx.request_repaint();
             }
         }
         // The control panel is moved by the same rule as a page: the finger
@@ -3760,10 +3848,10 @@ impl App {
     // ------------------------------------------------------------ chrome
 
     /// Start the turn that follows a released swipe. `to` is the offset the
-    /// page must reach: a full width when the swipe commits, zero when it
-    /// falls back. With animations off there is nothing to carry, so the page
-    /// switches at once.
-    fn start_page_turn(&mut self, to: f32, page: Option<Page>) {
+    /// page must reach, `width` the page width and `vel` the finger's speed in
+    /// points per second. With animations off there is nothing to carry, so
+    /// the page switches at once.
+    fn start_page_turn(&mut self, to: f32, page: Option<Page>, width: f32, vel: f32) {
         if !theme::style().animations {
             self.page_slide = 0.0;
             if let Some(p) = page {
@@ -3772,9 +3860,28 @@ impl App {
             }
             return;
         }
-        self.page_turn_from = self.page_slide;
+        let from = self.page_slide;
+        let dist = to - from;
+        let ratio = (dist.abs() / width.max(1.0)).min(1.0);
+        let dur = if page.is_some() {
+            0.26 + 0.22 * ratio
+        } else {
+            0.18 + 0.16 * ratio
+        };
+        // A Hermite that starts faster than this would overshoot the target
+        // and come back; a finger that moved away from the target may carry
+        // the page a little further before it returns.
+        let limit = 3.0 * dist.abs() / dur;
+        let vel = if dist >= 0.0 {
+            vel.clamp(-0.35 * limit, limit)
+        } else {
+            vel.clamp(-limit, 0.35 * limit)
+        };
+        self.page_turn_from = from;
         self.page_turn_to = to;
         self.page_turn_at = Instant::now();
+        self.page_turn_dur = dur;
+        self.page_turn_vel = vel;
         self.page_turn_to_page = page;
         self.page_turn_active = true;
     }
@@ -3788,13 +3895,14 @@ impl App {
         self.page_slide = 0.0;
         self.page_turn_from = 0.0;
         self.page_turn_to = 0.0;
+        self.page_turn_vel = 0.0;
         if let Some(p) = self.page_turn_to_page.take() {
             // The release already played the cue and the finger already
             // showed where the page comes from: no fade, no second sound.
             self.page_silent = true;
+            self.page_instant = true;
             self.set_page(p);
             self.page_silent = false;
-            self.page_instant = true;
         }
     }
 
@@ -3850,11 +3958,25 @@ impl App {
         let anim = if !theme::style().animations || self.page_instant || self.page_turn_active {
             1.0
         } else {
+            // Called even while a ghost runs: it keeps egui's animation state
+            // moving, so the page does not fade a second time after the ghost.
             ctx.animate_bool_with_time(Id::new(("page", self.page_epoch)), true, 0.28)
         };
-        let ease = 1.0 - (1.0 - anim).powi(3);
         let width = ctx.content_rect().width().max(1.0);
-        let travel = (width * 0.12).clamp(36.0, 220.0);
+        // A tap or an arrow: the old page slides out while the new one comes
+        // in. A swipe is already carried by `page_slide`.
+        let ghost = self
+            .page_from
+            .filter(|(_, _, _, at)| at.elapsed() < Duration::from_millis(340));
+        let (ease, travel) = if let Some((_, _, _, at)) = ghost {
+            let k = (at.elapsed().as_secs_f32() / 0.34).min(1.0);
+            (k * k * (3.0 - 2.0 * k), width)
+        } else {
+            (
+                1.0 - (1.0 - anim).powi(3),
+                (width * 0.12).clamp(36.0, 220.0),
+            )
+        };
         let slide = self.page_slide + (1.0 - ease) * travel * self.page_dir;
 
         // The floating arrows sit over the window edge. The page is inset by
@@ -3902,6 +4024,23 @@ impl App {
                 theme::backdrop(ui, &t);
                 let content = ui.max_rect();
                 let clip = ui.clip_rect();
+                if let Some((from, from_epoch, dir, _)) = ghost {
+                    let mut ghost_ui = ui.new_child(
+                        egui::UiBuilder::new()
+                            .id_salt(("deck-ghost-ui", from_epoch))
+                            .max_rect(content.translate(Vec2::new(-dir * width * 0.22 * ease, 0.0)))
+                            .layout(*ui.layout()),
+                    );
+                    ghost_ui.set_clip_rect(clip);
+                    let saved = std::mem::replace(&mut self.page, from);
+                    self.page_scroll(
+                        &mut ghost_ui,
+                        &t,
+                        egui::Id::new(("deck-page", from_epoch)),
+                        false,
+                    );
+                    self.page = saved;
+                }
                 if let Some((next, dir)) = neighbour {
                     let mut peek = ui.new_child(
                         egui::UiBuilder::new()
@@ -3930,7 +4069,11 @@ impl App {
                 page_ui.set_clip_rect(clip);
                 // A page held by the finger stays solid: it is being turned,
                 // not fading.
-                page_ui.set_opacity(if self.page_slide != 0.0 { 1.0 } else { ease });
+                page_ui.set_opacity(if self.page_slide != 0.0 || ghost.is_some() {
+                    1.0
+                } else {
+                    ease
+                });
                 self.page_scroll(
                     &mut page_ui,
                     &t,
