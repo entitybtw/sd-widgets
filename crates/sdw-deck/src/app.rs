@@ -1388,7 +1388,13 @@ impl App {
                             // top. An ordinary scroll starts anywhere and
                             // scrolls the page, never the panel.
                             let from_top = start.y <= rect.top() + 52.0;
-                            let at_top = self.clock_full || self.page_scroll_offset <= 1.0;
+                            // A finger that starts on the top bar never scrolls
+                            // the page, so the shade opens there even when the
+                            // page below is scrolled down. Requiring the page to
+                            // be at its top was why the control centre refused to
+                            // open on a long page such as the appearance one.
+                            let at_top =
+                                self.clock_full || self.page_scroll_offset <= 1.0 || from_top;
                             if self.quick_open {
                                 // The page underneath never moves while the
                                 // panel is up: an upward drag pulls the panel
@@ -1492,7 +1498,9 @@ impl App {
                         } else if !self.swipe_blocked
                             && at.elapsed() < Duration::from_millis(900)
                             && pull > 90.0
-                            && (self.clock_full || self.page_scroll_offset <= 4.0)
+                            && (self.clock_full
+                                || self.page_scroll_offset <= 4.0
+                                || start.y <= rect.top() + 52.0)
                             && dy > dx.abs() * 2.0
                         {
                             self.page_slide = 0.0;
