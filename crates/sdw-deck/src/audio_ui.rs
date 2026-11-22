@@ -306,13 +306,25 @@ fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             changed = true;
         }
         let mut width = app.cfg.viz.width as u32;
-        if theme::slider_u32(ui, t, t!(app.lang, "ширина", "width"), &mut width, 40..=400) {
-            app.cfg.viz.width = width.clamp(40, 400) as u16;
+        if theme::slider_u32(
+            ui,
+            t,
+            t!(app.lang, "ширина", "width"),
+            &mut width,
+            40..=1000,
+        ) {
+            app.cfg.viz.width = width.clamp(40, 1000) as u16;
             changed = true;
         }
         let mut height = app.cfg.viz.height as u32;
-        if theme::slider_u32(ui, t, t!(app.lang, "высота", "height"), &mut height, 6..=48) {
-            app.cfg.viz.height = height.clamp(6, 48) as u8;
+        if theme::slider_u32(
+            ui,
+            t,
+            t!(app.lang, "высота", "height"),
+            &mut height,
+            6..=240,
+        ) {
+            app.cfg.viz.height = height.clamp(6, 240) as u8;
             changed = true;
         }
         let mut gap = app.cfg.viz.gap as u32;

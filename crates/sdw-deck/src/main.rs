@@ -18,6 +18,7 @@ mod sound;
 mod sys;
 mod theme;
 mod viz;
+mod viz_stage;
 
 use clap::Parser;
 use eframe::egui;

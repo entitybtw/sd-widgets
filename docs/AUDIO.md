@@ -119,9 +119,9 @@ fail, it records the **default source** instead, which can be a microphone. A
 sink that disappeared therefore stops the meter (the deck falls back to its own
 bands) rather than recording something else.
 The Deck side is `VizCfg`: placement (`nav`, `shade`, `clock`), source (`pc`,
-`media`), shape (`bars`, `dots`, `wave`), `bars`, `gap`, `width`, `height`,
-`opacity`, `gain` (sensitivity), `mirror`, `peak` and `color`. The defaults
-follow cava, and the **cava look** button restores them.
+`media`), shape (`bars`, `dots`, `wave`, `circular`), `bars`, `gap`, `width`,
+`height`, `opacity`, `gain` (sensitivity), `mirror`, `peak` and `color`. The
+defaults follow cava, and the **cava look** button restores them.
 
 Where the strip lives is `anchor` (`tl`, `tc`, `tr`, `ml`, `mc`, `mr`, `bl`,
 `bc`, `br` — the nine points of the clock face), `offset_x` and `offset_y` in
@@ -130,6 +130,13 @@ points from that anchor, `nav_side` (`left` or `right`) for the top bar, and
 The clock clamps the result inside the face, so an offset can nudge the strip
 but never push it out of the picture. The **placement** card on the audio page
 edits all of it and has one button that resets the position.
+
+The dedicated **Visualizer** page gives the meter its own canvas. It has the
+same nine anchors, a 10–100% canvas scale, percentage offsets, theme/black/
+accent backgrounds and an optional Grid. The canvas can also be opened without
+the Deck chrome in full-screen mode; a tap or Escape returns to the page.
+Its controls are shared with the Look page, while the Media page intentionally
+does not duplicate them.
 
 ## Troubleshooting
 

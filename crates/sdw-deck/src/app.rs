@@ -37,6 +37,14 @@ fn page_inset() -> f32 {
     }
 }
 
+/// The top bar's own scale, from the look. One place so the bar and the
+/// measurement of its right-hand group can never disagree: a bar drawn at
+/// 1.4× with shortcuts measured at 1× would either overlap the strip or
+/// leave a hole.
+fn nav_scale() -> f32 {
+    theme::style().nav_scale.clamp(0.8, 1.6)
+}
+
 /// The page-turn curve: a cubic from 0 to 1 that starts at slope `m` and
 /// settles at slope 0. `m` is the finger's speed in page widths, so the page
 /// leaves exactly as fast as the finger did and stops without a bounce.
@@ -57,6 +65,7 @@ fn page_width(ctx: &egui::Context) -> f32 {
 pub enum Page {
     Home,
     Clock,
+    Visualizer,
     Computers,
     Control,
     Bluetooth,
@@ -84,9 +93,10 @@ impl Page {
         Page::Binds,
     ];
     /// Every page, in the order the arrows and the floating dock walk through them.
-    pub const ORDER: [Page; 15] = [
+    pub const ORDER: [Page; 16] = [
         Page::Home,
         Page::Clock,
+        Page::Visualizer,
         Page::Computers,
         Page::Control,
         Page::Bluetooth,
@@ -105,6 +115,7 @@ impl Page {
         match self {
             Page::Home => "home",
             Page::Clock => "clock",
+            Page::Visualizer => "visualizer",
             Page::Computers => "computers",
             Page::Control => "control",
             Page::Bluetooth => "bluetooth",
@@ -123,6 +134,7 @@ impl Page {
     pub fn from_key(key: &str) -> Page {
         match key.trim().to_ascii_lowercase().as_str() {
             "clock" | "watch" | "time" => Page::Clock,
+            "visualizer" | "viz" => Page::Visualizer,
             "computers" | "pc" => Page::Computers,
             "control" | "pult" | "power" => Page::Control,
             "bluetooth" | "bt" | "headphones" => Page::Bluetooth,
@@ -143,6 +155,7 @@ impl Page {
         match self {
             Page::Home => t!(l, "домой", "home"),
             Page::Clock => t!(l, "часы", "clock"),
+            Page::Visualizer => t!(l, "визуализатор", "visualizer"),
             Page::Computers => t!(l, "компьютеры", "computers"),
             Page::Control => t!(l, "пульт", "control"),
             Page::Bluetooth => t!(l, "bluetooth", "bluetooth"),
@@ -162,6 +175,7 @@ impl Page {
         match self {
             Page::Home => theme::icon::HOME,
             Page::Clock => theme::icon::CLOCK,
+            Page::Visualizer => theme::icon::EQUALIZER,
             Page::Computers => theme::icon::COMPUTERS,
             Page::Control => theme::icon::POWER,
             Page::Bluetooth => theme::icon::BLUETOOTH,
@@ -620,6 +634,8 @@ pub struct App {
     pub save_at: Option<Instant>,
     /// The clock is drawn over the whole window, without chrome.
     pub clock_full: bool,
+    /// The visualizer's stage is drawn over the whole window, without chrome.
+    pub viz_full: bool,
     pub notifications: Vec<Notification>,
     /// Notifications the computer still remembers, newest first. The live list
     /// above is only what the daemon saw since the deck woke up; this one is
@@ -902,6 +918,7 @@ impl App {
             status_ok_at: Instant::now() - Duration::from_secs(60),
             save_at: None,
             clock_full: false,
+            viz_full: false,
             notifications: Vec::new(),
             notif_log: Vec::new(),
             notif_log_pending: false,
@@ -1645,6 +1662,8 @@ impl App {
     fn go_back(&mut self, ctx: &egui::Context) {
         if self.quick_open {
             self.set_quick(false);
+        } else if self.viz_full {
+            self.viz_full = false;
         } else if self.clock_full {
             self.clock_full = false;
         } else if self.stream.fullscreen {
@@ -1797,8 +1816,9 @@ impl App {
     }
 
     pub fn set_page(&mut self, page: Page) {
-        // Any explicit navigation leaves the full-screen clock behind.
+        // Any explicit navigation leaves the full-screen overlays behind.
         self.clock_full = false;
+        self.viz_full = false;
         // A swipe that just landed already animated its own entrance.
         self.page_instant = false;
         if self.page != page {
@@ -2278,6 +2298,8 @@ impl App {
             || (self.cfg.viz.shade && self.quick_open)
             || (self.cfg.viz.clock && (self.page == Page::Clock || self.clock_full))
             || self.page == Page::Audio
+            || self.page == Page::Visualizer
+            || self.viz_full
     }
 
     /// Ask the computer for its own bands while the visualizer can be seen.
@@ -2723,6 +2745,9 @@ impl App {
 
     /// Name of the page a share frame shows, in the daemon's language.
     fn share_page(&self) -> &'static str {
+        if self.viz_full {
+            return "visualizer";
+        }
         if self.clock_full {
             return "clock";
         }
@@ -4681,11 +4706,14 @@ impl App {
             };
 
         egui::Panel::top("deck-top")
-            .exact_size(50.0)
+            .exact_size((50.0 * nav_scale()).clamp(40.0, 88.0))
             .frame(
                 egui::Frame::new()
                     .fill(t.bg)
-                    .inner_margin(Margin::symmetric(22, 4)),
+                    .inner_margin(Margin::symmetric(
+                        (22.0 * nav_scale()) as i8,
+                        (4.0 * nav_scale()) as i8,
+                    )),
             )
             .show(root, |ui| self.top_bar(ui, &t));
         egui::CentralPanel::default()
@@ -4807,23 +4835,31 @@ impl App {
     }
 
     fn top_bar(&mut self, ui: &mut Ui, t: &Tokens) {
+        // One scale for the whole row: height, text, glyphs and spacing. The
+        // panel height in `chrome_ui` and the shortcut measurement below read
+        // the same `nav_scale()`.
+        let s = nav_scale();
+        let (item_spacing, button_padding) =
+            (ui.spacing().item_spacing, ui.spacing().button_padding);
+        ui.spacing_mut().item_spacing = item_spacing * s;
+        ui.spacing_mut().button_padding = button_padding * s;
         ui.horizontal_centered(|ui| {
             ui.label(
                 RichText::new("sd-widgets")
                     .family(FontFamily::Monospace)
-                    .size(13.0)
-                    .extra_letter_spacing(1.4)
+                    .size(13.0 * s)
+                    .extra_letter_spacing(1.4 * s)
                     .color(t.faint),
             );
-            ui.add_space(8.0);
+            ui.add_space(8.0 * s);
             let online = self.online();
-            theme::dot(ui, if online { t.good } else { t.faint }, online);
+            theme::dot_scaled(ui, if online { t.good } else { t.faint }, online, 16.0 * s);
             let host = self.active_host_name();
             if ui
                 .add(
                     egui::Button::new(
                         RichText::new(sdw_core::util::truncate(&host, 26))
-                            .size(14.0)
+                            .size(14.0 * s)
                             .color(if online { t.strong } else { t.muted }),
                     )
                     .fill(Color32::TRANSPARENT)
@@ -4841,7 +4877,7 @@ impl App {
             // computer name, in the free middle space.
             let viz_right = viz_on && self.cfg.viz.nav_side == "right";
             if viz_on && !viz_right {
-                ui.add_space(12.0);
+                ui.add_space(12.0 * s);
                 // The right-hand group takes its own width first; the strip
                 // takes what is left of the row and never grows over the
                 // clock, the language and the bell. It shrinks with the free
@@ -4860,7 +4896,7 @@ impl App {
                         ))
                         .clicked()
                     {
-                        self.set_page(Page::Audio);
+                        self.set_page(Page::Visualizer);
                     }
                 }
             }
@@ -4881,9 +4917,9 @@ impl App {
                             ))
                             .clicked()
                         {
-                            self.set_page(Page::Audio);
+                            self.set_page(Page::Visualizer);
                         }
-                        ui.add_space(10.0);
+                        ui.add_space(10.0 * s);
                     }
                 }
                 // Notifications are one press away on every page, not only in
@@ -4893,7 +4929,7 @@ impl App {
                     .add(
                         egui::Button::new(theme::icon(
                             theme::icon::NOTIFICATIONS,
-                            16.0,
+                            16.0 * s,
                             if unread > 0 { t.accent } else { t.faint },
                         ))
                         .fill(Color32::TRANSPARENT)
@@ -4902,9 +4938,9 @@ impl App {
                     )
                     .on_hover_text(t!(self.lang, "уведомления", "notifications"));
                 if unread > 0 {
-                    let corner = bell.rect.right_top() + egui::vec2(-3.0, 3.0);
+                    let corner = bell.rect.right_top() + egui::vec2(-3.0 * s, 3.0 * s);
                     ui.painter().rect_filled(
-                        egui::Rect::from_min_size(corner, egui::vec2(6.0, 6.0)),
+                        egui::Rect::from_min_size(corner, egui::vec2(6.0 * s, 6.0 * s)),
                         CornerRadius::ZERO,
                         t.bad,
                     );
@@ -4940,7 +4976,7 @@ impl App {
                         .add(
                             egui::Button::new(theme::icon(
                                 glyph,
-                                16.0,
+                                16.0 * s,
                                 if active { t.accent } else { t.faint },
                             ))
                             .fill(Color32::TRANSPARENT)
@@ -4966,7 +5002,7 @@ impl App {
                         egui::Button::new(
                             RichText::new(self.lang.code().to_uppercase())
                                 .family(FontFamily::Monospace)
-                                .size(11.0)
+                                .size(11.0 * s)
                                 .color(t.faint),
                         )
                         .fill(Color32::TRANSPARENT)
@@ -4982,7 +5018,7 @@ impl App {
                     ui.label(
                         RichText::new(format!("{battery}%"))
                             .family(FontFamily::Monospace)
-                            .size(11.5)
+                            .size(11.5 * s)
                             .color(if battery < 20 { t.warn } else { t.faint }),
                     );
                 }
@@ -4992,7 +5028,7 @@ impl App {
                     ui.label(
                         RichText::new(self.clock.clone())
                             .family(FontFamily::Monospace)
-                            .size(12.5)
+                            .size(12.5 * s)
                             .color(t.faint),
                     );
                 }
@@ -5007,13 +5043,16 @@ impl App {
     /// battery figure cannot be left out; `spare` is the strip's width, added
     /// only when it is drawn.
     fn shortcut_width(&self, ui: &Ui, t: &Tokens, spare: f32) -> f32 {
+        // The same scale the bar draws with, or the reserved room would be
+        // wrong at any scale but 1.
+        let s = nav_scale();
         let mut ui = egui::Ui::new(
             ui.ctx().clone(),
             egui::Id::new(("deck-top-measure", self.page_epoch)),
             egui::UiBuilder::new()
                 .max_rect(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(10_000.0, 40.0),
+                    egui::vec2(10_000.0, 40.0 * s),
                 ))
                 .layout(Layout::right_to_left(Align::Center)),
         );
@@ -5024,33 +5063,39 @@ impl App {
                 .stroke(Stroke::NONE)
                 .corner_radius(CornerRadius::ZERO)
         };
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.add(chip(theme::icon(theme::icon::NOTIFICATIONS, 16.0, t.faint)));
-        ui.spacing_mut().item_spacing.x = 4.0;
+        let button_padding = ui.spacing().button_padding;
+        ui.spacing_mut().button_padding = button_padding * s;
+        ui.spacing_mut().item_spacing.x = 8.0 * s;
+        ui.add(chip(theme::icon(
+            theme::icon::NOTIFICATIONS,
+            16.0 * s,
+            t.faint,
+        )));
+        ui.spacing_mut().item_spacing.x = 4.0 * s;
         for glyph in [
             theme::icon::SETTINGS,
             theme::icon::BINDS,
             theme::icon::LIGHT,
         ] {
-            ui.add(chip(theme::icon(glyph, 16.0, t.faint)));
+            ui.add(chip(theme::icon(glyph, 16.0 * s, t.faint)));
         }
         ui.add(chip(
             RichText::new(self.lang.code().to_uppercase())
                 .family(FontFamily::Monospace)
-                .size(11.0),
+                .size(11.0 * s),
         ));
         if self.battery.is_some() {
             ui.label(
                 RichText::new("100%")
                     .family(FontFamily::Monospace)
-                    .size(11.5),
+                    .size(11.5 * s),
             );
         }
         if self.cfg.show_clock {
             ui.label(
                 RichText::new("00:00")
                     .family(FontFamily::Monospace)
-                    .size(12.5),
+                    .size(12.5 * s),
             );
         }
         let used = (width - ui.available_width()).max(0.0);
@@ -5154,6 +5199,7 @@ impl App {
         match self.page {
             Page::Home => crate::pages::home(self, ui, t),
             Page::Clock => crate::pages::clock(self, ui, t),
+            Page::Visualizer => crate::viz_stage::page(self, ui, t),
             Page::Computers => crate::pages::computers(self, ui, t),
             Page::Control => crate::pages::control(self, ui, t),
             Page::Bluetooth => crate::pages::bluetooth(self, ui, t),
@@ -5662,7 +5708,9 @@ impl eframe::App for App {
             }
         }
         crate::audio_ui::tick(self);
-        if self.clock_full {
+        if self.viz_full {
+            crate::viz_stage::fullscreen(self, root, &ctx);
+        } else if self.clock_full {
             crate::clock::fullscreen(self, root, &ctx);
         } else if self.stream.fullscreen {
             self.fullscreen_ui(root, &ctx);

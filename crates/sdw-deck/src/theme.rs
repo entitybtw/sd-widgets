@@ -622,6 +622,7 @@ pub mod icon {
     pub const REPEAT: &str = "\u{e040}";
     pub const DRAG: &str = "\u{e25d}";
     pub const CLOCK: &str = "\u{e8b5}";
+    pub const EQUALIZER: &str = "\u{e01d}";
     pub const TIMER: &str = "\u{e425}";
     pub const BATTERY: &str = "\u{e1a5}";
     pub const MOON: &str = "\u{ef5e}";
@@ -973,8 +974,13 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
 }
 
 pub fn dot(ui: &mut Ui, color: Color32, filled: bool) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(16.0, 16.0), Sense::hover());
-    let r = egui::Rect::from_center_size(rect.center(), Vec2::splat(6.0));
+    dot_scaled(ui, color, filled, 16.0);
+}
+
+/// The same dot at another size, for the top bar's own scale.
+pub fn dot_scaled(ui: &mut Ui, color: Color32, filled: bool, side: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(side), Sense::hover());
+    let r = egui::Rect::from_center_size(rect.center(), Vec2::splat(side * 0.375));
     if filled {
         ui.painter().rect_filled(r, 0.0, color);
     } else {

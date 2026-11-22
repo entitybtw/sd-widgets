@@ -1,5 +1,11 @@
 # Themes
 
+The Look page includes a **top bar scale** control. It scales the upper
+navigation row as one unit — its height, text, icons and spacing — from 80% to
+160%. The available space for the top-bar visualizer is measured with the same
+scale, so enlarging the navigation does not make the strip overlap the clock,
+language or notification controls.
+
 The Deck app is styled by CSS variables plus a small set of behaviour knobs. Both
 live in `DeckConfig.style` (`ThemeCfg`) and are edited on the **Look** page.
 

@@ -1455,6 +1455,9 @@ pub struct ThemeCfg {
     /// Page arrow square size in points.
     #[serde(default = "default_arrow_size")]
     pub arrow_size: f32,
+    /// Scale of the top bar: its height, text, glyphs and padding, 0.8..=1.6.
+    #[serde(default = "default_one")]
+    pub nav_scale: f32,
     #[serde(default = "default_true")]
     pub dock: bool,
     /// Dock glyph size in points.
@@ -1518,6 +1521,7 @@ impl Default for ThemeCfg {
             tile_columns: default_tile_columns(),
             arrows: true,
             arrow_size: default_arrow_size(),
+            nav_scale: 1.0,
             dock: true,
             dock_icon: default_dock_icon(),
             dock_top: false,
@@ -2064,9 +2068,9 @@ pub struct VizCfg {
     pub pc: bool,
     /// How many bars, 4..=24.
     pub bars: u8,
-    /// Height of the strip in points, 6..=48.
+    /// Height of the strip in points, 6..=240.
     pub height: u8,
-    /// Width of the strip in points, 40..=400. The top bar shrinks it when the
+    /// Width of the strip in points, 40..=1000. The top bar shrinks it when the
     /// window is narrow instead of letting it push the shortcuts aside.
     pub width: u16,
     /// Space between the bars in points, 0..=8.
@@ -2095,6 +2099,36 @@ pub struct VizCfg {
     pub fps: u8,
     /// Side of the top bar the strip is drawn on: `left` or `right`.
     pub nav_side: String,
+    /// How much of the visualizer page's canvas the stage takes, 10..=100
+    /// percent. The page and the full-screen stage share it.
+    #[serde(default = "default_viz_stage_scale")]
+    pub stage_scale: u8,
+    /// Where the stage sits on that canvas: the same nine anchors as `anchor`.
+    #[serde(default = "default_viz_stage_place")]
+    pub stage_place: String,
+    /// Nudge from that anchor, in percent of the canvas.
+    #[serde(default)]
+    pub stage_offset_x: i16,
+    #[serde(default)]
+    pub stage_offset_y: i16,
+    /// Stage background: `theme`, `black` or `accent`.
+    #[serde(default = "default_viz_stage_bg")]
+    pub stage_bg: String,
+    /// Draw the house hairline grid behind the bars on the stage.
+    #[serde(default = "default_true")]
+    pub stage_grid: bool,
+}
+
+fn default_viz_stage_scale() -> u8 {
+    70
+}
+
+fn default_viz_stage_place() -> String {
+    "mc".into()
+}
+
+fn default_viz_stage_bg() -> String {
+    "theme".into()
 }
 
 impl Default for VizCfg {
@@ -2122,6 +2156,12 @@ impl Default for VizCfg {
             offset_y: 0,
             fps: 30,
             nav_side: "left".into(),
+            stage_scale: default_viz_stage_scale(),
+            stage_place: default_viz_stage_place(),
+            stage_offset_x: 0,
+            stage_offset_y: 0,
+            stage_bg: default_viz_stage_bg(),
+            stage_grid: true,
         }
     }
 }
