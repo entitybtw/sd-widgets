@@ -147,9 +147,10 @@ over the whole window when asked.
 | `GET` | `/api/v1/deck/frame` | Newest JPEG, `404` before the first frame. |
 
 `want` is what keeps an idle deck quiet: the deck asks about every 1.5 s and only
-captures frames while the answer is yes. Only `GET /api/v1/deck` and the daemon's
-own **steam deck** page hold the watch open for a few seconds, so a viewer on the
-computer is not fighting the deck's poll. A frame the deck pushes on its own
+captures frames while the answer is yes; with no viewer it sends nothing at all.
+Only `GET /api/v1/deck` and the daemon's
+own **steam deck** page, while its watch switch is on, hold the watch open for a
+few seconds, so a viewer on the computer is not fighting the deck's poll. A frame the deck pushes on its own
 never flips the answer: otherwise one idle frame would make the deck watch itself
 forever, at full rate and with sound.
 

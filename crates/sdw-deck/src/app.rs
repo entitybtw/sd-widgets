@@ -176,8 +176,6 @@ pub struct ShareState {
     /// makes the deck share.
     pub want: bool,
     pub want_at: Instant,
-    /// Nobody is watching or the link is down: back off to one frame a while.
-    pub quiet: Instant,
     pub last_request: Instant,
     pub sent: u64,
     pub error: String,
@@ -903,7 +901,6 @@ impl App {
                 in_flight: false,
                 want: false,
                 want_at: Instant::now() - Duration::from_secs(10),
-                quiet: Instant::now() - Duration::from_secs(10),
                 last_request: Instant::now() - Duration::from_secs(10),
                 sent: 0,
                 error: String::new(),
@@ -2604,6 +2601,14 @@ impl App {
         self.page.key()
     }
 
+    /// Stop the picture and the sound at once when the share switch goes off.
+    /// The next poll of `deck/want` sees `mirror_deck` false and sends nothing.
+    pub fn stop_share(&mut self) {
+        self.share.want = false;
+        self.share.in_flight = false;
+        self.share_audio = None;
+    }
+
     /// Start and stop capturing this deck's own sound.
     ///
     /// Capture follows the same switch as the picture: it runs only while a
@@ -2654,28 +2659,22 @@ impl App {
             // the lane must not stay blocked forever.
             self.share.in_flight = false;
         }
-        // Nobody is looking: one frame every few seconds keeps the computer's
-        // client list honest without spending the Wi-Fi on a picture nobody
-        // sees. A viewer flips `want` within the poll interval.
-        if !self.share.want && self.share.quiet.elapsed() < Duration::from_secs(5) {
+        // Nobody is looking: send nothing at all. A quiet frame every few
+        // seconds kept the computer's "steam deck" page looking live and
+        // impossible to stop; the deck appears there only while somebody
+        // watches, and stops the moment that ends.
+        if !self.share.want {
             return;
         }
-        // At full speed the deck sends as fast as one round-trip allows: a
-        // frame is only built when the previous one has landed, so a slow
-        // link lowers the rate instead of piling pictures up.
-        let fps = if self.share.want {
-            self.cfg.mirror_fps.clamp(1, 60) as u64
-        } else {
-            1
-        };
+        // The deck sends as fast as one round-trip allows: a frame is only
+        // built when the previous one has landed, so a slow link lowers the
+        // rate instead of piling pictures up.
+        let fps = self.cfg.mirror_fps.clamp(1, 60) as u64;
         if self.share.last_request.elapsed() < Duration::from_millis(1000 / fps) {
             return;
         }
         self.share.last_request = Instant::now();
         self.share.in_flight = true;
-        if !self.share.want {
-            self.share.quiet = Instant::now();
-        }
         let quality = self.cfg.mirror_quality.clamp(30, 95);
         let tx = self.task_tx.clone();
         let id = self.cfg.client_id.clone();
@@ -4287,9 +4286,6 @@ impl App {
                         self.share.want = want;
                         // Someone opened the deck on the computer: send a
                         // frame right away instead of waiting for the poll.
-                        if want {
-                            self.share.quiet = Instant::now() - Duration::from_secs(10);
-                        }
                     }
                     Err(_) => self.share.want = false,
                 }

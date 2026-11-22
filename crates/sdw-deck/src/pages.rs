@@ -1504,6 +1504,30 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                         }
                     }
 
+                    // The deck's screen going to the computer is a switch here,
+                    // not a hidden setting: one press stops the share and the
+                    // sound, and the daemon's page goes dark.
+                    ui.horizontal(|ui| {
+                        let mut share = app.cfg.mirror_deck;
+                        if theme::switch(ui, &mut share, t).changed() {
+                            app.cfg.mirror_deck = share;
+                            app.save();
+                            if !share {
+                                app.stop_share();
+                            }
+                        }
+                        ui.label(
+                            RichText::new(t!(
+                                lang,
+                                "трансляция экрана на пк",
+                                "share this screen with the pc"
+                            ))
+                            .size(13.0)
+                            .color(t.muted),
+                        );
+                    });
+                    ui.add_space(4.0);
+
                     ui.horizontal(|ui| {
                         let muted = app.quick_muted;
                         let glyph = if muted {
@@ -6732,8 +6756,8 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ui.label(
             RichText::new(t!(
                 app.lang,
-                "кадры идут в родном разрешении экрана, по одному за раз: медленная сеть просто снижает плавность. пк показывает их на странице «стим дек».",
-                "frames go at the screen's own resolution, one at a time: a slow link lowers the smoothness. the pc shows them on its “steam deck” page."
+                "кадры идут только пока на пк открыта страница «стим дек» и включено наблюдение; в простое дека не передаёт ни картинки, ни звука.",
+                "frames go only while the pc's “steam deck” page is open and watching; an idle deck sends neither a picture nor sound."
             ))
             .size(11.5)
             .color(t.faint),

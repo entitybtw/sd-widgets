@@ -60,11 +60,18 @@ impl Mirror {
     }
 
     /// Record that somebody is looking at the deck right now. A deck shares
-    /// at full rate while this holds and slows down when it lapses.
+    /// while this holds and stops on the first poll after it lapses.
     pub fn watching(&self) {
         self.watch_until
             .store(now_ms().saturating_add(8_000), Ordering::Relaxed);
         self.watching.store(true, Ordering::Relaxed);
+    }
+
+    /// Stop watching now. The deck's next `deck/want` sees false and stops
+    /// sending, instead of finishing an eight-second grace first.
+    pub fn unwatch(&self) {
+        self.watch_until.store(0, Ordering::Relaxed);
+        self.watching.store(false, Ordering::Relaxed);
     }
 
     pub fn is_watched(&self) -> bool {

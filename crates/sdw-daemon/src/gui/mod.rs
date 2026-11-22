@@ -191,6 +191,9 @@ pub struct App {
     deck_seq: u64,
     /// The deck picture fills the window, with no panels around it.
     deck_full: bool,
+    /// The deck page watches the stream only when this is on: opening the
+    /// page used to start a full-rate share (and its sound) by itself.
+    deck_watch: bool,
     show_hint: bool,
 
     // audio
@@ -453,6 +456,7 @@ impl App {
             deck_tex: None,
             deck_seq: 0,
             deck_full: false,
+            deck_watch: false,
             show_hint: false,
             audio_source: "system".into(),
             audio_apps: Vec::new(),
@@ -861,9 +865,12 @@ impl App {
         if self.page != Page::Deck {
             return;
         }
-        // Being on this page is what makes the deck share: it asks the daemon
-        // whether anyone is watching and sends frames only then.
-        self.state.mirror.watching();
+        // Being on this page is not enough: the watch switch is the request.
+        if self.deck_watch {
+            self.state.mirror.watching();
+        } else {
+            return;
+        }
         let seq = self.state.mirror.seq();
         if seq == 0 || seq == self.deck_seq {
             return;
@@ -5326,8 +5333,35 @@ impl App {
                     if ghost(ui, t!(self.lang, "обновить", "refresh"), t).clicked() {
                         self.deck_seq = 0;
                     }
+                    // Watching is a request, not the side effect of opening
+                    // the page. Off means the deck stops sending at once.
+                    let watch_label = if self.deck_watch {
+                        t!(self.lang, "остановить", "stop")
+                    } else {
+                        t!(self.lang, "смотреть", "watch")
+                    };
+                    if ghost(ui, watch_label, t).clicked() {
+                        self.deck_watch = !self.deck_watch;
+                        if self.deck_watch {
+                            self.state.mirror.watching();
+                            self.deck_seq = 0;
+                        } else {
+                            self.state.mirror.unwatch();
+                        }
+                    }
                 });
             });
+            if !self.deck_watch {
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "наблюдение выключено — дека не передаёт картинку",
+                        "watching is off — the deck sends no picture"
+                    ),
+                    t.faint,
+                );
+            }
             ui.add_space(8.0);
             let avail = ui.available_width().min(760.0);
             let aspect = if m.width > 0 && m.height > 0 {
