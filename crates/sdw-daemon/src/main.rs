@@ -176,6 +176,9 @@ fn main() {
     let _ = std::fs::remove_file(config::window_marker());
 
     let state = AppState::new();
+    // Read Bluetooth once in the background, so the first deck poll after a
+    // login already has a snapshot instead of an empty adapter row.
+    bluetooth::warm(sdw_core::Lang::from_code(&state.cfg().lang));
     let _ = autostart::apply(state.cfg().autostart, &state.logger);
     if !state.cfg().viiper.password.is_empty() {
         let _ = state.viiper.write_key(&state.cfg().viiper.password);

@@ -95,6 +95,12 @@ Details and requirements: [`AUDIO.md`](AUDIO.md).
 Each device carries `address`, `name`, `icon`, `paired`, `connected`, `trusted`,
 `blocked`, `battery` (percent, when known) and `rssi`.
 
+A status read drives `bluetoothctl` once for the adapter and once per device, so
+`GET /api/v1/bluetooth` answers with the last snapshot at once and starts the
+next read in the background; a snapshot is at most a few seconds old and the
+answer never waits for BlueZ. An action reads again before it replies, so the
+press is already visible in the next poll.
+
 Declared actions: `scan`, `scan_off`, `power_on`, `power_off`, `pair_connect`,
 `connect`, `disconnect`, `pair`, `trust`, `untrust`, `remove`, `info`. The daemon
 talks to BlueZ through `bluetoothctl`; the battery comes from BlueZ's own report

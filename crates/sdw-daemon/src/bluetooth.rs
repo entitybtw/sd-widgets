@@ -13,34 +13,97 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-/// A status read costs one `bluetoothctl` plus one `info` per device, and the
-/// page asks every couple of seconds. A short cache keeps a stuck adapter from
-/// spawning a process per poll; every action clears it, so a press is never
-/// answered from the cache.
-static CACHE: Mutex<Option<(Instant, BluetoothStatus)>> = Mutex::new(None);
+/// The last status plus when it was read. A status read costs one
+/// `bluetoothctl` for the adapter and the list and another for every device's
+/// `info`, so it can outlast the deck's five-second poll by far. The read
+/// therefore runs on its own thread: a request always answers with the last
+/// snapshot, and the next poll brings the new one. That is what removes the
+/// `timeout: global` the Bluetooth page used to show on a slow adapter.
+struct Cached {
+    status: BluetoothStatus,
+    at: Instant,
+    reading: bool,
+}
 
+static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
+
+/// Mark the snapshot stale without throwing the list away: after a press the
+/// page keeps showing what it had until the fresh read lands, instead of
+/// flashing "unavailable" for a poll.
 pub fn invalidate() {
     if let Ok(mut cache) = CACHE.lock() {
-        *cache = None;
+        if let Some(c) = cache.as_mut() {
+            c.at = Instant::now() - Duration::from_secs(60);
+        }
     }
 }
 
 pub fn status(lang: Lang) -> BluetoothStatus {
-    if let Ok(cache) = CACHE.lock() {
-        if let Some((at, status)) = cache.as_ref() {
-            let ttl = if status.discovering {
-                Duration::from_secs(2)
-            } else {
-                Duration::from_secs(4)
-            };
-            if at.elapsed() < ttl {
-                return status.clone();
+    let mut due = false;
+    let snapshot = if let Ok(mut cache) = CACHE.lock() {
+        let c = cache.get_or_insert_with(|| Cached {
+            status: BluetoothStatus::default(),
+            at: Instant::now() - Duration::from_secs(60),
+            reading: false,
+        });
+        let ttl = if c.status.discovering {
+            Duration::from_secs(2)
+        } else {
+            Duration::from_secs(4)
+        };
+        if c.at.elapsed() >= ttl && !c.reading {
+            c.reading = true;
+            due = true;
+        }
+        c.status.clone()
+    } else {
+        BluetoothStatus::default()
+    };
+    if due {
+        std::thread::spawn(move || {
+            refresh(lang);
+        });
+    }
+    snapshot
+}
+
+/// Fill the cache in the background without waiting for a page to ask.
+pub fn warm(lang: Lang) {
+    let Ok(mut cache) = CACHE.lock() else {
+        return;
+    };
+    match cache.as_mut() {
+        Some(c) => {
+            if c.reading {
+                return;
             }
+            c.reading = true;
+        }
+        None => {
+            *cache = Some(Cached {
+                status: BluetoothStatus::default(),
+                at: Instant::now() - Duration::from_secs(60),
+                reading: true,
+            });
         }
     }
+    drop(cache);
+    std::thread::spawn(move || {
+        refresh(lang);
+    });
+}
+
+/// Read now and store the result. The action path calls this after BlueZ
+/// answered, so the deck's next poll (and the daemon's own page) sees the new
+/// state without waiting for the cache to go stale.
+pub fn refresh(lang: Lang) -> BluetoothStatus {
     let out = read_status(lang);
     if let Ok(mut cache) = CACHE.lock() {
-        *cache = Some((Instant::now(), out.clone()));
+        *cache = Some(Cached {
+            status: out.clone(),
+            at: Instant::now(),
+            reading: false,
+        });
     }
     out
 }
@@ -58,7 +121,7 @@ fn read_status(lang: Lang) -> BluetoothStatus {
     let listing = match script(
         &["show".into(), "devices".into()],
         lang,
-        Duration::from_secs(5),
+        Duration::from_secs(3),
     ) {
         Ok(text) => text,
         Err(e) => {
@@ -97,7 +160,7 @@ fn read_status(lang: Lang) -> BluetoothStatus {
     }
     // Every `info` in the same process; the blocks are split back apart below.
     let commands: Vec<String> = listed.iter().map(|(a, _)| format!("info {a}")).collect();
-    let details = script(&commands, lang, Duration::from_secs(6)).unwrap_or_default();
+    let details = script(&commands, lang, Duration::from_secs(4)).unwrap_or_default();
     let mut blocks: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut current: Option<&str> = None;
     for raw in details.lines() {
@@ -267,13 +330,41 @@ fn parse_battery(value: &str) -> Option<u8> {
         .map(|p| p.min(100))
 }
 
+/// Battery from UPower, only when BlueZ did not report one. The device path is
+/// cached: `upower -e` lists every power device and costs a second or more on
+/// a busy laptop, and a status read asks for up to a handful of devices. One
+/// listing per minute is still fresh, and a percentage is only a number the
+/// page shows beside the name.
 fn upower_battery(address: &str) -> Option<u8> {
+    use std::collections::HashMap;
+    static PATHS: Mutex<Option<(Instant, HashMap<String, String>)>> = Mutex::new(None);
     if !sdw_core::util::has("upower") {
         return None;
     }
     let wanted = format!("dev_{}", address.replace(':', "_"));
-    let list = run_other("upower", &["-e"])?;
-    let path = list.lines().find(|line| line.contains(&wanted))?;
+    let cached = PATHS.lock().ok().and_then(|cache| {
+        let (at, map) = cache.as_ref()?;
+        (at.elapsed() < Duration::from_secs(60))
+            .then(|| map.get(&wanted).cloned())
+            .flatten()
+    });
+    let path = match cached {
+        Some(path) => path,
+        None => {
+            let list = run_other("upower", &["-e"])?;
+            let mut map = HashMap::new();
+            for line in list.lines() {
+                if let Some(key) = line.trim().split("dev_").nth(1) {
+                    map.insert(format!("dev_{key}"), line.trim().to_string());
+                }
+            }
+            let found = map.get(&wanted).cloned();
+            if let Ok(mut cache) = PATHS.lock() {
+                *cache = Some((Instant::now(), map));
+            }
+            found?
+        }
+    };
     let info = run_other("upower", &["-i", path.trim()])?;
     for line in info.lines() {
         if let Some(value) = line.trim().strip_prefix("percentage:") {
@@ -287,11 +378,12 @@ fn upower_battery(address: &str) -> Option<u8> {
 /// cannot use the CLI as a free-form command channel.
 pub fn action(action: &str, address: &str, lang: Lang) -> Result<String, String> {
     // Every action changes what a status read would say; never answer the
-    // next poll from the cache.
+    // next poll from the cache. The read runs here so the reply and the very
+    // next poll already show the result of the press.
     invalidate();
     let action = action.trim();
     let result = action_impl(action, address, lang);
-    invalidate();
+    refresh(lang);
     result
 }
 
