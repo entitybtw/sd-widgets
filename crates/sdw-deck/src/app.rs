@@ -748,6 +748,13 @@ pub struct App {
     pub quick_at: Option<Instant>,
     /// Finger offset while a top-edge pull-down is in progress.
     pub quick_pull: f32,
+    /// The height of one notification card as the last frames drew it, so the
+    /// panel can show exactly as many as fit at the current UI scale instead
+    /// of a fixed four that ran off the bottom of a zoomed screen.
+    pub quick_card_h: f32,
+    /// What the open panel measured this time; latched into `quick_card_h`
+    /// when it closes.
+    pub quick_card_seen: f32,
     /// A click landed on the pull handle or inside the panel this frame, so
     /// the full-screen clock must not treat it as "leave the clock".
     pub quick_clicked: bool,
@@ -1064,6 +1071,8 @@ impl App {
             quick_values_deferred: false,
             quick_at: None,
             quick_pull: 0.0,
+            quick_card_h: 96.0,
+            quick_card_seen: 0.0,
             quick_clicked: false,
             audio_player: None,
             pc_volume: None,
@@ -2813,6 +2822,12 @@ impl App {
             self.quick_off = self.quick_height.max(1.0);
             self.quick_open = false;
             self.quick_values_deferred = false;
+            // Latch the card height the panel just measured. It is applied at
+            // the next opening, not mid-session: a live value would flip the
+            // row count back and forth and make the panel jump every frame.
+            if self.quick_card_seen > 0.0 {
+                self.quick_card_h = self.quick_card_seen;
+            }
         }
     }
 

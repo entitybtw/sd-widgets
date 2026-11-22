@@ -1569,8 +1569,24 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                         t.faint,
                     ));
                     ui.add_space(2.0);
+                    // How many cards fit between here and the bottom edge.
+                    // At a larger UI scale the screen holds far fewer points,
+                    // and a fixed four pushed the buttons under the edge:
+                    // the panel could not be used at all. The list answers
+                    // to the room that is really left, measured from the
+                    // cards the last frame drew.
+                    let list_top = ui.cursor().top();
+                    // Eight points to the screen edge and twelve of the frame's
+                    // own bottom margin stay free, so a row never ends flush
+                    // against the edge.
+                    let room = (rect.bottom() - 20.0 - list_top).max(0.0);
+                    let card_h = app.quick_card_h.clamp(48.0, 240.0);
+                    let rows = ((room / card_h).floor() as usize).clamp(1, 4);
                     let newest: Vec<Notification> =
-                        app.notifications.iter().rev().take(4).cloned().collect();
+                        app.notifications.iter().rev().take(rows).cloned().collect();
+                    let mut drawn = 0usize;
+                    let mut span_top = list_top;
+                    let mut span_bottom = list_top;
                     for n in newest {
                         let color = notification_color(t, &n);
                         let card = egui::Frame::new()
@@ -1666,7 +1682,18 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                             "нажмите, чтобы открыть на компьютере",
                             "tap to open it on the computer"
                         ));
+                        if drawn == 0 {
+                            span_top = card.response.rect.top();
+                        }
+                        span_bottom = card.response.rect.bottom();
+                        drawn += 1;
                         ui.add_space(4.0);
+                    }
+                    // Remember the real card height for the next opening: text
+                    // wraps differently in every language and at every width,
+                    // so a constant would be wrong somewhere.
+                    if drawn > 0 {
+                        app.quick_card_seen = (span_bottom - span_top + 4.0) / drawn as f32;
                     }
                 });
         });
