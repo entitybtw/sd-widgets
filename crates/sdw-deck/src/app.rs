@@ -3655,7 +3655,7 @@ impl App {
         }
         // The page a tap or an arrow left slides out for a third of a second.
         if let Some((_, _, _, at)) = self.page_from {
-            if at.elapsed() > Duration::from_millis(340) {
+            if at.elapsed() > Duration::from_millis(440) {
                 self.page_from = None;
             } else {
                 ctx.request_repaint();
@@ -4344,15 +4344,19 @@ impl App {
         let from = self.page_slide;
         let dist = to - from;
         let ratio = (dist.abs() / width.max(1.0)).min(1.0);
+        // A full turn takes about half a second: long enough to read as a
+        // slide, short enough that the deck never feels slow. A page that only
+        // slides back is a little quicker; nothing was turned.
         let dur = if page.is_some() {
-            0.26 + 0.22 * ratio
+            0.36 + 0.24 * ratio
         } else {
-            0.18 + 0.16 * ratio
+            0.24 + 0.18 * ratio
         };
-        // A Hermite that starts faster than this would overshoot the target
-        // and come back; a finger that moved away from the target may carry
-        // the page a little further before it returns.
-        let limit = 3.0 * dist.abs() / dur;
+        // The release keeps the finger's speed, but only up to a little above
+        // the average speed of the turn. A fast flick used to spend most of
+        // the distance in the first frames and then crawl, which read as a
+        // jerk; capping the start keeps the movement even.
+        let limit = 1.15 * dist.abs() / dur;
         let vel = if dist >= 0.0 {
             vel.clamp(-0.35 * limit, limit)
         } else {
@@ -4448,9 +4452,9 @@ impl App {
         // in. A swipe is already carried by `page_slide`.
         let ghost = self
             .page_from
-            .filter(|(_, _, _, at)| at.elapsed() < Duration::from_millis(340));
+            .filter(|(_, _, _, at)| at.elapsed() < Duration::from_millis(440));
         let (ease, travel) = if let Some((_, _, _, at)) = ghost {
-            let k = (at.elapsed().as_secs_f32() / 0.34).min(1.0);
+            let k = (at.elapsed().as_secs_f32() / 0.44).min(1.0);
             (k * k * (3.0 - 2.0 * k), width)
         } else {
             (
@@ -4509,7 +4513,7 @@ impl App {
                     let mut ghost_ui = ui.new_child(
                         egui::UiBuilder::new()
                             .id_salt(("deck-ghost-ui", from_epoch))
-                            .max_rect(content.translate(Vec2::new(-dir * width * 0.22 * ease, 0.0)))
+                            .max_rect(content.translate(Vec2::new(-dir * width * ease, 0.0)))
                             .layout(*ui.layout()),
                     );
                     ghost_ui.set_clip_rect(clip);
