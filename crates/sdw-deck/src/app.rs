@@ -26,6 +26,33 @@ use std::time::{Duration, Instant};
 /// arrives; a smooth slide, not a fade with a small nudge.
 const PAGE_SLIDE: f32 = 0.20;
 
+/// The inset the floating arrows take on each side of the page. The page
+/// content lives between them, so this is also the part of the window a page
+/// turn may actually move across.
+fn page_inset() -> f32 {
+    if theme::style().arrows {
+        (theme::style().arrow_size.clamp(28.0, 96.0) + 16.0).max(34.0)
+    } else {
+        34.0
+    }
+}
+
+/// The page-turn curve: a cubic from 0 to 1 that starts at slope `m` and
+/// settles at slope 0. `m` is the finger's speed in page widths, so the page
+/// leaves exactly as fast as the finger did and stops without a bounce.
+fn turn_ease(k: f32, m: f32) -> f32 {
+    let k = k.clamp(0.0, 1.0);
+    let m = m.clamp(0.0, 3.0);
+    (m - 2.0) * k * k * k + (3.0 - 2.0 * m) * k * k + m * k
+}
+
+/// The width of the page area, not of the window. A turn measured against the
+/// window carried both pages past the visible edge by the arrow inset and
+/// snapped them back on the last frame.
+fn page_width(ctx: &egui::Context) -> f32 {
+    (ctx.content_rect().width() - 2.0 * page_inset()).max(1.0)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Home,
@@ -465,6 +492,19 @@ impl TouchTrack {
         ))
     }
 
+    /// Horizontal speed of the fingers since the gesture began, in points per
+    /// second. Read before `end` clears the points; the page turn uses it so
+    /// the page keeps the finger's speed instead of yanking away.
+    fn speed_px(&self, rect: Rect, now: Instant, end: egui::Pos2) -> f32 {
+        let (Some(start), Some(anchor)) = (self.start, self.anchor) else {
+            return 0.0;
+        };
+        let secs = now.saturating_duration_since(start).as_secs_f32().max(0.02);
+        // The lift position, not the last Move: they can be a frame apart.
+        let (nx, _) = Self::norm(end, rect);
+        (nx - anchor.0) * rect.width() / secs
+    }
+
     /// Returns a finished gesture once the last finger lifts.
     fn end(&mut self, id: u64, pos: egui::Pos2, rect: Rect, now: Instant) -> Option<GestureSpec> {
         self.last.insert(id, pos);
@@ -550,6 +590,10 @@ pub struct App {
     /// How long the turn runs: a full page takes as long as an arrow turn,
     /// a short remainder proportionally less.
     pub page_turn_dur: f32,
+    /// Initial slope of the turn's ease: the finger's own speed in page
+    /// widths, so the page does not yank away on release. 2 is the old
+    /// "starts at twice the average speed" curve.
+    pub page_turn_m: f32,
     pub page_turn_to_page: Option<Page>,
     pub page_turn_active: bool,
     /// Where the finger grabbed the page. The preview is measured from this
@@ -843,6 +887,7 @@ impl App {
             page_turn_to: 0.0,
             page_turn_at: Instant::now(),
             page_turn_dur: 0.3,
+            page_turn_m: 2.0,
             page_turn_to_page: None,
             page_turn_active: false,
             page_anchor: None,
@@ -1257,8 +1302,9 @@ impl App {
                     }
                     egui::TouchPhase::Move => self.touch.moved(id.0, *pos),
                     egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                        let vel = self.touch.speed_px(rect, now, *pos);
                         if let Some(spec) = self.touch.end(id.0, *pos, rect, now) {
-                            finished = Some(spec);
+                            finished = Some((spec, vel));
                         }
                     }
                 }
@@ -1293,13 +1339,13 @@ impl App {
                 }
                 if let Some(anchor) = self.page_anchor {
                     if delta.x.abs() > delta.y.abs() * 1.2 {
-                        let w = rect.width().max(1.0);
+                        let w = page_width(ctx);
                         self.page_slide = (delta.x - anchor).clamp(-w, w);
                     }
                 }
             }
         }
-        if let Some(spec) = finished {
+        if let Some((spec, vel)) = finished {
             if spec.fingers == 1 && spec.kind == GestureKind::Swipe && !self.touch_blocked {
                 // egui-winit also turns the touch into a mouse drag, and the
                 // raw swipe below would turn the page a second time. Remember
@@ -1307,7 +1353,7 @@ impl App {
                 self.last_gesture = Some((spec.clone(), Instant::now()));
                 // The same smooth turn as a mouse swipe: the preview stays
                 // where the finger left it and the release finishes it.
-                let w = rect.width().max(1.0);
+                let w = page_width(ctx);
                 let dir = if spec.dir == Some(SwipeDir::Left) {
                     -1.0
                 } else {
@@ -1318,7 +1364,12 @@ impl App {
                     if dir < 0.0 { Cue::Navigate } else { Cue::Back },
                 );
                 self.page_silent = true;
-                self.start_page_turn(dir * w, self.step_page(if dir < 0.0 { 1 } else { -1 }), w);
+                self.start_page_turn(
+                    dir * w,
+                    self.step_page(if dir < 0.0 { 1 } else { -1 }),
+                    w,
+                    vel,
+                );
                 self.page_silent = false;
             } else {
                 self.on_input(DeckEvent::Gesture(spec));
@@ -1433,7 +1484,7 @@ impl App {
                                 }
                                 if let Some(anchor) = self.page_anchor {
                                     if dx.abs() > dy.abs() * 1.2 {
-                                        let w = rect.width().max(1.0);
+                                        let w = page_width(ctx);
                                         self.page_slide = (dx - anchor).clamp(-w, w);
                                     }
                                 } else if self.page_slide != 0.0 {
@@ -1528,7 +1579,7 @@ impl App {
                             // mouse events it also produced must not cancel
                             // the turn it just started.
                             if !gesture_recent {
-                                let width = rect.width().max(1.0);
+                                let width = page_width(ctx);
                                 let slide = self.page_slide;
                                 let held = at.elapsed().as_secs_f32().max(0.05);
                                 // The finger's own speed, so the turn starts
@@ -1560,10 +1611,11 @@ impl App {
                                         to,
                                         self.step_page(if slide < 0.0 { 1 } else { -1 }),
                                         width,
+                                        vel,
                                     );
                                     self.page_silent = false;
                                 } else if slide != 0.0 {
-                                    self.start_page_turn(0.0, None, width);
+                                    self.start_page_turn(0.0, None, width, vel);
                                 }
                             }
                             self.page_anchor = None;
@@ -3720,8 +3772,9 @@ impl App {
         if self.page_turn_active {
             let dur = self.page_turn_dur.max(0.01);
             let k = (self.page_turn_at.elapsed().as_secs_f32() / dur).min(1.0);
-            // Quick spring: starts instantly fast, settles smoothly without jerks.
-            let ease = 2.0 * k - k * k;
+            // Cubic that leaves at the finger's own speed (`m`) and settles
+            // with zero speed: no yank at the release, no snap at the end.
+            let ease = turn_ease(k, self.page_turn_m);
             self.page_slide =
                 self.page_turn_from + (self.page_turn_to - self.page_turn_from) * ease;
             if k >= 1.0 {
@@ -4462,7 +4515,7 @@ impl App {
     /// page must reach, `width` the page width and `vel` the finger's speed in
     /// points per second. With animations off there is nothing to carry, so
     /// the page switches at once.
-    fn start_page_turn(&mut self, to: f32, page: Option<Page>, width: f32) {
+    fn start_page_turn(&mut self, to: f32, page: Option<Page>, width: f32, vel: f32) {
         if !theme::style().animations {
             self.page_slide = 0.0;
             if let Some(p) = page {
@@ -4473,15 +4526,32 @@ impl App {
         }
         let from = self.page_slide;
         let dist = to - from;
+        if dist.abs() < 1.0 {
+            // The finger already carried the page all the way: nothing to
+            // animate, land it without a pause.
+            self.page_slide = 0.0;
+            if let Some(p) = page {
+                self.page_silent = true;
+                self.set_page(p);
+                self.page_silent = false;
+                self.page_instant = true;
+            }
+            return;
+        }
         let ratio = (dist.abs() / width.max(1.0)).min(1.0);
         // The turn takes at least PAGE_SLIDE / 2, and up to a full PAGE_SLIDE
         // for a full page drag: the movement keeps one speed instead of a short
         // gap crawling for a third of a second.
         let dur = (PAGE_SLIDE * (0.5 + 0.5 * ratio)).max(PAGE_SLIDE * 0.25);
+        // Start the ease at the finger's own speed instead of yanking the
+        // page away: the curve's first slope is `m`, the average slope is 1.
+        // Above 3 the cubic would overshoot and snap back, so it is capped.
+        let m = (vel * dur / dist).clamp(0.0, 3.0);
         self.page_turn_from = from;
         self.page_turn_to = to;
         self.page_turn_at = Instant::now();
         self.page_turn_dur = dur;
+        self.page_turn_m = m;
         self.page_turn_to_page = page;
         self.page_turn_active = true;
     }
@@ -4495,6 +4565,7 @@ impl App {
         self.page_slide = 0.0;
         self.page_turn_from = 0.0;
         self.page_turn_to = 0.0;
+        self.page_turn_m = 2.0;
         if let Some(p) = self.page_turn_to_page.take() {
             // The release already played the cue and the finger already
             // showed where the page comes from: no fade, no second sound.
@@ -4564,7 +4635,8 @@ impl App {
             // moving, so the page does not fade a second time after the ghost.
             ctx.animate_bool_with_time(Id::new(("page", self.page_epoch)), true, 0.28)
         };
-        let width = ctx.content_rect().width().max(1.0);
+        let arrow_inset = page_inset();
+        let width = page_width(ctx);
         // A tap or an arrow: the old page slides out while the new one comes
         // in. A swipe is already carried by `page_slide`.
         let ghost = self
@@ -4593,11 +4665,6 @@ impl App {
 
         // The floating arrows sit over the window edge. The page is inset by
         // their width so that no card, slider or button ever ends under one.
-        let arrow_inset = if theme::style().arrows {
-            (theme::style().arrow_size.clamp(28.0, 96.0) + 16.0).max(34.0)
-        } else {
-            34.0
-        };
 
         // While the finger drags the page aside, the neighbour is drawn where
         // it will land: the page turn follows the finger instead of being a
@@ -4777,13 +4844,12 @@ impl App {
                 ui.add_space(12.0);
                 // The right-hand group takes its own width first; the strip
                 // takes what is left of the row and never grows over the
-                // clock, the language and the bell. If less than a readable
-                // slot is left, the strip is not drawn at all: a sliver was
-                // worse than no strip.
-                let wanted = crate::viz::size(self, None).x;
-                let room = (ui.available_size().x - self.shortcut_width(ui, t, wanted)).max(0.0);
-                let min_slot = (wanted * 0.6).max(72.0);
-                if room >= min_slot {
+                // clock, the language and the bell. It shrinks with the free
+                // space instead of vanishing as soon as the chosen width no
+                // longer fits.
+                let shortcuts = self.shortcut_width(ui, t, 0.0);
+                let room = (ui.available_size().x - shortcuts - 12.0).max(0.0);
+                if room >= 72.0 {
                     let slot =
                         crate::viz::size(self, Some(egui::vec2(room, ui.available_size().y)));
                     if crate::viz::ui(ui, self, t, slot)
@@ -4800,12 +4866,13 @@ impl App {
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if viz_right {
-                    let wanted = crate::viz::size(self, None);
-                    if ui.available_width() >= wanted.x + 220.0 {
-                        let slot = crate::viz::size(
-                            self,
-                            Some(egui::vec2(wanted.x, ui.available_size().y)),
-                        );
+                    // The same rule as on the left, measured from the right:
+                    // the shortcuts keep their width, the strip takes the rest.
+                    let shortcuts = self.shortcut_width(ui, t, 0.0);
+                    let room = (ui.available_width() - shortcuts - 10.0).max(0.0);
+                    if room >= 72.0 {
+                        let slot =
+                            crate::viz::size(self, Some(egui::vec2(room, ui.available_size().y)));
                         if crate::viz::ui(ui, self, t, slot)
                             .on_hover_text(t!(
                                 self.lang,
@@ -6075,5 +6142,40 @@ mod touch_tests {
                 now + Duration::from_millis(200)
             )
             .is_none());
+    }
+
+    #[test]
+    fn the_release_speed_follows_the_finger() {
+        let mut track = TouchTrack::default();
+        let now = Instant::now();
+        let r = rect();
+        track.begin(1, egui::pos2(700.0, 250.0), r, now);
+        track.moved(1, egui::pos2(500.0, 250.0));
+        let v = track.speed_px(
+            r,
+            now + Duration::from_millis(200),
+            egui::pos2(300.0, 250.0),
+        );
+        // 400 points to the left in 0.2 s.
+        assert!((v + 2000.0).abs() < 1.0, "{v}");
+    }
+
+    #[test]
+    fn the_turn_curve_matches_the_finger_and_stops_flat() {
+        for m in [0.0, 0.5, 1.0, 2.0, 2.8, 3.0] {
+            assert!(turn_ease(0.0, m).abs() < 1e-6);
+            assert!((turn_ease(1.0, m) - 1.0).abs() < 1e-6);
+            let d0 = (turn_ease(0.001, m) - turn_ease(0.0, m)) / 0.001;
+            assert!((d0 - m).abs() < 0.01, "m={m} d0={d0}");
+            let d1 = (turn_ease(1.0, m) - turn_ease(0.999, m)) / 0.001;
+            assert!(d1.abs() < 0.02, "m={m} d1={d1}");
+            // Never goes back: the page must not wobble on the way.
+            let mut prev = 0.0;
+            for i in 0..=200 {
+                let v = turn_ease(i as f32 / 200.0, m);
+                assert!(v >= prev - 1e-6, "m={m} k={i} v={v} prev={prev}");
+                prev = v;
+            }
+        }
     }
 }

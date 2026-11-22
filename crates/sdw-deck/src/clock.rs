@@ -93,26 +93,25 @@ pub fn canvas(ui: &mut Ui, rect: Rect, app: &App, t: &Tokens, cfg: &ClockCfg, f:
 }
 
 /// Where the optional visualizer goes on the clock face: one of nine anchors,
-/// nudged by the user's own offsets and kept inside the face. A quarter of the
-/// face is the most it may take.
+/// nudged by the user's own offsets and kept inside the face. A flat strip may
+/// take most of the face, a circle stays square inside its slot.
 fn viz_rect(app: &App, rect: Rect) -> Rect {
     if !app.cfg.viz.enabled || !app.cfg.viz.clock {
         return Rect::NOTHING;
     }
     let cfg = &app.cfg.viz;
-    // A circular look needs a square-ish slot; the flat strip stays a thin
-    // band. The same width/height the user set still drives it.
+    // A circular look needs a square-ish slot; the flat strip stays a band
+    // but is no longer limited to a few pixels. The same width/height the
+    // user set still drives it.
     let circular = cfg.style == "circular";
-    let avail_w = rect.width() * if circular { 0.6 } else { 0.34 };
-    let avail_h = rect.height() * if circular { 0.6 } else { 0.2 };
+    let avail_w = rect.width() * if circular { 0.72 } else { 0.62 };
+    let avail_h = rect.height() * if circular { 0.72 } else { 0.5 };
     let want = crate::viz::size(app, Some(vec2(avail_w, avail_h)));
     let w = want.x.clamp(60.0, avail_w.max(60.0));
-    let h = want
-        .y
-        .clamp(6.0, if circular { avail_h.max(60.0) } else { 32.0 });
-    // A circle must stay round: square it off around the larger side.
+    let h = want.y.clamp(6.0, avail_h.max(60.0));
+    // A circle must stay round and inside its slot.
     let (w, h) = if circular {
-        let side = w.max(h);
+        let side = w.max(h).min(avail_w.max(60.0)).min(avail_h.max(60.0));
         (side, side)
     } else {
         (w, h)
@@ -915,7 +914,7 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         t,
                         t!(app.lang, "высота", "height"),
                         &mut height,
-                        6.0..=48.0,
+                        6.0..=240.0,
                         |v| format!("{:.0}", v),
                     ) {
                         app.cfg.viz.height = height.round() as u8;
@@ -926,7 +925,7 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         t,
                         t!(app.lang, "ширина", "width"),
                         &mut width,
-                        40.0..=400.0,
+                        40.0..=1000.0,
                         |v| format!("{:.0}", v),
                     ) {
                         app.cfg.viz.width = width.round() as u16;

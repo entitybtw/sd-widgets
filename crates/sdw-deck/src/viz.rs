@@ -132,8 +132,8 @@ fn synthetic(app: &App, time: f32) -> [f32; BANDS] {
 /// shrunk there instead of pushing the shortcuts off the window.
 pub fn size(app: &App, avail: Option<Vec2>) -> Vec2 {
     let cfg = &app.cfg.viz;
-    let mut w = cfg.width.clamp(40, 400) as f32;
-    let h = cfg.height.clamp(6, 48) as f32;
+    let mut w = cfg.width.clamp(40, 1000) as f32;
+    let h = cfg.height.clamp(6, 240) as f32;
     if let Some(avail) = avail {
         if avail.x.is_finite() && avail.x > 0.0 && avail.y.is_finite() && avail.y > 0.0 {
             w = w.min(avail.x);
@@ -165,7 +165,14 @@ pub fn preview(ui: &mut Ui, app: &App, t: &Tokens) -> egui::Response {
     // A circular look needs a square stage, or it would be a dot in a band.
     let circular = app.cfg.viz.style == "circular";
     let side = strip.x.max(strip.y);
-    let slot = if circular { Vec2::splat(side) } else { strip };
+    let mut slot = if circular { Vec2::splat(side) } else { strip };
+    // The card is narrower than the face: keep the stage inside it and show
+    // the shape rather than pushing the page sideways.
+    slot.x = slot.x.min((ui.available_width() - 48.0).max(120.0));
+    slot.y = slot.y.min(240.0);
+    if circular {
+        slot = Vec2::splat(slot.x.min(slot.y).max(40.0));
+    }
     let stage = Vec2::new((slot.x + 48.0).max(220.0), slot.y + 40.0);
     let (rect, resp) = ui.allocate_exact_size(stage, Sense::hover());
     let p = ui.painter();
