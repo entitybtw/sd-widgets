@@ -286,6 +286,57 @@ impl Menu {
         let parent = if -1 == id { 0 } else { id };
         (parent, self.props_of(parent, names), children)
     }
+
+    /// Run one menu event. Both `Event` and `EventGroup` land here: bare
+    /// `Event` is what the spec names, `EventGroup` is what libdbusmenu (and
+    /// so every bar built on it, waybar included) actually sends on a click.
+    fn click(&self, id: i32, event_id: &str) {
+        if event_id != "clicked" {
+            return;
+        }
+        let lang = self.lang();
+        let log = &self.state.logger;
+        match id {
+            MENU_OPEN => {
+                // The window exists only in a GUI session. A daemon started
+                // with --headless has no thread to open one, and a silent
+                // request file would look like a dead button.
+                if crate::config::window_marker().exists() {
+                    log.info(t!(
+                        lang,
+                        "трей: окно открывается",
+                        "tray: opening the window"
+                    ));
+                    crate::config::request("show");
+                } else {
+                    log.info(t!(
+                        lang,
+                        "трей: демон запущен без окна (--headless); запустите sdw-daemon без флага, чтобы вернуть окно",
+                        "tray: the daemon runs without a window (--headless); start sdw-daemon without the flag to get it back"
+                    ));
+                }
+            }
+            MENU_WEB => {
+                let url = format!("http://127.0.0.1:{}", self.state.cfg().api_port);
+                log.info(format!(
+                    "{} {url}",
+                    t!(lang, "трей: веб-интерфейс", "tray: web interface")
+                ));
+                if sdw_core::util::has("xdg-open") {
+                    let _ = std::process::Command::new("xdg-open")
+                        .arg(&url)
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn();
+                }
+            }
+            MENU_QUIT => {
+                log.info(t!(lang, "трей: выход", "tray: quit"));
+                crate::config::request("quit");
+            }
+            _ => {}
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -341,50 +392,16 @@ impl Menu {
     }
 
     fn event(&self, id: i32, event_id: &str, _data: zbus::zvariant::Value<'_>, _timestamp: u32) {
-        if event_id != "clicked" {
-            return;
-        }
-        let lang = self.lang();
-        let log = &self.state.logger;
-        match id {
-            MENU_OPEN => {
-                // The window exists only in a GUI session. A daemon started
-                // with --headless has no thread to open one, and a silent
-                // request file would look like a dead button.
-                if crate::config::window_marker().exists() {
-                    log.info(t!(
-                        lang,
-                        "трей: окно открывается",
-                        "tray: opening the window"
-                    ));
-                    crate::config::request("show");
-                } else {
-                    log.info(t!(
-                        lang,
-                        "трей: демон запущен без окна (--headless); запустите sdw-daemon без флага, чтобы вернуть окно",
-                        "tray: the daemon runs without a window (--headless); start sdw-daemon without the flag to get it back"
-                    ));
-                }
-            }
-            MENU_WEB => {
-                let url = format!("http://127.0.0.1:{}", self.state.cfg().api_port);
-                log.info(format!(
-                    "{} {url}",
-                    t!(lang, "трей: веб-интерфейс", "tray: web interface")
-                ));
-                if sdw_core::util::has("xdg-open") {
-                    let _ = std::process::Command::new("xdg-open")
-                        .arg(&url)
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .spawn();
-                }
-            }
-            MENU_QUIT => {
-                log.info(t!(lang, "трей: выход", "tray: quit"));
-                crate::config::request("quit");
-            }
-            _ => {}
+        self.click(id, event_id);
+    }
+
+    /// The batched form of `Event`. libdbusmenu (thus waybar and every other
+    /// libdbusmenu bar) never calls `Event`: a click arrives here as one
+    /// `(id, "clicked", variant, timestamp)` row. Missing this method made the
+    /// menu open and every entry inside it do nothing.
+    fn event_group(&self, events: Vec<(i32, String, zbus::zvariant::Value<'_>, u32)>) {
+        for (id, event_id, _data, _timestamp) in events {
+            self.click(id, &event_id);
         }
     }
 
