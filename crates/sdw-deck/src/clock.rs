@@ -117,11 +117,12 @@ pub fn fullscreen(app: &mut App, root: &mut Ui, ctx: &egui::Context) {
 
             // The same shortcuts every other page has: notifications and the
             // control centre. Leaving is the hint below (a tap anywhere or
-            // Escape), so there is no third button to crowd these two.
+            // Escape), so there is no third button to crowd these two. The gap
+            // is wide enough to read as two targets, not one split control.
             let side = 40.0;
-            let gap = 10.0;
-            let top = rect.top() + 14.0;
-            let mut x = rect.right() - 16.0 - side;
+            let gap = 20.0;
+            let top = rect.top() + 16.0;
+            let mut x = rect.right() - 20.0 - side;
             let button = |ui: &mut Ui, x: f32, glyph: &str, active: bool, tip: &str| {
                 let r = Rect::from_min_size(pos2(x, top), vec2(side, side));
                 ui.put(
