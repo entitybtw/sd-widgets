@@ -14,6 +14,7 @@ mod mirror;
 mod monitor;
 mod notifications;
 mod server;
+mod spectrum;
 mod state;
 mod tray;
 mod viiper;

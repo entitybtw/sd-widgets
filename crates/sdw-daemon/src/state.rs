@@ -493,6 +493,8 @@ pub struct AppState {
     pub notifications: Arc<NotificationStore>,
     pub media: Arc<crate::media::MediaService>,
     pub audio: Arc<crate::audio::Audio>,
+    /// The computer's own spectrum for the deck's visualizer.
+    pub spectrum: Arc<crate::spectrum::SpectrumService>,
     pub viiper: Arc<ViiperManager>,
     pub monitor: Arc<MonitorManager>,
     /// The decks that send their screen here, and the newest picture.
@@ -525,6 +527,7 @@ impl AppState {
         let mirror = Arc::new(crate::mirror::Mirror::new());
         let deck_audio = Arc::new(crate::deck_audio::DeckAudio::new());
         let audio = Arc::new(crate::audio::Audio::new());
+        let spectrum = Arc::new(crate::spectrum::SpectrumService::new());
         let viiper = Arc::new(ViiperManager::new(logger.clone()));
         let monitor = Arc::new(MonitorManager::new(logger.clone()));
         let ha = Arc::new(Mutex::new(HaRuntime::from_config(&cfg)));
@@ -536,6 +539,7 @@ impl AppState {
             notifications,
             media,
             audio,
+            spectrum,
             viiper,
             monitor,
             mirror,

@@ -163,6 +163,16 @@ fn handle(state: Arc<AppState>, mut req: Request) {
             respond_json(req, 200, &state.audio.status())
         }
         (Method::Get, "/api/v1/audio/stream") => audio_stream(state, req),
+        // The computer's own bands for the deck's visualizer. On demand: the
+        // first poll starts the monitor capture, the last one lets it stop.
+        (Method::Get, "/api/v1/spectrum") => {
+            let snapshot = if state.cfg().audio.visualizer {
+                state.spectrum.snapshot()
+            } else {
+                Spectrum::default()
+            };
+            respond_json(req, 200, &snapshot)
+        }
 
         (Method::Post, "/api/v1/remote") => remote_command(state, req),
         (Method::Post, "/api/v1/power") => power_command(state, req),

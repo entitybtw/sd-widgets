@@ -344,6 +344,8 @@ pub enum Task {
     Installed(Result<String, String>),
     Audio(Result<AudioStatus, String>),
     AudioApps(Result<Vec<AudioApp>, String>),
+    /// The computer's own audio bands for the visualizer.
+    Spectrum(Result<sdw_core::model::Spectrum, String>),
     Msg(Result<String, String>),
     Headset(Option<Headset>),
     /// Catalogue entries from every store base, plus the errors that happened.
@@ -654,6 +656,14 @@ pub struct App {
     pub media: MediaUiState,
     /// The audio visualizer's bands, shared with the PCM player thread.
     pub viz: crate::viz::Shared,
+    /// The computer's own spectrum: bands and when they arrived. The daemon
+    /// analyzes its sink monitor, so the meter follows music that never
+    /// reaches the deck.
+    pub viz_remote: Option<(Vec<f32>, Instant)>,
+    /// Earliest time for the next spectrum poll: a fast pace while frames
+    /// arrive, a long pause when the daemon has no such endpoint.
+    pub viz_remote_at: Option<Instant>,
+    pub viz_remote_pending: bool,
     pub binds: BindsState,
     pub update: UpdateState,
     pub settings_name: String,
@@ -950,6 +960,9 @@ impl App {
                 error: String::new(),
             },
             viz: crate::viz::shared(),
+            viz_remote: None,
+            viz_remote_at: None,
+            viz_remote_pending: false,
             binds: BindsState {
                 editor: None,
                 capture: false,
@@ -2183,6 +2196,35 @@ impl App {
     }
 
     // ------------------------------------------------------------ notifications, ha
+
+    /// Ask the computer for its own bands while the visualizer can be seen.
+    /// The daemon starts its capture on the first request and stops it after
+    /// the last, so the deck asks often only while somebody looks.
+    pub fn poll_spectrum(&mut self) {
+        if !self.cfg.viz.enabled || !self.cfg.viz.pc {
+            self.viz_remote = None;
+            return;
+        }
+        let seen = (self.cfg.viz.nav && !self.stream.fullscreen)
+            || (self.cfg.viz.shade && self.quick_open)
+            || (self.cfg.viz.clock && (self.page == Page::Clock || self.clock_full))
+            || self.page == Page::Audio;
+        if !seen || !self.online() {
+            return;
+        }
+        if self.viz_remote_pending {
+            return;
+        }
+        if self.viz_remote_at.is_some_and(|at| Instant::now() < at) {
+            return;
+        }
+        let Some(c) = self.client() else {
+            return;
+        };
+        self.viz_remote_pending = true;
+        self.viz_remote_at = Some(Instant::now() + Duration::from_millis(60));
+        self.spawn(move || Task::Spectrum(c.spectrum().map_err(|e| e.to_string())));
+    }
 
     pub fn poll_status(&mut self) {
         if self.status_pending || self.client().is_none() {
@@ -3725,6 +3767,7 @@ impl App {
         }
 
         self.poll_status();
+        self.poll_spectrum();
         self.poll_deck_want();
         self.poll_notifications();
         if self.page == Page::HomeAssistant && self.ha.last_fetch.elapsed() > Duration::from_secs(4)
@@ -4176,6 +4219,23 @@ impl App {
             Task::AudioApps(Err(e)) => {
                 self.audio_error = e.clone();
                 self.audio_apps_at = Some(Instant::now());
+            }
+            Task::Spectrum(Ok(spectrum)) => {
+                self.viz_remote_pending = false;
+                if spectrum.bands.len() == crate::viz::BANDS {
+                    self.viz_remote = Some((spectrum.bands, Instant::now()));
+                    self.viz_remote_at = Some(Instant::now() + Duration::from_millis(50));
+                } else {
+                    // Capture is starting or the machine is silent: keep the
+                    // last frame for its short freshness window and ask again.
+                    self.viz_remote_at = Some(Instant::now() + Duration::from_millis(250));
+                }
+            }
+            Task::Spectrum(Err(_)) => {
+                self.viz_remote_pending = false;
+                // An older daemon has no endpoint: stop hammering it, the
+                // local meter and the track motion still work.
+                self.viz_remote_at = Some(Instant::now() + Duration::from_secs(15));
             }
             Task::Msg(Ok(message)) => {
                 if !message.is_empty() {

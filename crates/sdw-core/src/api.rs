@@ -261,6 +261,13 @@ impl Client {
         self.request_fast("GET", "/api/v1/apps", None)
     }
 
+    /// The computer's own audio spectrum, for the visualizer. It is a poll:
+    /// a missing daemon feature (an older build) is not an error worth
+    /// surfacing, the deck falls back to its own meter.
+    pub fn spectrum(&self) -> ApiResult<crate::model::Spectrum> {
+        self.request_fast("GET", "/api/v1/spectrum", None)
+    }
+
     /// Start one of the applications returned by [`Client::apps`].
     pub fn app_launch(&self, id: &str) -> ApiResult<Value> {
         let body = serde_json::json!({ "id": id });

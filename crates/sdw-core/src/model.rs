@@ -163,6 +163,34 @@ pub struct BluetoothStatus {
     pub adapter: String,
     pub devices: Vec<BluetoothDevice>,
     pub error: String,
+    /// The last action started from the deck: a number that changes when the
+    /// job starts and when it finishes. Pairing and connecting run off the
+    /// request thread, so the page never waits on BlueZ yet still learns the
+    /// outcome from a later poll.
+    #[serde(default)]
+    pub action_seq: u64,
+    #[serde(default)]
+    pub action_running: bool,
+    #[serde(default)]
+    pub action_ok: bool,
+    #[serde(default)]
+    pub action_message: String,
+}
+
+/// The computer's own audio bands, bass to treble. The daemon fills this from
+/// its sink monitor with the same analyzer the deck uses, so the visualizer
+/// can follow music that plays on the computer without streaming its sound.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Spectrum {
+    /// Changes with every analyzed frame; a repeat means no fresh audio.
+    pub seq: u64,
+    /// True while the daemon is capturing the monitor.
+    pub active: bool,
+    /// The capture source, empty when idle.
+    pub source: String,
+    /// [`crate::spectrum::BANDS`] levels in 0..=1, or empty when idle.
+    pub bands: Vec<f32>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1994,6 +2022,9 @@ impl Default for StreamCfg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VizCfg {
+    /// Look revision, so a file written before the cava-like defaults can be
+    /// lifted once without touching a look the user actually chose.
+    pub rev: u8,
     pub enabled: bool,
     /// Show the bars in the top bar.
     pub nav: bool,
@@ -2004,6 +2035,9 @@ pub struct VizCfg {
     /// Animate when the computer reports media even if its sound is not on
     /// the deck: the visualizer then follows the track, not the cable.
     pub media: bool,
+    /// Poll the computer's own spectrum, so the bars show the music that
+    /// plays there even when its sound never reaches the deck.
+    pub pc: bool,
     /// How many bars, 4..=24.
     pub bars: u8,
     /// Height of the strip in points, 6..=48.
@@ -2015,6 +2049,8 @@ pub struct VizCfg {
     pub gap: u8,
     /// Bar opacity, 20..=100 percent.
     pub opacity: u8,
+    /// Sensitivity: 100 % is the natural level, 200 % lifts quiet passages.
+    pub gain: u8,
     /// bars, dots or wave
     pub style: String,
     /// Mirror the bars around the centre line.
@@ -2028,19 +2064,22 @@ pub struct VizCfg {
 impl Default for VizCfg {
     fn default() -> Self {
         Self {
+            rev: 2,
             enabled: true,
             nav: true,
             shade: true,
             clock: true,
             media: true,
-            bars: 14,
-            height: 18,
-            width: 124,
-            gap: 2,
+            pc: true,
+            bars: 16,
+            height: 22,
+            width: 148,
+            gap: 1,
             opacity: 100,
+            gain: 100,
             style: "bars".into(),
             mirror: false,
-            peak: true,
+            peak: false,
             color: String::new(),
         }
     }

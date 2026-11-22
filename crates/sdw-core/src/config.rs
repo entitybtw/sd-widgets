@@ -50,6 +50,29 @@ pub fn migrate(mut cfg: DeckConfig) -> DeckConfig {
         clock.bg_top.clear();
         clock.bg_bottom.clear();
     }
+    // The visualizer's starter look became cava-like: thin solid bars, a
+    // one-point gap, no caps. Only a file that still has that untouched old
+    // look is lifted; a customised one keeps every value.
+    let viz = &mut cfg.viz;
+    if viz.rev < 2 {
+        let untouched = viz.bars == 14
+            && viz.height == 18
+            && viz.width == 124
+            && viz.gap == 2
+            && viz.opacity == 100
+            && viz.style == "bars"
+            && !viz.mirror
+            && viz.peak
+            && viz.color.trim().is_empty();
+        if untouched {
+            viz.bars = 16;
+            viz.height = 22;
+            viz.width = 148;
+            viz.gap = 1;
+            viz.peak = false;
+        }
+        viz.rev = 2;
+    }
     cfg
 }
 
@@ -109,6 +132,37 @@ mod tests {
         let custom = migrate(custom);
         assert!(!custom.clock.follow_theme);
         assert_eq!(custom.clock.accent, "#ff0000");
+    }
+
+    #[test]
+    fn old_visualizer_starter_look_becomes_cava() {
+        let mut cfg = DeckConfig::default();
+        cfg.viz.rev = 0;
+        cfg.viz.bars = 14;
+        cfg.viz.height = 18;
+        cfg.viz.width = 124;
+        cfg.viz.gap = 2;
+        cfg.viz.opacity = 100;
+        cfg.viz.style = "bars".into();
+        cfg.viz.mirror = false;
+        cfg.viz.peak = true;
+        let cfg = migrate(cfg);
+        assert_eq!(cfg.viz.bars, 16);
+        assert_eq!(cfg.viz.gap, 1);
+        assert!(!cfg.viz.peak);
+        assert_eq!(cfg.viz.rev, 2);
+
+        // A look the user changed keeps every value.
+        let mut custom = DeckConfig::default();
+        custom.viz.rev = 0;
+        custom.viz.bars = 20;
+        custom.viz.gap = 3;
+        custom.viz.peak = true;
+        let custom = migrate(custom);
+        assert_eq!(custom.viz.bars, 20);
+        assert_eq!(custom.viz.gap, 3);
+        assert!(custom.viz.peak);
+        assert_eq!(custom.viz.rev, 2);
     }
 
     #[test]

@@ -1,30 +1,24 @@
 //! The little audio visualizer.
 //!
 //! When the computer's sound plays on the deck, the bands come from the real
-//! PCM that passes through the player: a Goertzel filter per band, no FFT and
-//! no extra dependency. When the sound stays on the computer but a player
-//! reports a track, the bars follow the track instead, so the meter still
-//! shows that something is playing.
+//! PCM that passes through the player. When the sound stays on the computer,
+//! the daemon analyzes its sink monitor with the same code and the deck polls
+//! those levels, so the meter follows the music even with the speakers remote.
+//! A track that only reports metadata keeps falling back to a gentle motion.
 //!
 //! Everything is drawn in the Grid language: hard edges, a hairline baseline,
 //! one accent colour.
 
 use crate::app::App;
 use crate::theme::Tokens;
-use eframe::egui::{self, Color32, Rect, Sense, Ui, Vec2};
+use eframe::egui::{self, Color32, Rect, Sense, Stroke, Ui, Vec2};
 use sdw_core::model::VizCfg;
+use sdw_core::spectrum;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How many bands the analyzer produces. The visible bar count is a setting
-/// between 4 and this; the bands are grouped when fewer are shown.
-pub const BANDS: usize = 24;
-
-/// Centre frequencies from bass to treble, roughly logarithmic.
-const FREQS: [f32; BANDS] = [
-    40.0, 55.0, 75.0, 100.0, 130.0, 170.0, 220.0, 290.0, 380.0, 500.0, 650.0, 850.0, 1100.0,
-    1450.0, 1900.0, 2500.0, 3300.0, 4300.0, 5600.0, 7300.0, 9500.0, 12000.0, 15000.0, 18000.0,
-];
+/// How many bands the analyzer produces (re-exported for the rest of the deck).
+pub const BANDS: usize = spectrum::BANDS;
 
 #[derive(Debug, Clone)]
 pub struct Meter {
@@ -54,52 +48,29 @@ pub fn feed(shared: &Shared, pcm: &[u8], rate: u32) {
     if pcm.len() < 256 || rate < 8000 {
         return;
     }
-    // 2048 frames is about 46 ms at 44.1 kHz: long enough for the bass bins,
-    // short enough that the bars still follow the beat.
-    let frames = (pcm.len() / 4).min(2048);
-    let mut mono = Vec::with_capacity(frames);
-    for i in 0..frames {
-        let l = i16::from_le_bytes([pcm[i * 4], pcm[i * 4 + 1]]) as f32;
-        let r = i16::from_le_bytes([pcm[i * 4 + 2], pcm[i * 4 + 3]]) as f32;
-        mono.push((l + r) * 0.5 / 32768.0);
-    }
-    let n = frames as f32;
-    let mut next = [0.0f32; BANDS];
-    for (band, freq) in FREQS.iter().enumerate() {
-        let w = 2.0 * std::f32::consts::PI * freq / rate as f32;
-        let coeff = 2.0 * w.cos();
-        let (mut s0, mut s1, mut s2) = (0.0f32, 0.0f32, 0.0f32);
-        for &x in &mono {
-            s0 = x + coeff * s1 - s2;
-            s2 = s1;
-            s1 = s0;
-        }
-        let power = (s1 * s1 + s2 * s2 - coeff * s1 * s2).max(0.0);
-        // A full-scale sine in the bin gives about half the window length.
-        let amp = (power.sqrt() / (n * 0.5)).max(1e-6);
-        // -60 dB..0 dB is the useful range for a little meter.
-        let db = 20.0 * amp.log10();
-        next[band] = ((db + 60.0) / 60.0).clamp(0.0, 1.0);
-    }
+    let next = spectrum::analyze(pcm, 2, rate);
     if let Ok(mut m) = shared.lock() {
-        for band in 0..BANDS {
-            // Fast attack, slow release: the bars jump on a hit and fall back
-            // instead of strobing with every frame.
-            let v = next[band];
-            m.bands[band] = if v > m.bands[band] {
-                v
-            } else {
-                m.bands[band] * 0.78 + v * 0.22
-            };
-        }
+        // Fast attack, slow release: the bars jump on a hit and fall back
+        // instead of strobing with every frame.
+        m.bands = spectrum::follow(&m.bands, &next, 0.78);
         m.live_at = Instant::now();
     }
 }
 
-/// The bars a player would show right now: real PCM first, the computer's
-/// track second, silence last.
+/// The bars a player would show right now: the computer's own spectrum first
+/// (the same picture cava draws there), real PCM on the deck second, the
+/// track's motion third, silence last.
 fn levels(app: &App, time: f32) -> Vec<f32> {
     let bars = app.cfg.viz.bars.clamp(4, BANDS as u8) as usize;
+    let remote = app.viz_remote.as_ref().and_then(|(bands, at)| {
+        if at.elapsed() < Duration::from_millis(700) && bands.len() == BANDS {
+            let mut copy = [0.0f32; BANDS];
+            copy.copy_from_slice(bands);
+            Some(copy)
+        } else {
+            None
+        }
+    });
     let live = app
         .viz
         .lock()
@@ -112,24 +83,19 @@ fn levels(app: &App, time: f32) -> Vec<f32> {
             }
         })
         .flatten();
-    let bands = match live {
+    let bands = match remote {
         Some(bands) => bands,
-        None if app.cfg.viz.media => synthetic(app, time),
-        None => [0.0; BANDS],
+        None => match live {
+            Some(bands) => bands,
+            None if app.cfg.viz.media => synthetic(app, time),
+            None => [0.0; BANDS],
+        },
     };
-    group(&bands, bars)
-}
-
-/// Group the 24 analyzer bands into `n` visible bars by taking the loudest
-/// member, so a narrow visible bar never loses a peak between two bands.
-fn group(bands: &[f32; BANDS], n: usize) -> Vec<f32> {
-    let n = n.clamp(1, BANDS);
-    (0..n)
-        .map(|i| {
-            let from = i * BANDS / n;
-            let to = ((i + 1) * BANDS / n).max(from + 1).min(BANDS);
-            bands[from..to].iter().cloned().fold(0.0f32, f32::max)
-        })
+    // Sensitivity: 100 % is the natural level, higher lifts quiet passages.
+    let gain = app.cfg.viz.gain.clamp(50, 200) as f32 / 100.0;
+    spectrum::group(&bands, bars)
+        .into_iter()
+        .map(|v| (v * gain).clamp(0.0, 1.0))
         .collect()
 }
 
@@ -190,6 +156,30 @@ pub fn ui(ui: &mut Ui, app: &App, t: &Tokens, size: Vec2) -> egui::Response {
     resp
 }
 
+/// A framed preview for the settings page: a hairline well that holds the
+/// strip at the very size and bar width it will have in the top bar. Stretching
+/// it to the card's width made every bar three times wider than it really is,
+/// so the preview showed a different object than the one being adjusted.
+pub fn preview(ui: &mut Ui, app: &App, t: &Tokens) -> egui::Response {
+    let strip = size(app, None);
+    let stage = Vec2::new((strip.x + 48.0).max(220.0), strip.y + 40.0);
+    let (rect, resp) = ui.allocate_exact_size(stage, Sense::hover());
+    let p = ui.painter();
+    // No fill: the stage must show the strip on the same surface as the top
+    // bar, or the bars would look fainter here than they do there.
+    p.rect_stroke(
+        rect,
+        0.0,
+        Stroke::new(1.0, t.line),
+        egui::StrokeKind::Inside,
+    );
+    // Centre the strip on its own baseline: the stage is a frame, the strip
+    // inside is the real thing at its real size.
+    let strip_rect = Rect::from_center_size(rect.center(), Vec2::new(strip.x, strip.y));
+    paint(ui, app, t, strip_rect);
+    resp
+}
+
 /// Paint the strip into a rect the caller already owns. The clock draws it
 /// over its own canvas this way, without moving the page's layout.
 pub fn paint(ui: &Ui, app: &App, t: &Tokens, rect: Rect) {
@@ -197,14 +187,13 @@ pub fn paint(ui: &Ui, app: &App, t: &Tokens, rect: Rect) {
         return;
     }
     let time = ui.input(|i| i.time) as f32;
-    // The custom colour gets a dimmed partner for the quiet bars; the theme
-    // accent keeps its own soft tone.
-    let (hot, soft) = if app.cfg.viz.color.trim().is_empty() {
-        (t.accent, t.accent_soft)
-    } else {
-        let c = accent(app, t);
-        (c, c.gamma_multiply(0.6))
-    };
+    // One accent for the whole strip, like cava: the loud bars in full colour,
+    // the quiet ones a little dimmer but still clearly there. The theme's
+    // `accent_soft` is an alpha-30 wash and made every ordinary bar all but
+    // invisible, which read as "the visualizer does not work".
+    let base_color = accent(app, t);
+    let hot = base_color;
+    let soft = base_color.gamma_multiply(0.85);
     let lv = levels(app, time);
     draw(ui, t, rect, &lv, &app.cfg.viz, hot, soft);
 }
@@ -346,5 +335,9 @@ pub fn active(app: &App) -> bool {
         .lock()
         .ok()
         .is_some_and(|m| m.live_at.elapsed() < Duration::from_millis(900));
-    live || (app.cfg.viz.media && app.media.state.available && app.media.state.playing())
+    let remote = app
+        .viz_remote
+        .as_ref()
+        .is_some_and(|(_, at)| at.elapsed() < Duration::from_millis(700));
+    live || remote || (app.cfg.viz.media && app.media.state.available && app.media.state.playing())
 }

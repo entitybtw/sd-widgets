@@ -182,13 +182,25 @@ fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             );
             return;
         }
-        // A live preview of the current look, using the real meter.
-        crate::viz::ui(
-            ui,
-            app,
-            t,
-            crate::viz::size(app, Some(Vec2::new(ui.available_width().min(420.0), 60.0))),
-        );
+        // A live preview of the current look, at the size the top bar will
+        // draw it: a framed stage, not a stretched thumbnail.
+        ui.horizontal(|ui| {
+            crate::viz::preview(ui, app, t);
+            ui.add_space(14.0);
+            ui.vertical(|ui| {
+                ui.add_space(16.0);
+                ui.set_max_width(440.0);
+                theme::small(
+                    ui,
+                    t!(
+                        app.lang,
+                        "так полоска выглядит в шапке и на часах — в настоящем размере.",
+                        "this is the strip in the top bar and on the clock, at its real size."
+                    ),
+                    t.muted,
+                );
+            });
+        });
         ui.add_space(6.0);
         let mut changed = false;
         ui.horizontal_wrapped(|ui| {
@@ -197,6 +209,7 @@ fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 (&mut app.cfg.viz.shade, "в шторе", "in the shade"),
                 (&mut app.cfg.viz.clock, "в часах", "on the clock"),
                 (&mut app.cfg.viz.media, "по медиа с пк", "from pc media"),
+                (&mut app.cfg.viz.pc, "звук с пк", "pc sound"),
             ] {
                 changed |= theme::switch(ui, on, t).changed();
                 ui.label(
@@ -267,6 +280,22 @@ fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 app.cfg.viz.color.clear();
                 changed = true;
             }
+            ui.add_space(10.0);
+            // The look cava has by default: solid thin bars, a one-point gap,
+            // no caps, no mirror. One press brings it back after experiments.
+            if theme::ghost(ui, t!(app.lang, "как cava", "cava look"), t).clicked() {
+                app.cfg.viz.style = "bars".into();
+                app.cfg.viz.bars = 16;
+                app.cfg.viz.height = 22;
+                app.cfg.viz.width = 148;
+                app.cfg.viz.gap = 1;
+                app.cfg.viz.opacity = 100;
+                app.cfg.viz.gain = 100;
+                app.cfg.viz.mirror = false;
+                app.cfg.viz.peak = false;
+                app.cfg.viz.color.clear();
+                changed = true;
+            }
         });
         ui.add_space(2.0);
         let mut bars = app.cfg.viz.bars as u32;
@@ -300,6 +329,17 @@ fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             app.cfg.viz.opacity = opacity.clamp(20, 100) as u8;
             changed = true;
         }
+        let mut gain = app.cfg.viz.gain as u32;
+        if theme::slider_u32(
+            ui,
+            t,
+            t!(app.lang, "чувствительность", "sensitivity"),
+            &mut gain,
+            50..=200,
+        ) {
+            app.cfg.viz.gain = gain.clamp(50, 200) as u8;
+            changed = true;
+        }
         if changed {
             app.save_soon();
         }
@@ -307,8 +347,8 @@ fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui,
             t!(
                 app.lang,
-                "звук с пк рисуется по настоящим сэмплам, а трек без звука на деке — по громкости и названию. в шапке полоса сжимается сама, если экран маленький.",
-                "sound on the deck uses the real samples; a track that stays on the pc moves with its volume and title. in the top bar the strip shrinks when the window is small."
+                "звук с пк рисуется по настоящим сэмплам его микшера, а если звук идёт на деку — по сэмплам плеера. трек без звука двигает полоски по громкости и названию. в шапке полоса сжимается сама, если экран маленький.",
+                "pc sound is measured from the computer's own mixer; sound on the deck uses the player's samples. a track without sound moves the bars by volume and title. in the top bar the strip shrinks when the window is small."
             ),
             t.faint,
         );

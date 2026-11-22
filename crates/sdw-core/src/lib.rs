@@ -8,6 +8,7 @@ pub mod discovery;
 pub mod ha;
 pub mod i18n;
 pub mod model;
+pub mod spectrum;
 pub mod udp;
 pub mod update;
 pub mod util;

@@ -55,6 +55,10 @@ pub struct AudioCfg {
     pub allow_remote: bool,
     pub rate: u32,
     pub channels: u8,
+    /// Let the deck draw the computer's own spectrum. The monitor is captured
+    /// only while the deck asks, so this can stay on by default.
+    #[serde(default = "default_true")]
+    pub visualizer: bool,
 }
 
 impl Default for AudioCfg {
@@ -64,6 +68,7 @@ impl Default for AudioCfg {
             allow_remote: true,
             rate: 48000,
             channels: 2,
+            visualizer: true,
         }
     }
 }
