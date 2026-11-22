@@ -100,6 +100,24 @@ Deck (`deck.json`):
 accidental taps harmless. `allow_remote = false` on the daemon is the real lock;
 the Deck then gets a clear error instead of a stream.
 
+## Visualizer
+
+The Deck draws a cava-style meter in the top bar, the control centre, the clock
+and the full-screen clock. Its bands come from the shared analyzer in
+`sdw-core::spectrum` (a 2048-point FFT, 24 logarithmic bands, 0..=1 over
+−60…0 dB). When the Deck plays the computer's PCM it analyzes that. When the
+sound stays on the computer, `GET /api/v1/spectrum` returns the same bands from
+the daemon's own capture: `parec` on the default sink's monitor, started by the
+first request and stopped six seconds after the last, so an idle machine runs
+nothing. If the daemon has no such endpoint (an older build), the Deck falls
+back to its local meter and to the track's motion.
+
+`[audio] visualizer = false` in the daemon config turns the monitor capture off.
+The Deck side is `VizCfg`: placement (`nav`, `shade`, `clock`), source (`pc`,
+`media`), shape (`bars`, `dots`, `wave`), `bars`, `gap`, `width`, `height`,
+`opacity`, `gain` (sensitivity), `mirror`, `peak` and `color`. The defaults
+follow cava, and the **cava look** button restores them.
+
 ## Troubleshooting
 
 | Symptom | Cause |

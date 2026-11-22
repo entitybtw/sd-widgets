@@ -58,7 +58,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Bluetooth** | Devices known to the computer: connect, disconnect, pair, trust, forget, and the headphone battery. |
 | **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control or gesture. |
 | **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality; view-only on the Deck. |
-| **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. |
+| **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. A cava-style visualizer reads the computer's own mix and is fully adjustable. |
 | **Notifications** | Mirrored desktop notifications, newest first, unread counters. |
 | **Home Assistant** | Rooms and areas with lights, curtains, climate and media widgets, not a wall of every entity. |
 | **Binds** | Buttons, chords and swipe gestures mapped to actions or remote commands. |
@@ -294,6 +294,13 @@ The **Audio** page turns the Deck into a speaker for the computer:
 - source list, transfer size, time and clear errors on both sides;
 - a **confirmations** setting (0–3) that asks “are you sure you want to move the
   sound to the deck?” that many times before streaming.
+
+A **visualizer** draws the sound as bars in the top bar, in the control centre
+and on the clock, and optionally on the full-screen clock. With **pc sound** on,
+the daemon reads the computer's own sink monitor on demand, so the same bands
+move even while the music stays on the computer's speakers. Bars, dots or a
+wave, colour, mirroring, peaks, sensitivity, bar count and size are all settings;
+the default look follows cava, and one button brings it back after experiments.
 
 Audio is off in the daemon until **Audio → allow audio** is on, and
 **start from the deck** can be disabled so only the computer can start a stream.

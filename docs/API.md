@@ -86,6 +86,7 @@ rest of the API, never through the stream.
 | `POST` | `/api/v1/audio/start` | `AudioStart` `{ source: "system" \| "apps", apps, rate, channels }`. |
 | `POST` | `/api/v1/audio/stop` | Stop capture and return app streams to their sink. |
 | `GET` | `/api/v1/audio/stream` | Raw `s16le` PCM while running; `409` when idle. |
+| `GET` | `/api/v1/spectrum` | `Spectrum` `{ seq, active, source, bands }`: the computer's own audio, 24 levels 0..=1. Capture starts on the first poll and stops after a few idle seconds. |
 
 Details and requirements: [`AUDIO.md`](AUDIO.md).
 
@@ -93,8 +94,8 @@ Details and requirements: [`AUDIO.md`](AUDIO.md).
 
 | Method | Path | Body / result |
 | --- | --- | --- |
-| `GET` | `/api/v1/bluetooth` | `BluetoothStatus`: available, powered, discovering, adapter, devices, error. |
-| `POST` | `/api/v1/bluetooth/action` | `{ "action": "connect", "address": "…" }`. |
+| `GET` | `/api/v1/bluetooth` | `BluetoothStatus`: available, powered, discovering, adapter, devices, error, action_seq, action_running, action_ok, action_message. |
+| `POST` | `/api/v1/bluetooth/action` | `{ "action": "connect", "address": "…" }`; answers `{ "started": true }` at once. |
 
 Each device carries `address`, `name`, `icon`, `paired`, `connected`, `trusted`,
 `blocked`, `battery` (percent, when known) and `rssi`.
@@ -102,8 +103,14 @@ Each device carries `address`, `name`, `icon`, `paired`, `connected`, `trusted`,
 A status read drives `bluetoothctl` once for the adapter and once per device, so
 `GET /api/v1/bluetooth` answers with the last snapshot at once and starts the
 next read in the background; a snapshot is at most a few seconds old and the
-answer never waits for BlueZ. An action reads again before it replies, so the
-press is already visible in the next poll.
+answer never waits for BlueZ. An action starts a job on its own thread and
+replies `{ "started": true }` immediately: pairing and connecting can take most
+of a minute, and holding the request open made the Deck wait and time out even
+when the device connected. The status carries the job's number, whether it is
+still running and its final message, so the page sees each step (paired, then
+connected) and the outcome without a long request. Only `connect` and `pair`
+pass a BlueZ timeout; `info`, `trust`, `untrust`, `remove` and `disconnect`
+answer at once (giving them a timeout made `bluetoothctl` sleep it out).
 
 Declared actions: `scan`, `scan_off`, `power_on`, `power_off`, `pair_connect`,
 `connect`, `disconnect`, `pair`, `trust`, `untrust`, `remove`, `info`. The daemon
