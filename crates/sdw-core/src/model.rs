@@ -2031,7 +2031,7 @@ impl Default for VizCfg {
             enabled: true,
             nav: true,
             shade: true,
-            clock: false,
+            clock: true,
             media: true,
             bars: 14,
             height: 18,

@@ -53,10 +53,14 @@ pub fn page(app: &mut App, ui: &mut Ui, t: &Tokens) {
         refresh_apps(app);
     }
 
+    // The visualizer card sits right under the source: the strip in the top
+    // bar opens this page, and its settings must be in sight, not after a
+    // long scroll.
+    viz_card(app, ui, t);
+    ui.add_space(8.0);
     source_card(app, ui, t, running);
     ui.add_space(8.0);
     volume_card(app, ui, t, running);
-    viz_card(app, ui, t);
 }
 
 fn status_card(app: &mut App, ui: &mut Ui, t: &Tokens, status: &AudioStatus, running: bool) {

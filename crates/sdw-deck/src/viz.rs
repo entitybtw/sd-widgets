@@ -181,12 +181,13 @@ pub fn size(app: &App, avail: Option<Vec2>) -> Vec2 {
 
 /// The strip itself. `size` is the slot the caller reserved; the bars fill it
 /// from the hairline baseline up, mirrored around the middle when asked.
-pub fn ui(ui: &mut Ui, app: &App, t: &Tokens, size: Vec2) {
+pub fn ui(ui: &mut Ui, app: &App, t: &Tokens, size: Vec2) -> egui::Response {
     if !app.cfg.viz.enabled {
-        return;
+        return ui.allocate_response(Vec2::ZERO, Sense::hover());
     }
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     paint(ui, app, t, rect);
+    resp
 }
 
 /// Paint the strip into a rect the caller already owns. The clock draws it
@@ -205,13 +206,6 @@ pub fn paint(ui: &Ui, app: &App, t: &Tokens, rect: Rect) {
         (c, c.gamma_multiply(0.6))
     };
     let lv = levels(app, time);
-    eprintln!(
-        "VZ paint rect={:?} media avail={} playing={} first={:?}",
-        rect,
-        app.media.state.available,
-        app.media.state.playing(),
-        lv.first()
-    );
     draw(ui, t, rect, &lv, &app.cfg.viz, hot, soft);
 }
 
@@ -250,11 +244,19 @@ fn draw(ui: &Ui, t: &Tokens, rect: Rect, bars: &[f32], cfg: &VizCfg, hot: Color3
     } else {
         (rect.height() - 2.0).max(1.0)
     };
-    let n = bars.len().max(1);
-    let slot = (rect.width() - gap * (n.saturating_sub(1)) as f32) / n as f32;
+    // A narrow slot shows fewer bars instead of squeezing every one into a
+    // sub-pixel: a squeezed strip read as a clipped stump. The shape and the
+    // order stay, only the count adapts to the room the caller gave.
+    let mut n = bars.len().max(1);
+    let mut slot = (rect.width() - gap * (n.saturating_sub(1)) as f32) / n as f32;
+    while slot < 1.5 && n > 1 {
+        n -= 1;
+        slot = (rect.width() - gap * (n.saturating_sub(1)) as f32) / n as f32;
+    }
     if slot < 1.0 {
         return;
     }
+    let bars = &bars[..n];
     if style == "wave" {
         // A hairline through the tips turns them into one line of sound.
         let pts: Vec<egui::Pos2> = bars

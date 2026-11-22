@@ -4641,13 +4641,25 @@ impl App {
                 ui.add_space(12.0);
                 // The right-hand group takes its own width first; the strip
                 // takes what is left of the row and never grows over the
-                // clock, the language and the bell.
+                // clock, the language and the bell. If less than a readable
+                // slot is left, the strip is not drawn at all: a sliver was
+                // worse than no strip.
                 let wanted = crate::viz::size(self, None).x;
                 let room = (ui.available_size().x - self.shortcut_width(ui, t, wanted)).max(0.0);
-                if room >= 24.0 {
+                let min_slot = (wanted * 0.6).max(72.0);
+                if room >= min_slot {
                     let slot =
                         crate::viz::size(self, Some(egui::vec2(room, ui.available_size().y)));
-                    crate::viz::ui(ui, self, t, slot);
+                    if crate::viz::ui(ui, self, t, slot)
+                        .on_hover_text(t!(
+                            self.lang,
+                            "настроить визуализатор",
+                            "set up the visualizer"
+                        ))
+                        .clicked()
+                    {
+                        self.set_page(Page::Audio);
+                    }
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {

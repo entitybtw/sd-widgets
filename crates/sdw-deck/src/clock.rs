@@ -619,6 +619,7 @@ fn preset_name(cfg: &ClockCfg) -> String {
 fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut cfg = app.cfg.clock.clone();
     let before = cfg.clone();
+    let viz_before = app.cfg.viz.clock;
     theme::card(ui, t, |ui| {
         ui.horizontal(|ui| {
             ui.label(theme::hud(t!(app.lang, "часы", "clock"), t.faint));
@@ -709,6 +710,15 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 ui.label(rt(t!(app.lang, ru, en), 12.5, t.muted));
                 ui.add_space(8.0);
             }
+            // The same strip as in the top bar, on its own face. It is a
+            // clock-page setting as well, so it is found where the face is
+            // chosen.
+            theme::switch(ui, &mut app.cfg.viz.clock, t);
+            ui.label(rt(
+                t!(app.lang, "визуализатор", "visualizer"),
+                12.5,
+                t.muted,
+            ));
         });
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
@@ -929,6 +939,9 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
             });
         });
     });
+    if viz_before != app.cfg.viz.clock {
+        app.save_soon();
+    }
     if cfg.style != before.style
         || cfg.seconds != before.seconds
         || cfg.date != before.date
