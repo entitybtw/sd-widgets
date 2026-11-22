@@ -10,10 +10,30 @@ If it is missing (a fresh clone), say so instead of guessing the queue.
 
 ## Talking to the maintainer
 
-- Answer in **Russian**. Code, comments, commit messages and docs stay in English.
+- Answer in the language the maintainer writes in; code, comments, commit
+  messages and docs stay in English.
 - Report honestly: what is done, what is not, what was checked and how.
 - Never open windows on the maintainer's desktop to "check" the GUI. Build and
   type-check; run a headless check only when it cannot disturb the session.
+
+## Testing
+
+Real-machine checks — sound, the GUI, Bluetooth, a daemon holding a port — run
+as their own process in their own step, never in the middle of the main work:
+start it, bound it with `timeout`, and kill the whole process group afterwards.
+A longer check gets its own thread/session (files in `work/`, a second shell or a
+subagent for the run), so a runaway can be stopped without touching the rest.
+Whatever still needs a real check goes to `NEXT.md` as its own item, one thread
+of work each, rather than being improvised inside another task.
+
+- Sound is tested into a silent sink (`module-null-sink`) only. `paplay
+  --device=<missing>` exits 0 and plays on the **default** output, so after every
+  run check that the stream really went to the null sink and that
+  `pactl list short sink-inputs` is empty again.
+- Never `while true` around a player or a command: one run, one file, one
+  `timeout`. Killing a child does not kill its loop, and the loop keeps playing.
+- Finish by proving the silence: no players, no sink inputs, the temporary sink
+  unloaded, the scratch files deleted, the test port closed.
 
 ## Docs
 
@@ -39,6 +59,7 @@ If it is missing (a fresh clone), say so instead of guessing the queue.
 | R8 | `cargo check --workspace` before saying a change compiles; `cargo fmt` on touched crates. |
 | R9 | Remote commands and addon actions are enums/declared ids, never raw shell from deck input. Keep the whitelist honest. |
 | R10 | Small steps; one topic per commit. |
+| R11 | Real-machine checks run isolated: own process group, own `timeout`, cleaned up afterwards (see Testing). |
 
 ## Build and check
 
