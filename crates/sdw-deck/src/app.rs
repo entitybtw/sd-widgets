@@ -4356,16 +4356,32 @@ impl App {
             }
             Task::Bluetooth(Err(e)) => {
                 self.bluetooth_pending = false;
-                self.bluetooth_err = e;
+                // Keep the next attempt a whole poll away: retrying at once
+                // turned one slow read into a request every frame.
+                self.bluetooth_at = Some(Instant::now());
+                self.bluetooth_err = if e.contains("timeout") {
+                    t!(
+                        self.lang,
+                        "компьютер не ответил вовремя",
+                        "the computer did not answer in time"
+                    )
+                    .to_string()
+                } else {
+                    e
+                };
             }
             Task::BtAction(Ok(message)) => {
                 self.toast(message, true);
                 self.bluetooth_busy = None;
-                self.bluetooth_at = None;
+                self.bluetooth_err.clear();
+                // The daemon refreshes its snapshot right after the action;
+                // the next poll (a few seconds away) shows the real state.
+                // Reloading at once would read the snapshot from before it.
+                self.bluetooth_at = Some(Instant::now());
             }
             Task::BtAction(Err(e)) => {
                 self.bluetooth_busy = None;
-                self.bluetooth_at = None;
+                self.bluetooth_at = Some(Instant::now());
                 self.toast(e, false);
             }
             Task::QuickMute(Ok(muted)) => {

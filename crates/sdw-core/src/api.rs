@@ -27,6 +27,12 @@ impl std::error::Error for ApiError {}
 
 pub type ApiResult<T> = Result<T, ApiError>;
 
+/// A Bluetooth press may wait on BlueZ twice (pair, then connect), so it
+/// gets its own deadline. The daemon bounds each CLI call on its side.
+fn action_agent() -> ureq::Agent {
+    agent(Duration::from_secs(90))
+}
+
 fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))
@@ -238,7 +244,16 @@ impl Client {
     /// Scan, connect, pair, trust or remove a Bluetooth device.
     pub fn bluetooth_action(&self, action: &str, address: &str) -> ApiResult<Value> {
         let body = serde_json::json!({ "action": action, "address": address });
-        self.request("POST", "/api/v1/bluetooth/action", Some(&body))
+        // Pairing and connecting each wait on BlueZ for up to twenty-five
+        // seconds, and the daemon runs both for one press. The ordinary
+        // twelve-second deadline gave up in the middle of a working pair and
+        // the page showed "timeout: global".
+        self.request_with(
+            &action_agent(),
+            "POST",
+            "/api/v1/bluetooth/action",
+            Some(&body),
+        )
     }
 
     /// Applications installed on the computer.

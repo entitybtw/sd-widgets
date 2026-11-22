@@ -378,13 +378,49 @@ fn upower_battery(address: &str) -> Option<u8> {
 /// cannot use the CLI as a free-form command channel.
 pub fn action(action: &str, address: &str, lang: Lang) -> Result<String, String> {
     // Every action changes what a status read would say; never answer the
-    // next poll from the cache. The read runs here so the reply and the very
-    // next poll already show the result of the press.
+    // next poll from the cache. The fresh read runs after the reply, on its
+    // own thread: pairing already waits on BlueZ for up to a minute, and a
+    // second blocking read made the deck's own request time out even though
+    // the action had worked.
     invalidate();
     let action = action.trim();
     let result = action_impl(action, address, lang);
-    refresh(lang);
+    invalidate();
+    schedule_refresh(lang);
     result
+}
+
+/// Start one background read unless one is already running. Every caller that
+/// only wants the cache fresh goes through here, so two polls cannot spawn
+/// two `bluetoothctl` processes for the same snapshot.
+fn schedule_refresh(lang: Lang) {
+    let due = if let Ok(mut cache) = CACHE.lock() {
+        match cache.as_mut() {
+            Some(c) => {
+                if c.reading {
+                    false
+                } else {
+                    c.reading = true;
+                    true
+                }
+            }
+            None => {
+                *cache = Some(Cached {
+                    status: BluetoothStatus::default(),
+                    at: Instant::now() - Duration::from_secs(60),
+                    reading: true,
+                });
+                true
+            }
+        }
+    } else {
+        false
+    };
+    if due {
+        std::thread::spawn(move || {
+            refresh(lang);
+        });
+    }
 }
 
 fn action_impl(action: &str, address: &str, lang: Lang) -> Result<String, String> {
