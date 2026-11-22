@@ -107,7 +107,19 @@ impl SpectrumService {
 /// Spawn `parec` on its own thread. The caller must hold the state lock, and
 /// the thread takes it again only to publish a frame.
 fn start_capture(state: Arc<Mutex<State>>) {
-    let device = monitor_device();
+    let device = match capture_source() {
+        Ok(device) => device,
+        Err(e) => {
+            if let Ok(mut st) = state.lock() {
+                st.failed_at = Some(Instant::now());
+                st.error = e;
+                st.source.clear();
+                st.running = false;
+                st.starting = false;
+            }
+            return;
+        }
+    };
     let mut child = match Command::new("parec")
         .args([
             "--raw",
@@ -225,26 +237,89 @@ impl Capture {
     }
 }
 
-/// The default sink's monitor: PulseAudio and PipeWire both expose it as
-/// `<sink>.monitor`, and `@DEFAULT_MONITOR@` is the fallback when `pactl`
-/// cannot name the sink.
-fn monitor_device() -> String {
+/// The source to capture, checked against the live list before it is used.
+///
+/// `parec --device=<name>` does not fail on an unknown name: it quietly records
+/// the default source instead, and that source can be a microphone. So the name
+/// is resolved and verified here, and a missing one stops the capture rather
+/// than recording something the user never asked for.
+fn capture_source() -> Result<String, String> {
     // A test handler can point the capture at a null sink without touching the
     // real default output; unset in normal use.
     if let Ok(device) = std::env::var("SDW_SPECTRUM_DEVICE") {
-        if !device.trim().is_empty() {
-            return device;
+        let device = device.trim();
+        if !device.is_empty() {
+            return check_source(device.to_string());
         }
     }
-    let sink = Command::new("pactl")
+    let sink = default_sink()?;
+    check_source(format!("{sink}.monitor"))
+}
+
+/// PulseAudio and PipeWire both expose a sink's monitor as `<sink>.monitor`.
+fn default_sink() -> Result<String, String> {
+    let out = Command::new("pactl")
         .args(["get-default-sink"])
         .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .filter(|name| !name.is_empty());
-    match sink {
-        Some(sink) => format!("{sink}.monitor"),
-        None => "@DEFAULT_MONITOR@".into(),
+        .map_err(|e| format!("pactl: {e}"))?;
+    if !out.status.success() {
+        return Err("pactl: нет выходного устройства".into());
+    }
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if name.is_empty() {
+        return Err("pactl: имя выходного устройства пустое".into());
+    }
+    Ok(name)
+}
+
+fn check_source(name: String) -> Result<String, String> {
+    // A pulse directive such as `@DEFAULT_MONITOR@` names a device the server
+    // picks, and it always means a monitor; no capture, no guessing.
+    if name.starts_with('@') {
+        return Ok(name);
+    }
+    let out = Command::new("pactl")
+        .args(["list", "short", "sources"])
+        .output()
+        .map_err(|e| format!("pactl: {e}"))?;
+    let list = String::from_utf8_lossy(&out.stdout);
+    if source_names(&list).iter().any(|source| source == &name) {
+        Ok(name)
+    } else {
+        Err(format!("нет такого источника записи: {name}"))
+    }
+}
+
+/// Names from `pactl list short sources`: `id<TAB>name<TAB>driver ...`.
+fn source_names(list: &str) -> Vec<String> {
+    list.lines()
+        .filter_map(|line| line.split('\t').nth(1))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_names_reads_the_second_column() {
+        let list = "13402\tbluez_output.AA.monitor\tPipeWire\ts16le 2ch 48000Hz\tRUNNING\n\
+                    67\talsa_input.usb.mic\tPipeWire\ts24le 1ch 48000Hz\tSUSPENDED\n";
+        assert_eq!(
+            source_names(list),
+            vec![
+                "bluez_output.AA.monitor".to_string(),
+                "alsa_input.usb.mic".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn source_names_ignores_empty_and_broken_lines() {
+        assert!(source_names("").is_empty());
+        assert!(source_names("garbage without tabs\n\n").is_empty());
     }
 }

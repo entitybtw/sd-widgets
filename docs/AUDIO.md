@@ -113,6 +113,11 @@ nothing. If the daemon has no such endpoint (an older build), the Deck falls
 back to its local meter and to the track's motion.
 
 `[audio] visualizer = false` in the daemon config turns the monitor capture off.
+The capture resolves the default sink's monitor and checks it against
+`pactl list short sources` before starting: `parec --device=<unknown>` does not
+fail, it records the **default source** instead, which can be a microphone. A
+sink that disappeared therefore stops the meter (the deck falls back to its own
+bands) rather than recording something else.
 The Deck side is `VizCfg`: placement (`nav`, `shade`, `clock`), source (`pc`,
 `media`), shape (`bars`, `dots`, `wave`), `bars`, `gap`, `width`, `height`,
 `opacity`, `gain` (sensitivity), `mirror`, `peak` and `color`. The defaults
