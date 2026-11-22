@@ -57,7 +57,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Control** | Lock, sleep, restart, shut down or blank the computer's screen, and start any installed application. |
 | **Bluetooth** | Devices known to the computer: connect, disconnect, pair, trust, forget, and the headphone battery. |
 | **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control or gesture. |
-| **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality, input forwarding. |
+| **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality; view-only on the Deck. |
 | **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. |
 | **Notifications** | Mirrored desktop notifications, newest first, unread counters. |
 | **Home Assistant** | Rooms and areas with lights, curtains, climate and media widgets, not a wall of every entity. |
@@ -78,7 +78,8 @@ the left stick and d-pad move a cursor, the right stick scrolls, **A** clicks,
 Settings. Drag anywhere on a page to scroll; a horizontal swipe also switches
 pages — a fifth of the screen or a quick flick is enough. While you swipe, the
 page follows your finger; on release it either eases back or finishes the turn
-into the next page, while the arrows and the dock keep their fade. Every page is
+into the next page. The arrows slide the pages the same way, and the dock keeps
+its fade. Every page is
 inset from the arrows, so no card, slider or button ever ends under one.
 
 ### On the computer (`sdw-daemon`)
