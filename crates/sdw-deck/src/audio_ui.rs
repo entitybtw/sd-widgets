@@ -58,6 +58,8 @@ pub fn page(app: &mut App, ui: &mut Ui, t: &Tokens) {
     // long scroll.
     viz_card(app, ui, t);
     ui.add_space(8.0);
+    place_card(app, ui, t);
+    ui.add_space(8.0);
     source_card(app, ui, t, running);
     ui.add_space(8.0);
     volume_card(app, ui, t, running);
@@ -353,6 +355,177 @@ fn viz_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
             t.faint,
         );
     });
+}
+
+/// Where the strip lives: a 3×3 anchor on the clock face, fine offsets, the
+/// side of the top bar and the frame rate. Split from the look card so the
+/// look stays one screen and the position gets room to breathe.
+fn place_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    if !app.cfg.viz.enabled {
+        return;
+    }
+    theme::card(ui, t, |ui| {
+        ui.label(theme::hud(t!(app.lang, "положение", "placement"), t.faint));
+        theme::small(
+            ui,
+            t!(
+                app.lang,
+                "якорь двигает полоску по циферблату, сдвиги подгоняют её точно. в шапке у полоски своя сторона.",
+                "the anchor moves the strip around the clock face, the offsets fine-tune it. in the top bar the strip picks its own side."
+            ),
+            t.faint,
+        );
+        ui.add_space(6.0);
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.label(
+                    RichText::new(t!(app.lang, "на циферблате", "on the clock face"))
+                        .size(12.5)
+                        .color(t.faint),
+                );
+                ui.add_space(4.0);
+                changed |= anchor_picker(ui, t, &mut app.cfg.viz.anchor);
+            });
+            ui.add_space(18.0);
+            ui.vertical(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(t!(app.lang, "в шапке", "in the top bar"))
+                            .size(12.5)
+                            .color(t.faint),
+                    );
+                    ui.add_space(4.0);
+                    for (key, ru, en) in [("left", "слева", "left"), ("right", "справа", "right")]
+                    {
+                        let active = app.cfg.viz.nav_side == key;
+                        let resp = ui.add(
+                            egui::Button::new(
+                                RichText::new(t!(app.lang, ru, en))
+                                    .size(12.5)
+                                    .color(if active { t.strong } else { t.muted }),
+                            )
+                            .fill(if active { t.accent_soft } else { t.well })
+                            .stroke(Stroke::new(1.0, if active { t.accent } else { t.line }))
+                            .corner_radius(0.0)
+                            .min_size(Vec2::new(0.0, 28.0)),
+                        );
+                        if resp.clicked() && !active {
+                            app.cfg.viz.nav_side = key.to_string();
+                            changed = true;
+                        }
+                    }
+                });
+                ui.add_space(2.0);
+                let mut ox = app.cfg.viz.offset_x as f32;
+                if theme::slider_step(
+                    ui,
+                    t,
+                    t!(app.lang, "сдвиг по x", "offset x"),
+                    &mut ox,
+                    -400.0..=400.0,
+                    1.0,
+                    |v| format!("{v:+.0}"),
+                ) {
+                    app.cfg.viz.offset_x = ox.round() as i16;
+                    changed = true;
+                }
+                let mut oy = app.cfg.viz.offset_y as f32;
+                if theme::slider_step(
+                    ui,
+                    t,
+                    t!(app.lang, "сдвиг по y", "offset y"),
+                    &mut oy,
+                    -400.0..=400.0,
+                    1.0,
+                    |v| format!("{v:+.0}"),
+                ) {
+                    app.cfg.viz.offset_y = oy.round() as i16;
+                    changed = true;
+                }
+                let mut fps = app.cfg.viz.fps as u32;
+                if theme::slider_u32(
+                    ui,
+                    t,
+                    t!(app.lang, "кадров в секунду", "frames per second"),
+                    &mut fps,
+                    10..=60,
+                ) {
+                    app.cfg.viz.fps = fps.clamp(10, 60) as u8;
+                    changed = true;
+                }
+            });
+        });
+        ui.add_space(2.0);
+        if theme::ghost(ui, t!(app.lang, "сбросить положение", "reset placement"), t).clicked()
+        {
+            app.cfg.viz.anchor = "bl".into();
+            app.cfg.viz.offset_x = 0;
+            app.cfg.viz.offset_y = 0;
+            app.cfg.viz.nav_side = "left".into();
+            changed = true;
+        }
+        if changed {
+            app.save_soon();
+        }
+    });
+}
+
+/// The 3×3 anchor picker: each cell shows a miniature strip at its own corner
+/// or edge, so the grid reads as nine places rather than nine numbers.
+fn anchor_picker(ui: &mut Ui, t: &Tokens, anchor: &mut String) -> bool {
+    let keys = ["tl", "tc", "tr", "ml", "mc", "mr", "bl", "bc", "br"];
+    let cell = 30.0;
+    let gap = 3.0;
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(cell * 3.0 + gap * 2.0, cell * 3.0 + gap * 2.0),
+        egui::Sense::hover(),
+    );
+    let mut changed = false;
+    for (i, key) in keys.iter().enumerate() {
+        let col = (i % 3) as f32;
+        let row = (i / 3) as f32;
+        let r = egui::Rect::from_min_size(
+            rect.min + Vec2::new(col * (cell + gap), row * (cell + gap)),
+            Vec2::new(cell, cell),
+        );
+        let resp = ui.interact(r, ui.id().with(("viz-anchor", i)), egui::Sense::click());
+        let active = anchor.as_str() == *key;
+        let p = ui.painter();
+        p.rect_filled(r, 0.0, if active { t.accent_soft } else { t.well });
+        p.rect_stroke(
+            r,
+            0.0,
+            Stroke::new(
+                1.0,
+                if active {
+                    t.accent
+                } else if resp.hovered() {
+                    t.line_strong
+                } else {
+                    t.line
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        // The miniature strip sits at the cell's own corner or edge, at the
+        // same fraction the real strip uses on the clock.
+        let (ax, ay) = crate::viz::anchor_xy(key);
+        let bw = cell * 0.46;
+        let bh = cell * 0.16;
+        let bx = r.left() + 3.0 + (r.width() - 6.0 - bw) * ax;
+        let by = r.top() + 3.0 + (r.height() - 6.0 - bh) * ay;
+        p.rect_filled(
+            egui::Rect::from_min_size(egui::pos2(bx, by), Vec2::new(bw, bh)),
+            0.0,
+            if active { t.accent } else { t.faint },
+        );
+        if resp.clicked() && !active {
+            *anchor = (*key).to_string();
+            changed = true;
+        }
+    }
+    changed
 }
 
 /// `#rrggbb` as a swatch that opens the usual picker; empty means "theme".

@@ -86,17 +86,34 @@ pub fn canvas(ui: &mut Ui, rect: Rect, app: &App, t: &Tokens, cfg: &ClockCfg, f:
     info_strip(ui, rect, t, cfg, f, &pal);
 }
 
-/// Where the optional visualizer goes on the clock face: bottom-left, a
-/// quarter of the face at most, with the user's own strip size when it fits.
+/// Where the optional visualizer goes on the clock face: one of nine anchors,
+/// nudged by the user's own offsets and kept inside the face. A quarter of the
+/// face is the most it may take.
 fn viz_rect(app: &App, rect: Rect) -> Rect {
     if !app.cfg.viz.enabled || !app.cfg.viz.clock {
         return Rect::NOTHING;
     }
+    let cfg = &app.cfg.viz;
     let want = crate::viz::size(app, Some(vec2(rect.width() * 0.34, rect.height() * 0.2)));
     let w = want.x.clamp(60.0, (rect.width() * 0.34).max(60.0));
     let h = want.y.clamp(6.0, 32.0);
     let pad = (rect.width() * 0.03).clamp(10.0, 26.0);
-    Rect::from_min_size(pos2(rect.left() + pad, rect.bottom() - h - pad), vec2(w, h))
+    let (ax, ay) = crate::viz::anchor_xy(&cfg.anchor);
+    let free_x = (rect.width() - pad * 2.0 - w).max(0.0);
+    let free_y = (rect.height() - pad * 2.0 - h).max(0.0);
+    let x = rect.left() + pad + free_x * ax + cfg.offset_x as f32;
+    let y = rect.top() + pad + free_y * ay + cfg.offset_y as f32;
+    // The strip is a guest on the face: an offset can move it, never push it
+    // out of the picture.
+    let x = x.clamp(
+        rect.left() + 2.0,
+        (rect.right() - w - 2.0).max(rect.left() + 2.0),
+    );
+    let y = y.clamp(
+        rect.top() + 2.0,
+        (rect.bottom() - h - 2.0).max(rect.top() + 2.0),
+    );
+    Rect::from_min_size(pos2(x, y), vec2(w, h))
 }
 
 /// The clock over the whole window, with the chrome hidden. Any tap, a click

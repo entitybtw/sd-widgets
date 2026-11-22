@@ -180,13 +180,35 @@ pub fn preview(ui: &mut Ui, app: &App, t: &Tokens) -> egui::Response {
     resp
 }
 
+/// The nine anchors as fractions of the free space: 0 is left/top, 0.5 the
+/// centre and 1 right/bottom. Unknown text falls back to bottom-left, the
+/// place the strip always had before the anchors existed.
+pub fn anchor_xy(anchor: &str) -> (f32, f32) {
+    match anchor.trim() {
+        "tl" => (0.0, 0.0),
+        "tc" => (0.5, 0.0),
+        "tr" => (1.0, 0.0),
+        "ml" => (0.0, 0.5),
+        "mc" => (0.5, 0.5),
+        "mr" => (1.0, 0.5),
+        "bc" => (0.5, 1.0),
+        "br" => (1.0, 1.0),
+        _ => (0.0, 1.0),
+    }
+}
+
 /// Paint the strip into a rect the caller already owns. The clock draws it
 /// over its own canvas this way, without moving the page's layout.
 pub fn paint(ui: &Ui, app: &App, t: &Tokens, rect: Rect) {
     if !app.cfg.viz.enabled || rect.width() < 8.0 || rect.height() < 4.0 {
         return;
     }
-    let time = ui.input(|i| i.time) as f32;
+    // Time is quantised to the chosen frame rate, so the bars step at the
+    // rate the user set instead of however often the window happens to
+    // repaint. The deck also asks for a repaint at this rate.
+    let fps = app.cfg.viz.fps.clamp(10, 60) as f64;
+    let now = ui.input(|i| i.time);
+    let time = ((now * fps).floor() / fps) as f32;
     // One accent for the whole strip, like cava: the loud bars in full colour,
     // the quiet ones a little dimmer but still clearly there. The theme's
     // `accent_soft` is an alpha-30 wash and made every ordinary bar all but

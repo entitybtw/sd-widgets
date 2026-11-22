@@ -2059,6 +2059,18 @@ pub struct VizCfg {
     pub peak: bool,
     /// Accent colour, `#rrggbb`. Empty means "take the theme accent".
     pub color: String,
+    /// Where the strip sits on the clock face: `tl`, `tc`, `tr`, `ml`, `mc`,
+    /// `mr`, `bl`, `bc`, `br`. Unknown text falls back to the bottom-left.
+    pub anchor: String,
+    /// Nudge from that anchor, in points. The clock clamps the result inside
+    /// the face so the strip can never leave it.
+    pub offset_x: i16,
+    pub offset_y: i16,
+    /// Bars per second, 10..=60: the deck asks the computer for bands and
+    /// repaints the strip at this rate.
+    pub fps: u8,
+    /// Side of the top bar the strip is drawn on: `left` or `right`.
+    pub nav_side: String,
 }
 
 impl Default for VizCfg {
@@ -2081,6 +2093,11 @@ impl Default for VizCfg {
             mirror: false,
             peak: false,
             color: String::new(),
+            anchor: "bl".into(),
+            offset_x: 0,
+            offset_y: 0,
+            fps: 30,
+            nav_side: "left".into(),
         }
     }
 }

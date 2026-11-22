@@ -2218,6 +2218,17 @@ impl App {
 
     // ------------------------------------------------------------ notifications, ha
 
+    /// Whether any surface that shows the visualizer is on screen right now.
+    pub fn viz_visible(&self) -> bool {
+        if !self.cfg.viz.enabled {
+            return false;
+        }
+        (self.cfg.viz.nav && !self.stream.fullscreen)
+            || (self.cfg.viz.shade && self.quick_open)
+            || (self.cfg.viz.clock && (self.page == Page::Clock || self.clock_full))
+            || self.page == Page::Audio
+    }
+
     /// Ask the computer for its own bands while the visualizer can be seen.
     /// The daemon starts its capture on the first request and stops it after
     /// the last, so the deck asks often only while somebody looks.
@@ -2226,11 +2237,7 @@ impl App {
             self.viz_remote = None;
             return;
         }
-        let seen = (self.cfg.viz.nav && !self.stream.fullscreen)
-            || (self.cfg.viz.shade && self.quick_open)
-            || (self.cfg.viz.clock && (self.page == Page::Clock || self.clock_full))
-            || self.page == Page::Audio;
-        if !seen || !self.online() {
+        if !self.viz_visible() || !self.online() {
             return;
         }
         if self.viz_remote_pending {
@@ -2243,8 +2250,13 @@ impl App {
             return;
         };
         self.viz_remote_pending = true;
-        self.viz_remote_at = Some(Instant::now() + Duration::from_millis(60));
+        self.viz_remote_at = Some(Instant::now() + Duration::from_millis(self.viz_interval_ms()));
         self.spawn(move || Task::Spectrum(c.spectrum().map_err(|e| e.to_string())));
+    }
+
+    /// One frame of the visualizer, in milliseconds, from its own fps setting.
+    pub fn viz_interval_ms(&self) -> u64 {
+        1000 / self.cfg.viz.fps.clamp(10, 60) as u64
     }
 
     pub fn poll_status(&mut self) {
@@ -4261,7 +4273,8 @@ impl App {
                 self.viz_remote_pending = false;
                 if spectrum.bands.len() == crate::viz::BANDS {
                     self.viz_remote = Some((spectrum.bands, Instant::now()));
-                    self.viz_remote_at = Some(Instant::now() + Duration::from_millis(50));
+                    self.viz_remote_at =
+                        Some(Instant::now() + Duration::from_millis(self.viz_interval_ms()));
                 } else {
                     // Capture is starting or the machine is silent: keep the
                     // last frame for its short freshness window and ask again.
@@ -4750,7 +4763,12 @@ impl App {
             {
                 self.set_page(Page::Computers);
             }
-            if self.cfg.viz.enabled && self.cfg.viz.nav {
+            let viz_on = self.cfg.viz.enabled && self.cfg.viz.nav;
+            // `right` puts the strip at the far end of the bar, with the
+            // shortcuts to its left; anything else keeps it right after the
+            // computer name, in the free middle space.
+            let viz_right = viz_on && self.cfg.viz.nav_side == "right";
+            if viz_on && !viz_right {
                 ui.add_space(12.0);
                 // The right-hand group takes its own width first; the strip
                 // takes what is left of the row and never grows over the
@@ -4776,6 +4794,26 @@ impl App {
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if viz_right {
+                    let wanted = crate::viz::size(self, None);
+                    if ui.available_width() >= wanted.x + 220.0 {
+                        let slot = crate::viz::size(
+                            self,
+                            Some(egui::vec2(wanted.x, ui.available_size().y)),
+                        );
+                        if crate::viz::ui(ui, self, t, slot)
+                            .on_hover_text(t!(
+                                self.lang,
+                                "настроить визуализатор",
+                                "set up the visualizer"
+                            ))
+                            .clicked()
+                        {
+                            self.set_page(Page::Audio);
+                        }
+                        ui.add_space(10.0);
+                    }
+                }
                 // Notifications are one press away on every page, not only in
                 // the pull-down: the bell carries the unread marker.
                 let unread = self.notif_unread;
@@ -5584,6 +5622,11 @@ impl eframe::App for App {
         // would be capped by the idle repaint rate, not by the settings.
         if self.share.want && self.cfg.mirror_deck {
             ms = ms.min(1000 / self.cfg.mirror_fps.clamp(1, 60) as u64);
+        }
+        // A visible visualizer runs at its own frame rate; without this the
+        // idle 350 ms beat would turn the bars into a slideshow.
+        if self.viz_visible() {
+            ms = ms.min(self.viz_interval_ms());
         }
         ctx.request_repaint_after(Duration::from_millis(ms));
         self.pump_share(&ctx);
