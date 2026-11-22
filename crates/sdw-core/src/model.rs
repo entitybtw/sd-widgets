@@ -1855,7 +1855,7 @@ pub const PRESET_CATPPUCCIN_LATTE: &str = "\
 }
 ";
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ClockCfg {
     /// grid, digital, analog or minimal
@@ -1897,6 +1897,22 @@ pub struct ClockCfg {
     pub icon: String,
     /// Draw the sound visualizer on the face, bottom-left.
     pub viz: bool,
+    /// Show the current media on the face: cover art and/or title.
+    pub show_media: bool,
+    /// Draw the cover art of the playing track.
+    pub media_cover: bool,
+    /// Draw the track title and artist under the cover.
+    pub media_title: bool,
+    /// Where the media card sits: `tl`, `tc`, `tr`, `ml`, `mc`, `mr`, `bl`,
+    /// `bc`, `br`. Unknown text falls back to the top-right.
+    pub media_place: String,
+    /// Cover side in points, 40..=220.
+    pub media_size: u8,
+    /// Nudge from the media anchor, in points.
+    pub media_offset_x: i16,
+    pub media_offset_y: i16,
+    /// Media card opacity, 20..=100 percent.
+    pub media_opacity: u8,
 }
 
 impl Default for ClockCfg {
@@ -1924,6 +1940,14 @@ impl Default for ClockCfg {
             follow_theme: true,
             icon: String::new(),
             viz: false,
+            show_media: false,
+            media_cover: true,
+            media_title: true,
+            media_place: "tr".into(),
+            media_size: 96,
+            media_offset_x: 0,
+            media_offset_y: 0,
+            media_opacity: 100,
         }
     }
 }
@@ -2019,7 +2043,7 @@ impl Default for StreamCfg {
 
 /// The little audio visualizer in the top bar and the control centre. Every
 /// part can be turned off, and the bars themselves are adjustable.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VizCfg {
     /// Look revision, so a file written before the cava-like defaults can be

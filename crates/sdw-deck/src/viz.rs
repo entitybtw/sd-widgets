@@ -162,7 +162,11 @@ pub fn ui(ui: &mut Ui, app: &App, t: &Tokens, size: Vec2) -> egui::Response {
 /// so the preview showed a different object than the one being adjusted.
 pub fn preview(ui: &mut Ui, app: &App, t: &Tokens) -> egui::Response {
     let strip = size(app, None);
-    let stage = Vec2::new((strip.x + 48.0).max(220.0), strip.y + 40.0);
+    // A circular look needs a square stage, or it would be a dot in a band.
+    let circular = app.cfg.viz.style == "circular";
+    let side = strip.x.max(strip.y);
+    let slot = if circular { Vec2::splat(side) } else { strip };
+    let stage = Vec2::new((slot.x + 48.0).max(220.0), slot.y + 40.0);
     let (rect, resp) = ui.allocate_exact_size(stage, Sense::hover());
     let p = ui.painter();
     // No fill: the stage must show the strip on the same surface as the top
@@ -175,7 +179,7 @@ pub fn preview(ui: &mut Ui, app: &App, t: &Tokens) -> egui::Response {
     );
     // Centre the strip on its own baseline: the stage is a frame, the strip
     // inside is the real thing at its real size.
-    let strip_rect = Rect::from_center_size(rect.center(), Vec2::new(strip.x, strip.y));
+    let strip_rect = Rect::from_center_size(rect.center(), slot);
     paint(ui, app, t, strip_rect);
     resp
 }
@@ -238,6 +242,10 @@ fn draw(ui: &Ui, t: &Tokens, rect: Rect, bars: &[f32], cfg: &VizCfg, hot: Color3
     let hot = with_alpha(hot, alpha);
     let soft = with_alpha(soft, alpha);
     let base = rect.bottom() - 1.0;
+    if cfg.style == "circular" {
+        draw_circular(&painter, rect, bars, hot, soft);
+        return;
+    }
     // The baseline is always there: the strip never collapses or jumps when
     // the music stops.
     painter.rect_filled(
@@ -344,6 +352,37 @@ fn draw(ui: &Ui, t: &Tokens, rect: Rect, bars: &[f32], cfg: &VizCfg, hot: Color3
             }
         }
     }
+}
+
+/// Circular visualizer: bars radiate from center like a sound pulse.
+fn draw_circular(painter: &egui::Painter, rect: Rect, bars: &[f32], hot: Color32, soft: Color32) {
+    let center = rect.center();
+    let radius = (rect.width().min(rect.height()) / 2.0).max(8.0);
+    let inner_r = radius * 0.3;
+    let bar_count = bars.len().max(1);
+    let angle_step = std::f32::consts::TAU / bar_count as f32;
+    for (i, &level) in bars.iter().enumerate() {
+        let l = level.clamp(0.0, 1.0);
+        let len = (radius - inner_r) * l;
+        if len < 1.0 {
+            continue;
+        }
+        let angle = i as f32 * angle_step - std::f32::consts::FRAC_PI_2;
+        let cos = angle.cos();
+        let sin = angle.sin();
+        let x1 = center.x + inner_r * cos;
+        let y1 = center.y + inner_r * sin;
+        let x2 = center.x + (inner_r + len) * cos;
+        let y2 = center.y + (inner_r + len) * sin;
+        let color = if l > 0.72 { hot } else { soft };
+        let width = (2.0 * angle_step * (inner_r + len / 2.0)).min(8.0).max(1.0);
+        painter.line_segment(
+            [egui::pos2(x1, y1), egui::pos2(x2, y2)],
+            egui::Stroke::new(width, color),
+        );
+    }
+    // Center dot
+    painter.circle_filled(center, inner_r * 0.5, hot);
 }
 
 /// Whether anything is playing, so a caller can keep the slot out of the

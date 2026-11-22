@@ -68,6 +68,11 @@ pub struct Face<'a> {
     pub headset: Option<(u8, &'a str)>,
     pub notices: usize,
     pub notice: Option<&'a str>,
+    /// Current track: title, artist, cover and whether it is playing.
+    pub media_title: Option<&'a str>,
+    pub media_artist: Option<&'a str>,
+    pub media_art: Option<&'a egui::TextureHandle>,
+    pub media_playing: bool,
 }
 
 /// Paint the selected face into `rect`. The page and the full-bleed overlay
@@ -83,6 +88,7 @@ pub fn canvas(ui: &mut Ui, rect: Rect, app: &App, t: &Tokens, cfg: &ClockCfg, f:
     // The sound strip sits in the face's bottom corner, away from the time,
     // the info chips and the bottom progress line.
     crate::viz::paint(ui, app, t, viz_rect(app, rect));
+    media_card(ui, rect, t, cfg, f);
     info_strip(ui, rect, t, cfg, f, &pal);
 }
 
@@ -94,9 +100,23 @@ fn viz_rect(app: &App, rect: Rect) -> Rect {
         return Rect::NOTHING;
     }
     let cfg = &app.cfg.viz;
-    let want = crate::viz::size(app, Some(vec2(rect.width() * 0.34, rect.height() * 0.2)));
-    let w = want.x.clamp(60.0, (rect.width() * 0.34).max(60.0));
-    let h = want.y.clamp(6.0, 32.0);
+    // A circular look needs a square-ish slot; the flat strip stays a thin
+    // band. The same width/height the user set still drives it.
+    let circular = cfg.style == "circular";
+    let avail_w = rect.width() * if circular { 0.6 } else { 0.34 };
+    let avail_h = rect.height() * if circular { 0.6 } else { 0.2 };
+    let want = crate::viz::size(app, Some(vec2(avail_w, avail_h)));
+    let w = want.x.clamp(60.0, avail_w.max(60.0));
+    let h = want
+        .y
+        .clamp(6.0, if circular { avail_h.max(60.0) } else { 32.0 });
+    // A circle must stay round: square it off around the larger side.
+    let (w, h) = if circular {
+        let side = w.max(h);
+        (side, side)
+    } else {
+        (w, h)
+    };
     let pad = (rect.width() * 0.03).clamp(10.0, 26.0);
     let (ax, ay) = crate::viz::anchor_xy(&cfg.anchor);
     let free_x = (rect.width() - pad * 2.0 - w).max(0.0);
@@ -114,6 +134,117 @@ fn viz_rect(app: &App, rect: Rect) -> Rect {
         (rect.bottom() - h - 2.0).max(rect.top() + 2.0),
     );
     Rect::from_min_size(pos2(x, y), vec2(w, h))
+}
+
+/// The current track on the face: cover art, title and artist, placed at one
+/// of the nine anchors and kept inside the picture. Everything is optional,
+/// so the user can have only the cover, only the text, or both.
+fn media_card(ui: &mut Ui, rect: Rect, t: &Tokens, cfg: &ClockCfg, f: &Face) {
+    if !cfg.show_media {
+        return;
+    }
+    // Nothing is loaded: no card at all, not even an empty cover frame.
+    if f.media_title.is_none() && f.media_art.is_none() {
+        return;
+    }
+    let has_title = cfg.media_title && f.media_title.is_some();
+    let has_cover = cfg.media_cover;
+    if !has_title && !has_cover {
+        return;
+    }
+    let side = cfg.media_size.clamp(40, 220) as f32;
+    let alpha = cfg.media_opacity.clamp(20, 100) as f32 / 100.0;
+    let text_w = if has_title {
+        (side * 2.6).min(rect.width() * 0.5)
+    } else {
+        0.0
+    };
+    let card_w = if has_cover && has_title {
+        side + 10.0 + text_w
+    } else if has_cover {
+        side
+    } else {
+        text_w.max(80.0)
+    };
+    let card_h = if has_cover { side } else { 52.0 };
+    let pad = (rect.width() * 0.03).clamp(10.0, 26.0);
+    let (ax, ay) = crate::viz::anchor_xy(&cfg.media_place);
+    let free_x = (rect.width() - pad * 2.0 - card_w).max(0.0);
+    let free_y = (rect.height() - pad * 2.0 - card_h).max(0.0);
+    let x = rect.left() + pad + free_x * ax + cfg.media_offset_x as f32;
+    let y = rect.top() + pad + free_y * ay + cfg.media_offset_y as f32;
+    let x = x.clamp(
+        rect.left() + 2.0,
+        (rect.right() - card_w - 2.0).max(rect.left() + 2.0),
+    );
+    let y = y.clamp(
+        rect.top() + 2.0,
+        (rect.bottom() - card_h - 2.0).max(rect.top() + 2.0),
+    );
+    let card = Rect::from_min_size(pos2(x, y), vec2(card_w, card_h));
+    let painter = ui.painter_at(rect);
+    let mut text_left = card.left();
+    if has_cover {
+        let cover = Rect::from_min_size(pos2(card.left(), card.top()), vec2(side, side));
+        match f.media_art {
+            Some(tex) => {
+                let uv = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                painter.image(tex.id(), cover, uv, Color32::WHITE.gamma_multiply(alpha));
+            }
+            None => {
+                painter.rect_filled(cover, 0.0, t.well.gamma_multiply(alpha));
+                painter.text(
+                    cover.center(),
+                    Align2::CENTER_CENTER,
+                    theme::icon::ALBUM,
+                    FontId::new(side * 0.3, theme::icon_family()),
+                    t.faint.gamma_multiply(alpha),
+                );
+            }
+        }
+        painter.rect_stroke(
+            cover,
+            0.0,
+            Stroke::new(1.0, t.line_strong.gamma_multiply(alpha)),
+            egui::StrokeKind::Inside,
+        );
+        text_left = cover.right() + 10.0;
+    }
+    if has_title {
+        let title = f.media_title.unwrap_or("");
+        let artist = f.media_artist.unwrap_or("");
+        let room = (card.right() - text_left).max(24.0);
+        // The text block is centred against the cover, so a small cover does
+        // not push the title out of the card.
+        let block = if artist.is_empty() { 18.0 } else { 42.0 };
+        let ty = card.top() + ((card_h - block) * 0.5).max(2.0);
+        let mut tx = text_left;
+        if f.media_playing {
+            painter.circle_filled(
+                pos2(tx + 3.0, ty + 9.0),
+                3.0,
+                t.accent.gamma_multiply(alpha),
+            );
+            tx += 12.0;
+        }
+        let title_room = (card.right() - tx).max(24.0);
+        painter.text(
+            pos2(tx, ty),
+            Align2::LEFT_TOP,
+            sdw_core::util::truncate(title, (title_room / 7.6) as usize),
+            FontId::new(15.0, FontFamily::Proportional),
+            t.strong.gamma_multiply(alpha),
+        );
+        if !artist.is_empty() {
+            painter.text(
+                pos2(text_left, ty + 21.0),
+                Align2::LEFT_TOP,
+                sdw_core::util::truncate(artist, (room / 6.0) as usize),
+                FontId::new(12.0, FontFamily::Proportional),
+                t.muted.gamma_multiply(alpha),
+            );
+        }
+    }
 }
 
 /// The clock over the whole window, with the chrome hidden. Any tap, a click
@@ -222,6 +353,10 @@ enum ClockAction {
 
 fn face_of(app: &App, lang: Lang, time: f32) -> Face<'_> {
     let latest = app.notifications.last();
+    let media = &app.media.state;
+    let has_media = app.cfg.clock.show_media
+        && media.available
+        && (!media.title.trim().is_empty() || app.media.art.is_some());
     Face {
         lang,
         time,
@@ -237,6 +372,14 @@ fn face_of(app: &App, lang: Lang, time: f32) -> Face<'_> {
                 }
             })
             .filter(|s| !s.trim().is_empty()),
+        media_title: has_media
+            .then(|| media.title.as_str())
+            .filter(|s| !s.trim().is_empty()),
+        media_artist: has_media
+            .then(|| media.artist.as_str())
+            .filter(|s| !s.trim().is_empty()),
+        media_art: has_media.then_some(app.media.art.as_ref()).flatten(),
+        media_playing: has_media && media.playing(),
     }
 }
 
@@ -637,7 +780,7 @@ fn preset_name(cfg: &ClockCfg) -> String {
 fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let mut cfg = app.cfg.clock.clone();
     let before = cfg.clone();
-    let viz_before = app.cfg.viz.clock;
+    let viz_before = app.cfg.viz.clone();
     theme::card(ui, t, |ui| {
         ui.horizontal(|ui| {
             ui.label(theme::hud(t!(app.lang, "часы", "clock"), t.faint));
@@ -738,6 +881,249 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 t.muted,
             ));
         });
+        if app.cfg.viz.clock {
+            // The strip lives on the face above, so every change is seen at
+            // once. Size and place are here, next to the face, instead of on
+            // another page.
+            egui::CollapsingHeader::new(rt(
+                t!(
+                    app.lang,
+                    "вид и место визуализатора",
+                    "visualizer look and place"
+                ),
+                12.5,
+                t.muted,
+            ))
+            .id_salt("clock-viz")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let mut bars = app.cfg.viz.bars as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "полосы", "bars"),
+                        &mut bars,
+                        4.0..=24.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        app.cfg.viz.bars = bars.round() as u8;
+                    }
+                    let mut height = app.cfg.viz.height as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "высота", "height"),
+                        &mut height,
+                        6.0..=48.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        app.cfg.viz.height = height.round() as u8;
+                    }
+                    let mut width = app.cfg.viz.width as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "ширина", "width"),
+                        &mut width,
+                        40.0..=400.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        app.cfg.viz.width = width.round() as u16;
+                    }
+                    let mut gap = app.cfg.viz.gap as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "шаг", "gap"),
+                        &mut gap,
+                        0.0..=8.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        app.cfg.viz.gap = gap.round() as u8;
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    for (key, ru, en) in [
+                        ("bars", "полосы", "bars"),
+                        ("dots", "точки", "dots"),
+                        ("wave", "волна", "wave"),
+                        ("circular", "кругом", "circular"),
+                    ] {
+                        if ui
+                            .selectable_label(
+                                app.cfg.viz.style == key,
+                                rt(t!(app.lang, ru, en), 12.5, t.muted),
+                            )
+                            .clicked()
+                        {
+                            app.cfg.viz.style = key.to_string();
+                        }
+                    }
+                });
+                ui.add_space(2.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(rt(t!(app.lang, "положение", "place"), 12.0, t.faint));
+                    for (key, ru, en) in [
+                        ("tl", "верх-лево", "top-left"),
+                        ("tc", "верх", "top"),
+                        ("tr", "верх-право", "top-right"),
+                        ("ml", "лево", "left"),
+                        ("mc", "центр", "centre"),
+                        ("mr", "право", "right"),
+                        ("bl", "низ-лево", "bottom-left"),
+                        ("bc", "низ", "bottom"),
+                        ("br", "низ-право", "bottom-right"),
+                    ] {
+                        if ui
+                            .selectable_label(
+                                app.cfg.viz.anchor == key,
+                                rt(t!(app.lang, ru, en), 12.0, t.muted),
+                            )
+                            .clicked()
+                        {
+                            app.cfg.viz.anchor = key.to_string();
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    let mut offset_x = app.cfg.viz.offset_x as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "сдвиг X", "offset X"),
+                        &mut offset_x,
+                        -50.0..=50.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        app.cfg.viz.offset_x = offset_x.round() as i16;
+                    }
+                    let mut offset_y = app.cfg.viz.offset_y as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "сдвиг Y", "offset Y"),
+                        &mut offset_y,
+                        -50.0..=50.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        app.cfg.viz.offset_y = offset_y.round() as i16;
+                    }
+                    let mut opacity = app.cfg.viz.opacity as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "прозрачность", "opacity"),
+                        &mut opacity,
+                        20.0..=100.0,
+                        |v| format!("{:.0}%", v),
+                    ) {
+                        app.cfg.viz.opacity = opacity.round() as u8;
+                    }
+                });
+            });
+        }
+        ui.add_space(4.0);
+        // Current media on the face: cover and/or title, placed freely.
+        ui.horizontal_wrapped(|ui| {
+            theme::switch(ui, &mut cfg.show_media, t);
+            ui.label(rt(
+                t!(app.lang, "медиа на часах", "media on clock"),
+                12.5,
+                t.muted,
+            ));
+            ui.add_space(8.0);
+            if cfg.show_media {
+                theme::switch(ui, &mut cfg.media_cover, t);
+                ui.label(rt(t!(app.lang, "обложка", "cover"), 12.0, t.muted));
+                ui.add_space(8.0);
+                theme::switch(ui, &mut cfg.media_title, t);
+                ui.label(rt(t!(app.lang, "название", "title"), 12.0, t.muted));
+            }
+        });
+        if cfg.show_media {
+            egui::CollapsingHeader::new(rt(
+                t!(app.lang, "вид и место медиа", "media look and place"),
+                12.5,
+                t.muted,
+            ))
+            .id_salt("clock-media")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let mut size = cfg.media_size as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "размер", "size"),
+                        &mut size,
+                        40.0..=220.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        cfg.media_size = size.round() as u8;
+                    }
+                    let mut opacity = cfg.media_opacity as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "прозрачность", "opacity"),
+                        &mut opacity,
+                        20.0..=100.0,
+                        |v| format!("{:.0}%", v),
+                    ) {
+                        cfg.media_opacity = opacity.round() as u8;
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(rt(t!(app.lang, "положение", "place"), 12.0, t.faint));
+                    for (key, ru, en) in [
+                        ("tl", "верх-лево", "top-left"),
+                        ("tc", "верх", "top"),
+                        ("tr", "верх-право", "top-right"),
+                        ("ml", "лево", "left"),
+                        ("mc", "центр", "centre"),
+                        ("mr", "право", "right"),
+                        ("bl", "низ-лево", "bottom-left"),
+                        ("bc", "низ", "bottom"),
+                        ("br", "низ-право", "bottom-right"),
+                    ] {
+                        if ui
+                            .selectable_label(
+                                cfg.media_place == key,
+                                rt(t!(app.lang, ru, en), 12.0, t.muted),
+                            )
+                            .clicked()
+                        {
+                            cfg.media_place = key.to_string();
+                        }
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    let mut offset_x = cfg.media_offset_x as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "сдвиг X", "offset X"),
+                        &mut offset_x,
+                        -50.0..=50.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        cfg.media_offset_x = offset_x.round() as i16;
+                    }
+                    let mut offset_y = cfg.media_offset_y as f32;
+                    if theme::slider(
+                        ui,
+                        t,
+                        t!(app.lang, "сдвиг Y", "offset Y"),
+                        &mut offset_y,
+                        -50.0..=50.0,
+                        |v| format!("{:.0}", v),
+                    ) {
+                        cfg.media_offset_y = offset_y.round() as i16;
+                    }
+                });
+            });
+        }
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             ui.label(rt(t!(app.lang, "шрифт", "font"), 12.0, t.faint));
@@ -957,31 +1343,10 @@ fn controls(app: &mut App, ui: &mut Ui, t: &Tokens) {
             });
         });
     });
-    if viz_before != app.cfg.viz.clock {
+    if viz_before != app.cfg.viz {
         app.save_soon();
     }
-    if cfg.style != before.style
-        || cfg.seconds != before.seconds
-        || cfg.date != before.date
-        || cfg.weekday != before.weekday
-        || cfg.battery != before.battery
-        || cfg.animate != before.animate
-        || cfg.anim != before.anim
-        || cfg.mono != before.mono
-        || cfg.h24 != before.h24
-        || cfg.caption != before.caption
-        || cfg.show_headset != before.show_headset
-        || cfg.show_notifications != before.show_notifications
-        || cfg.follow_theme != before.follow_theme
-        || cfg.font != before.font
-        || cfg.position != before.position
-        || cfg.accent != before.accent
-        || cfg.bg_top != before.bg_top
-        || cfg.bg_bottom != before.bg_bottom
-        || cfg.icon != before.icon
-        || (cfg.speed - before.speed).abs() > f32::EPSILON
-        || (cfg.font_scale - before.font_scale).abs() > f32::EPSILON
-    {
+    if cfg != before {
         app.cfg.clock = cfg;
         app.save_soon();
     }

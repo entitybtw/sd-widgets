@@ -3684,6 +3684,114 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
             );
         });
     }
+    // The visualizer is about sound as well, so its settings sit on this page
+    // even before a computer is connected.
+    ui.add_space(8.0);
+    theme::card(ui, t, |ui| {
+        ui.label(theme::hud(
+            t!(app.lang, "визуализатор", "visualizer"),
+            t.faint,
+        ));
+        ui.horizontal_wrapped(|ui| {
+            let before = app.cfg.viz.enabled;
+            theme::switch(ui, &mut app.cfg.viz.enabled, t);
+            if app.cfg.viz.enabled != before {
+                app.save_soon();
+            }
+            ui.label(rt(t!(app.lang, "включен", "enabled"), 13.0, t.muted));
+            ui.add_space(14.0);
+            let before = app.cfg.viz.nav;
+            theme::switch(ui, &mut app.cfg.viz.nav, t);
+            if app.cfg.viz.nav != before {
+                app.save_soon();
+            }
+            ui.label(rt(t!(app.lang, "навбар", "nav bar"), 13.0, t.muted));
+            ui.add_space(14.0);
+            let before = app.cfg.viz.shade;
+            theme::switch(ui, &mut app.cfg.viz.shade, t);
+            if app.cfg.viz.shade != before {
+                app.save_soon();
+            }
+            ui.label(rt(
+                t!(app.lang, "центр управления", "control centre"),
+                13.0,
+                t.muted,
+            ));
+            ui.add_space(14.0);
+            let before = app.cfg.viz.clock;
+            theme::switch(ui, &mut app.cfg.viz.clock, t);
+            if app.cfg.viz.clock != before {
+                app.save_soon();
+            }
+            ui.label(rt(t!(app.lang, "циферблат", "clock face"), 13.0, t.muted));
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut bars = app.cfg.viz.bars as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "полосы", "bars"),
+                &mut bars,
+                4.0..=24.0,
+                |v| format!("{:.0}", v),
+            ) {
+                app.cfg.viz.bars = bars.round() as u8;
+                app.save_soon();
+            }
+            let mut height = app.cfg.viz.height as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "высота", "height"),
+                &mut height,
+                6.0..=48.0,
+                |v| format!("{:.0}", v),
+            ) {
+                app.cfg.viz.height = height.round() as u8;
+                app.save_soon();
+            }
+            let mut width = app.cfg.viz.width as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "ширина", "width"),
+                &mut width,
+                40.0..=400.0,
+                |v| format!("{:.0}", v),
+            ) {
+                app.cfg.viz.width = width.round() as u16;
+                app.save_soon();
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut opacity = app.cfg.viz.opacity as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "прозрачность", "opacity"),
+                &mut opacity,
+                20.0..=100.0,
+                |v| format!("{:.0}%", v),
+            ) {
+                app.cfg.viz.opacity = opacity.round() as u8;
+                app.save_soon();
+            }
+            let mut gain = app.cfg.viz.gain as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "чувствительность", "gain"),
+                &mut gain,
+                50.0..=200.0,
+                |v| format!("{:.0}%", v),
+            ) {
+                app.cfg.viz.gain = gain.round() as u8;
+                app.save_soon();
+            }
+        });
+    });
 }
 
 // ---------------------------------------------------------------- home assistant
@@ -7824,6 +7932,7 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 ("bars", "полосы", "bars"),
                 ("dots", "точки", "dots"),
                 ("wave", "волна", "wave"),
+                ("circular", "кругом", "circular"),
             ] {
                 if ui
                     .selectable_label(viz.style == key, rt(t!(app.lang, ru, en), 13.0, t.muted))
@@ -7931,7 +8040,7 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
         crate::viz::preview(ui, app, t);
         app.cfg.viz = viz;
         if viz_dirty {
-            app.save();
+            app.save_soon();
         }
     });
 

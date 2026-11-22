@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 /// How long a page turn from an arrow or a tap lasts. Both pages move a full
 /// width in lockstep, so the old one leaves exactly as fast as the new one
 /// arrives; a smooth slide, not a fade with a small nudge.
-const PAGE_SLIDE: f32 = 0.30;
+const PAGE_SLIDE: f32 = 0.20;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -1538,8 +1538,7 @@ impl App {
                                 // seventh of the way, or on a quick flick: the
                                 // rest of the move is carried by the turn.
                                 let flick = held < 0.35
-                                    && vel.abs() > 300.0
-                                    && slide.abs() > 16.0
+                                    && vel.abs() > 200.0
                                     && slide.signum() == vel.signum();
                                 let commit = !self.swipe_blocked
                                     && self.page_anchor.is_some()
@@ -3721,9 +3720,8 @@ impl App {
         if self.page_turn_active {
             let dur = self.page_turn_dur.max(0.01);
             let k = (self.page_turn_at.elapsed().as_secs_f32() / dur).min(1.0);
-            // The same ease-out as an arrow turn: it leaves at once and settles
-            // without a stop, so a release never pauses before it moves.
-            let ease = 1.0 - (1.0 - k).powi(3);
+            // Quick spring: starts instantly fast, settles smoothly without jerks.
+            let ease = 2.0 * k - k * k;
             self.page_slide =
                 self.page_turn_from + (self.page_turn_to - self.page_turn_from) * ease;
             if k >= 1.0 {
@@ -3829,7 +3827,14 @@ impl App {
             // The page belongs to the card that opened it; leaving closes it.
             self.cancel_ha_link();
         }
+        let wants_clock_media =
+            self.cfg.clock.show_media && (self.page == Page::Clock || self.clock_full);
         if self.page == Page::Media {
+            self.poll_media();
+            self.ensure_media_art(ctx);
+        } else if wants_clock_media {
+            // The clock draws the cover too, so it needs the track and its art
+            // even when the media page is closed.
             self.poll_media();
             self.ensure_media_art(ctx);
         } else if self.cfg.viz.enabled && self.cfg.viz.media {
