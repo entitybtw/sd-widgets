@@ -21,6 +21,11 @@ use std::sync::mpsc::{channel, sync_channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// How long a page turn from an arrow or a tap lasts. Both pages move a full
+/// width in lockstep, so the old one leaves exactly as fast as the new one
+/// arrives; a smooth slide, not a fade with a small nudge.
+const PAGE_SLIDE: f32 = 0.30;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Home,
@@ -3711,7 +3716,7 @@ impl App {
         }
         // The page a tap or an arrow left slides out for a third of a second.
         if let Some((_, _, _, at)) = self.page_from {
-            if at.elapsed() > Duration::from_millis(440) {
+            if at.elapsed() > Duration::from_secs_f32(PAGE_SLIDE) {
                 self.page_from = None;
             } else {
                 ctx.request_repaint();
@@ -4443,13 +4448,13 @@ impl App {
         let from = self.page_slide;
         let dist = to - from;
         let ratio = (dist.abs() / width.max(1.0)).min(1.0);
-        // A full turn takes about half a second: long enough to read as a
-        // slide, short enough that the deck never feels slow. A page that only
-        // slides back is a little quicker; nothing was turned.
+        // A full turn is a quick slide: long enough to read, short enough that
+        // the deck never feels slow. A page that only slides back is shorter;
+        // nothing was turned.
         let dur = if page.is_some() {
-            0.36 + 0.24 * ratio
-        } else {
             0.24 + 0.18 * ratio
+        } else {
+            0.18 + 0.12 * ratio
         };
         // The release keeps the finger's speed, but only up to a little above
         // the average speed of the turn. A fast flick used to spend most of
@@ -4551,17 +4556,27 @@ impl App {
         // in. A swipe is already carried by `page_slide`.
         let ghost = self
             .page_from
-            .filter(|(_, _, _, at)| at.elapsed() < Duration::from_millis(440));
-        let (ease, travel) = if let Some((_, _, _, at)) = ghost {
-            let k = (at.elapsed().as_secs_f32() / 0.44).min(1.0);
-            (k * k * (3.0 - 2.0 * k), width)
+            .filter(|(_, _, _, at)| at.elapsed() < Duration::from_secs_f32(PAGE_SLIDE));
+        let (ease, travel, locked) = if let Some((_, _, dir, at)) = ghost {
+            let k = (at.elapsed().as_secs_f32() / PAGE_SLIDE).min(1.0);
+            // Ease-out: leaves at speed, settles without a stop-start wobble.
+            (1.0 - (1.0 - k).powi(3), width, Some(dir))
         } else {
             (
                 1.0 - (1.0 - anim).powi(3),
                 (width * 0.12).clamp(36.0, 220.0),
+                None,
             )
         };
-        let slide = self.page_slide + (1.0 - ease) * travel * self.page_dir;
+        // A turn by an arrow or a tap moves the new page a whole width while
+        // the ghost leaves, so the two are one slide. A first paint only eases
+        // a little from the side.
+        let slide = self.page_slide + (1.0 - ease) * travel * locked.unwrap_or(self.page_dir);
+        let rise = if locked.is_some() {
+            0.0
+        } else {
+            (1.0 - ease) * 14.0
+        };
 
         // The floating arrows sit over the window edge. The page is inset by
         // their width so that no card, slider or button ever ends under one.
@@ -4647,7 +4662,7 @@ impl App {
                 let mut page_ui = ui.new_child(
                     egui::UiBuilder::new()
                         .id_salt(("deck-page-ui", self.page_epoch))
-                        .max_rect(content.translate(Vec2::new(slide, (1.0 - ease) * 14.0)))
+                        .max_rect(content.translate(Vec2::new(slide, rise)))
                         .layout(*ui.layout()),
                 );
                 page_ui.set_clip_rect(clip);
