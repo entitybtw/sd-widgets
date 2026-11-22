@@ -143,6 +143,11 @@ theme appears in the Look presets as `addon:<id>` and applies exactly like a
 built-in preset. A clock preset appears as a button in the Clock style selector
 and replaces the whole clock configuration when pressed.
 
+`ClockCfg.icon` is one Material symbol codepoint shown in the clock's corner.
+The picker also accepts the readable names of its symbols (`star`, `moon`,
+`звезда`) and stores the codepoint, so a hand-written preset may use either;
+an unknown value shows no badge.
+
 Sound cue names are `click`, `navigate`, `open`, `back`, `notify`, `error` and
 `startup`. When an addon is enabled, its files replace the corresponding
 per-cue paths in the deck configuration.

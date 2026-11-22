@@ -65,6 +65,9 @@ fn main() -> eframe::Result<()> {
             .unwrap_or_default(),
         None => sdw_core::config::load(),
     };
+    // A file given with `--config` skips `load`, so the migration runs here for
+    // both paths; it is idempotent.
+    cfg = sdw_core::config::migrate(cfg);
 
     if cli.reset {
         cfg = DeckConfig::default();

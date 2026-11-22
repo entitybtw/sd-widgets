@@ -24,11 +24,20 @@ pub fn load() -> DeckConfig {
     }
 }
 
-/// Older files pinned the clock to the built-in blue/slate palette. The clock
-/// follows the theme now, so those exact values are handed back to it; a colour
-/// the user actually chose is left alone.
-fn migrate(mut cfg: DeckConfig) -> DeckConfig {
+/// Older files pinned the clock to the built-in blue/slate palette, and older
+/// clock presets stored the badge as a readable name ("star") instead of the
+/// Material symbol. The palette is handed back to the theme and the name to its
+/// glyph; a value the user actually chose is left alone.
+pub fn migrate(mut cfg: DeckConfig) -> DeckConfig {
     let clock = &mut cfg.clock;
+    let fixed = crate::model::clock_icon(&clock.icon).map(str::to_string);
+    match fixed {
+        Some(glyph) if glyph != clock.icon => clock.icon = glyph,
+        // Unknown text would paint letters into a 26 px badge; no icon is
+        // better than a clipped one.
+        None if !clock.icon.trim().is_empty() => clock.icon.clear(),
+        _ => {}
+    }
     let same = |a: &str, b: &str| a.trim().eq_ignore_ascii_case(b);
     if !clock.mono
         && !clock.follow_theme
@@ -100,5 +109,23 @@ mod tests {
         let custom = migrate(custom);
         assert!(!custom.clock.follow_theme);
         assert_eq!(custom.clock.accent, "#ff0000");
+    }
+
+    #[test]
+    fn clock_badge_names_become_their_glyph() {
+        let star = crate::model::CLOCK_ICONS[3].0;
+        for name in ["star", "Star", "звезда"] {
+            let mut cfg = DeckConfig::default();
+            cfg.clock.icon = name.into();
+            assert_eq!(migrate(cfg).clock.icon, star, "{name}");
+        }
+        // A glyph picked by the deck survives, an unknown word does not: it
+        // would paint letters into the badge.
+        let mut cfg = DeckConfig::default();
+        cfg.clock.icon = "\u{e81a}".into();
+        assert_eq!(migrate(cfg).clock.icon, "\u{e81a}");
+        let mut cfg = DeckConfig::default();
+        cfg.clock.icon = "not an icon".into();
+        assert!(migrate(cfg).clock.icon.is_empty());
     }
 }
