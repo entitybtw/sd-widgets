@@ -105,6 +105,8 @@ inset from the arrows, so no card, slider or button ever ends under one.
 - **Notification mirroring** — owns the desktop notification bus and serves the
   stream to the Deck; tapping one there runs the app's own action on the
   computer, so the chat, the browser or the file manager opens where it belongs.
+  The history is kept on disk, so a daemon restart no longer wipes what nobody
+  has read yet.
 - **The Deck's screen** — the Deck shares its screen while the daemon's **steam
   deck** page is open: the newest frame, the page it shows, and the list of decks
   that are connected. Frames are halved JPEGs a few times a second, and only
@@ -300,7 +302,10 @@ and on the clock, and optionally on the full-screen clock. With **pc sound** on,
 the daemon reads the computer's own sink monitor on demand, so the same bands
 move even while the music stays on the computer's speakers. Bars, dots or a
 wave, colour, mirroring, peaks, sensitivity, bar count and size are all settings;
-the default look follows cava, and one button brings it back after experiments.
+so is where the strip lives: nine anchors on the clock face with fine offsets,
+and its own side of the top bar. The frame rate is a setting too, from 10 to 60
+a second. The default look follows cava, and one button brings it back after
+experiments.
 
 Audio is off in the daemon until **Audio → allow audio** is on, and
 **start from the deck** can be disabled so only the computer can start a stream.

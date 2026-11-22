@@ -123,6 +123,14 @@ The Deck side is `VizCfg`: placement (`nav`, `shade`, `clock`), source (`pc`,
 `opacity`, `gain` (sensitivity), `mirror`, `peak` and `color`. The defaults
 follow cava, and the **cava look** button restores them.
 
+Where the strip lives is `anchor` (`tl`, `tc`, `tr`, `ml`, `mc`, `mr`, `bl`,
+`bc`, `br` — the nine points of the clock face), `offset_x` and `offset_y` in
+points from that anchor, `nav_side` (`left` or `right`) for the top bar, and
+`fps` (10–60) for how often the bars step and how often the Deck asks for bands.
+The clock clamps the result inside the face, so an offset can nudge the strip
+but never push it out of the picture. The **placement** card on the audio page
+edits all of it and has one button that resets the position.
+
 ## Troubleshooting
 
 | Symptom | Cause |
