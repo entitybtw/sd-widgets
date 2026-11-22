@@ -3167,9 +3167,13 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     let mut dismiss: Option<u64> = None;
     let mut activate: Option<u64> = None;
+    // No scrollbar: the floating bar egui draws by default is a stray hairline
+    // over the right edge of the cards, and no other page shows one. The deck
+    // is a touchscreen — the list follows the finger.
     egui::ScrollArea::vertical()
         .id_salt("notif-list")
         .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
             for n in source {
                 let color = notification_color(t, &n);
@@ -3270,6 +3274,9 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 ));
                 ui.add_space(4.0);
             }
+            // The floating dock hovers over the bottom of the page. Without
+            // this the last row could not be scrolled out from under it.
+            ui.add_space(96.0);
         });
     if let Some(id) = activate {
         app.activate_notif(id);
