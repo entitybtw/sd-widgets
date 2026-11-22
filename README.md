@@ -201,9 +201,11 @@ Binaries land in `target/release/`.
 Both applications check the newest published release on
 `https://git.entitybtw.ru/entitybtw/sd-widgets/releases` when they start and every
 six hours after that. **Settings → Updates** shows the version, the release notes
-and a download button. On Linux the downloaded AppImage replaces the running binary
-(the restart is yours); on Windows the downloaded file is shown so you can swap it
-in. Headless users can do the same without a window:
+and a download button. On Linux the downloaded AppImage replaces the running
+binary, and the app offers a **restart** button next to it: the daemon asks its
+systemd user service to come back, and a copy started by hand starts itself
+again. On Windows the downloaded file is shown so you can swap it in. Headless
+users can do the same without a window:
 
 ```bash
 sdw-daemon --check-updates

@@ -615,8 +615,27 @@ impl AppState {
         );
         let log = self.logger.clone();
         std::thread::spawn(move || {
-            if let Err(e) = sdw_core::discovery::responder(name, id, port, setup, stop) {
-                log.warn(format!("discovery: {e}"));
+            // A restart hands the port over in the same second: a failed bind is
+            // retried instead of leaving the daemon invisible on the LAN until
+            // the next real start.
+            let mut warned = false;
+            while !stop.load(Ordering::Relaxed) {
+                match sdw_core::discovery::responder(
+                    name.clone(),
+                    id.clone(),
+                    port,
+                    setup,
+                    stop.clone(),
+                ) {
+                    Ok(()) => return,
+                    Err(e) => {
+                        if !warned {
+                            log.warn(format!("discovery: {e}"));
+                            warned = true;
+                        }
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                }
             }
         });
 

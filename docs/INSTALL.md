@@ -106,7 +106,9 @@ Icons, artwork and the helper come from the same release tag, so a pinned
 
 The apps update themselves (**Settings → Updates** on the Deck, the same card in
 the daemon window, or `sdw-daemon --download-update`). The AppImage is replaced
-in place; nothing else changes. To update the launcher and the Steam entry,
+in place; nothing else changes. The card then offers a **restart** button: the
+daemon asks its systemd user service to come back, so an update never needs a
+terminal. To update the launcher and the Steam entry,
 rerun the install command — it is idempotent and updates the existing shortcut
 instead of adding a second one.
 

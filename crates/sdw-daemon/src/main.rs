@@ -13,6 +13,7 @@ mod media;
 mod mirror;
 mod monitor;
 mod notifications;
+mod restart;
 mod server;
 mod spectrum;
 mod state;
@@ -22,7 +23,9 @@ mod viiper;
 use clap::Parser;
 use sdw_core::model::VERSION;
 use state::AppState;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -59,6 +62,10 @@ struct Cli {
     /// stop a running daemon, then exit
     #[arg(long)]
     quit: bool,
+    /// wait for a daemon that is shutting down to let go, then take its place
+    /// (the restart button in the window uses this)
+    #[arg(long)]
+    restart: bool,
 }
 
 fn main() {
@@ -151,7 +158,7 @@ fn main() {
     // One daemon per user: a second process would own the notification bus or
     // the API while the first one serves the deck, and notifications vanish
     // between them. Keep the lock file open for the whole run.
-    let _instance_lock = match single_instance() {
+    let _instance_lock = match single_instance(cli.restart) {
         Ok(lock) => lock,
         Err(pid) => {
             // Starting the daemon again is the natural way to ask for its
@@ -207,6 +214,8 @@ fn main() {
     println!("  input udp :{}", state.cfg().input_port);
     println!("  config {}", config::path().display());
 
+    catch_stop_signals();
+
     #[cfg(feature = "gui")]
     if want_window {
         let server_state = state.clone();
@@ -239,7 +248,7 @@ fn headless(state: Arc<AppState>) {
     std::thread::Builder::new()
         .name("sdw-daemon-watch".into())
         .spawn(move || loop {
-            if config::take_request("quit") {
+            if config::take_request("quit") || stop_requested() {
                 watch_state.shutdown();
                 return;
             }
@@ -255,9 +264,38 @@ fn headless(state: Arc<AppState>) {
     state.shutdown();
 }
 
+/// Set when the process is asked to end by a signal: systemd sends SIGTERM on
+/// a restart and at logout, a terminal sends SIGINT on Ctrl-C.
+static STOP: AtomicBool = AtomicBool::new(false);
+
+fn stop_requested() -> bool {
+    STOP.load(Ordering::Relaxed)
+}
+
+#[cfg(unix)]
+extern "C" fn on_stop_signal(_: libc::c_int) {
+    STOP.store(true, Ordering::Relaxed);
+}
+
+/// Signals take the same clean road as `--quit`: streams, the monitor and the
+/// virtual gamepads are stopped before the process ends. Left to the default
+/// action they would be cut off mid-flight, and a restart would inherit them.
+fn catch_stop_signals() {
+    #[cfg(unix)]
+    unsafe {
+        let handler = on_stop_signal as *const () as libc::sighandler_t;
+        libc::signal(libc::SIGTERM, handler);
+        libc::signal(libc::SIGINT, handler);
+    }
+}
+
 /// Keep one daemon per user. The lock file holds the pid for the message and
 /// never leaves git or the config dir.
-fn single_instance() -> Result<std::fs::File, u32> {
+///
+/// `wait` is the `--restart` hand-over: the replacement is started before the
+/// old daemon has finished, so it waits for the lock instead of deciding that
+/// another daemon owns it and bouncing off.
+fn single_instance(wait: bool) -> Result<std::fs::File, u32> {
     let path = sdw_core::util::config_dir().join("daemon.lock");
     let file = match std::fs::OpenOptions::new()
         .create(true)
@@ -282,18 +320,48 @@ fn single_instance() -> Result<std::fs::File, u32> {
     {
         use std::io::{Read, Seek, SeekFrom, Write};
         use std::os::unix::io::AsRawFd;
-        let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if rc != 0 {
-            let mut text = String::new();
-            let mut probe = file.try_clone().ok();
-            if let Some(f) = probe.as_mut() {
-                let _ = f.seek(SeekFrom::Start(0));
-                let _ = f.read_to_string(&mut text);
+        // A hand-over waits a good while: the old daemon may still be stopping
+        // its streams and helper processes when the replacement is spawned.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if rc == 0 {
+                break;
             }
-            return Err(text.trim().parse().unwrap_or(0));
+            if !wait || Instant::now() >= deadline {
+                let mut text = String::new();
+                let mut probe = file.try_clone().ok();
+                if let Some(f) = probe.as_mut() {
+                    let _ = f.seek(SeekFrom::Start(0));
+                    let _ = f.read_to_string(&mut text);
+                }
+                return Err(text.trim().parse().unwrap_or(0));
+            }
+            // The replacement is spawned while the old daemon is still alive.
+            // The lock is let go at the end of `main`, a hair before the kernel
+            // closes its sockets and its notification bus name: binding those
+            // first would leave the new daemon without LAN discovery or the
+            // notification service. So wait for the process itself to go — a
+            // zombie already holds nothing — and only then take the lock.
+            let mut probe = file.try_clone().ok();
+            let old = probe.as_mut().and_then(|f| {
+                let mut text = String::new();
+                f.seek(SeekFrom::Start(0)).ok()?;
+                f.read_to_string(&mut text).ok()?;
+                text.trim().parse::<u32>().ok()
+            });
+            match old {
+                Some(pid) if pid != std::process::id() => {
+                    while process_alive(pid) && Instant::now() < deadline {
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                }
+                _ => std::thread::sleep(Duration::from_millis(100)),
+            }
         }
         let mut f = &file;
         let _ = f.set_len(0);
+        let _ = f.seek(SeekFrom::Start(0));
         let _ = writeln!(f, "{}", std::process::id());
         return Ok(file);
     }
@@ -301,6 +369,35 @@ fn single_instance() -> Result<std::fs::File, u32> {
     {
         Ok(file)
     }
+}
+
+/// Whether a process is still there, with a zombie counting as gone: it holds
+/// no sockets and no locks any more, only a line in the process table.
+#[cfg(target_os = "linux")]
+fn process_alive(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        // `pid (name that may hold spaces) state …`
+        Ok(stat) => !stat
+            .rsplit(')')
+            .next()
+            .unwrap_or("")
+            .trim_start()
+            .starts_with('Z'),
+        Err(_) => false,
+    }
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_alive(pid: u32) -> bool {
+    // Signal 0 asks the kernel whether the process exists; EPERM still means
+    // somebody is there.
+    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 fn has_display() -> bool {

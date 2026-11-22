@@ -258,6 +258,8 @@ pub struct App {
     update_progress: Arc<AtomicU64>,
     update_total: u64,
     update_path: String,
+    /// The new build is on disk and the running process is still the old one.
+    update_installed: bool,
     last_update_check: Instant,
     update_auto_notified: bool,
 
@@ -373,7 +375,7 @@ fn watch_requests(state: Arc<AppState>, requests: Arc<Requests>) {
     std::thread::Builder::new()
         .name("sdw-daemon-watch".into())
         .spawn(move || loop {
-            if config::take_request("quit") {
+            if config::take_request("quit") || crate::stop_requested() {
                 ALLOW_CLOSE.store(true, Ordering::Relaxed);
                 state.shutdown();
                 // A visible window must go too: main returns once the GUI
@@ -506,6 +508,7 @@ impl App {
             update_progress: Arc::new(AtomicU64::new(0)),
             update_total: 0,
             update_path: String::new(),
+            update_installed: false,
             last_update_check: Instant::now() - Duration::from_secs(86_400),
             update_auto_notified: false,
             install_sel,
@@ -711,7 +714,10 @@ impl App {
                     self.bluetooth_at = None;
                     self.toast(e, false);
                 }
-                TaskResult::Installed(Ok(msg)) => self.toast(msg, true),
+                TaskResult::Installed(Ok(msg)) => {
+                    self.update_installed = true;
+                    self.toast(msg, true);
+                }
                 TaskResult::Installed(Err(e)) => self.toast(format!("установка: {e}"), false),
             }
         }
@@ -744,6 +750,9 @@ impl App {
         if self.update_downloading {
             return;
         }
+        // A newer build than the one installed: the button installs that one,
+        // and the card goes back to the download state.
+        self.update_installed = false;
         self.update_downloading = true;
         self.update_total = asset.size;
         self.update_view = theme::ProgressView::default();
@@ -757,6 +766,33 @@ impl App {
                 Err(e) => TaskResult::Updated(Err(e)),
             }
         });
+    }
+
+    /// Hand over to the freshly installed build. The file on disk is already
+    /// the new one; only the running process is old, so the daemon starts it
+    /// again (through its systemd unit where one owns the process) and leaves.
+    fn restart_daemon(&mut self) {
+        match crate::restart::restart(self.lang) {
+            Ok(what) => {
+                self.state.logger.info(format!("перезапуск: {what}"));
+                self.toast(
+                    t!(
+                        self.lang,
+                        "демон перезапускается",
+                        "the daemon is restarting"
+                    ),
+                    true,
+                );
+                config::request("quit");
+            }
+            Err(e) => self.toast(
+                format!(
+                    "{}: {e}",
+                    t!(self.lang, "не удалось перезапустить", "could not restart")
+                ),
+                false,
+            ),
+        }
     }
 
     fn set_lang(&mut self, lang: Lang) {
@@ -4235,7 +4271,7 @@ impl App {
                         progress(ui, t, done, total, &label);
                         // The bar moves only when the window draws.
                         ui.ctx().request_repaint_after(Duration::from_millis(180));
-                    } else {
+                    } else if !self.update_installed {
                         ui.horizontal(|ui| {
                             if primary(
                                 ui,
@@ -4255,7 +4291,24 @@ impl App {
                     }
                 }
 
-                if !self.update_path.is_empty() {
+                if self.update_installed {
+                    ui.add_space(6.0);
+                    divider(ui);
+                    ui.label(
+                        RichText::new(t!(
+                            self.lang,
+                            "обновление установлено — остался перезапуск",
+                            "the update is installed — only a restart is left"
+                        ))
+                        .size(13.5)
+                        .color(t.good),
+                    );
+                    ui.add_space(6.0);
+                    if primary(ui, t!(self.lang, "перезапустить", "restart"), t).clicked()
+                    {
+                        self.restart_daemon();
+                    }
+                } else if !self.update_path.is_empty() {
                     ui.add_space(4.0);
                     divider(ui);
                     ui.horizontal(|ui| {
