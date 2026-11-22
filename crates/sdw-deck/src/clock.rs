@@ -1275,7 +1275,7 @@ fn color(raw: &str, fallback: Color32) -> Color32 {
     theme::parse_color(raw.trim()).unwrap_or(fallback)
 }
 
-fn color_edit(ui: &mut Ui, value: &mut String, t: &Tokens) {
+pub fn color_edit(ui: &mut Ui, value: &mut String, t: &Tokens) {
     let mut current = color(value, t.accent);
     if ui.color_edit_button_srgba(&mut current).changed() {
         *value = format!("#{:02x}{:02x}{:02x}", current.r(), current.g(), current.b());
@@ -1295,6 +1295,6 @@ fn weekday_name(lang: Lang, weekday: u32) -> &'static str {
 }
 
 /// `RichText` under a local name so the control rows stay short.
-fn rt(text: impl Into<String>, size: f32, color: Color32) -> egui::RichText {
+pub fn rt(text: impl Into<String>, size: f32, color: Color32) -> egui::RichText {
     egui::RichText::new(text.into()).size(size).color(color)
 }

@@ -5,6 +5,7 @@
 
 use crate::app::{notification_color, App, Page, Task};
 use crate::binds::BindEditor;
+use crate::clock::{color_edit, rt};
 use crate::deck_view::{self, DeckInput, DeckViewState};
 use crate::theme::{self, Tile, Tokens};
 use eframe::egui::{
@@ -1853,10 +1854,15 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     if theme::ghost(ui, power.0, t).clicked() {
                         action = Some((power.1, String::new()));
                     }
+                    if theme::ghost(ui, t!(lang, "перезагрузить", "power cycle"), t).clicked()
+                    {
+                        action = Some(("power_cycle", String::new()));
+                    }
                     if busy_for("scan", "")
                         || busy_for("scan_off", "")
                         || busy_for("power_on", "")
                         || busy_for("power_off", "")
+                        || busy_for("power_cycle", "")
                     {
                         ui.spinner();
                     }
@@ -7678,6 +7684,255 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     }
                 }
             });
+    });
+
+    // ---------------------------------------------------------------- visualizer
+    let mut viz = app.cfg.viz.clone();
+    let mut viz_dirty = false;
+    ui.add_space(8.0);
+    theme::card(ui, t, |ui| {
+        ui.label(theme::hud(
+            t!(app.lang, "визуализатор", "visualizer"),
+            t.faint,
+        ));
+        ui.horizontal_wrapped(|ui| {
+            let before = viz.enabled;
+            theme::switch(ui, &mut viz.enabled, t);
+            if viz.enabled != before {
+                viz_dirty = true;
+            }
+            ui.label(rt(t!(app.lang, "включен", "enabled"), 13.0, t.muted));
+            ui.add_space(14.0);
+            let before = viz.nav;
+            theme::switch(ui, &mut viz.nav, t);
+            if viz.nav != before {
+                viz_dirty = true;
+            }
+            ui.label(rt(t!(app.lang, "навбар", "nav bar"), 13.0, t.muted));
+            ui.add_space(14.0);
+            let before = viz.shade;
+            theme::switch(ui, &mut viz.shade, t);
+            if viz.shade != before {
+                viz_dirty = true;
+            }
+            ui.label(rt(
+                t!(app.lang, "центр управления", "control centre"),
+                13.0,
+                t.muted,
+            ));
+            ui.add_space(14.0);
+            let before = viz.clock;
+            theme::switch(ui, &mut viz.clock, t);
+            if viz.clock != before {
+                viz_dirty = true;
+            }
+            ui.label(rt(t!(app.lang, "циферблат", "clock face"), 13.0, t.muted));
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut bars = viz.bars as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "полосы", "bars"),
+                &mut bars,
+                4.0..=24.0,
+                |v| format!("{:.0}", v),
+            ) {
+                viz.bars = bars.round() as u8;
+                viz_dirty = true;
+            }
+            let mut height = viz.height as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "высота", "height"),
+                &mut height,
+                6.0..=48.0,
+                |v| format!("{:.0}", v),
+            ) {
+                viz.height = height.round() as u8;
+                viz_dirty = true;
+            }
+            let mut width = viz.width as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "ширина", "width"),
+                &mut width,
+                40.0..=400.0,
+                |v| format!("{:.0}", v),
+            ) {
+                viz.width = width.round() as u16;
+                viz_dirty = true;
+            }
+            let mut gap = viz.gap as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "шаг", "gap"),
+                &mut gap,
+                0.0..=8.0,
+                |v| format!("{:.0}", v),
+            ) {
+                viz.gap = gap.round() as u8;
+                viz_dirty = true;
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            let mut opacity = viz.opacity as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "прозрачность", "opacity"),
+                &mut opacity,
+                20.0..=100.0,
+                |v| format!("{:.0}%", v),
+            ) {
+                viz.opacity = opacity.round() as u8;
+                viz_dirty = true;
+            }
+            let mut gain = viz.gain as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "чувствительность", "gain"),
+                &mut gain,
+                50.0..=200.0,
+                |v| format!("{:.0}%", v),
+            ) {
+                viz.gain = gain.round() as u8;
+                viz_dirty = true;
+            }
+            let mut fps = viz.fps as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "fps", "fps"),
+                &mut fps,
+                10.0..=60.0,
+                |v| format!("{:.0}", v),
+            ) {
+                viz.fps = fps.round() as u8;
+                viz_dirty = true;
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for (key, ru, en) in [
+                ("bars", "полосы", "bars"),
+                ("dots", "точки", "dots"),
+                ("wave", "волна", "wave"),
+            ] {
+                if ui
+                    .selectable_label(viz.style == key, rt(t!(app.lang, ru, en), 13.0, t.muted))
+                    .clicked()
+                {
+                    viz.style = key.to_string();
+                    viz_dirty = true;
+                }
+            }
+            ui.add_space(8.0);
+            let before = viz.mirror;
+            theme::switch(ui, &mut viz.mirror, t);
+            if viz.mirror != before {
+                viz_dirty = true;
+            }
+            ui.label(rt(t!(app.lang, "зеркало", "mirror"), 13.0, t.muted));
+            ui.add_space(8.0);
+            let before = viz.peak;
+            theme::switch(ui, &mut viz.peak, t);
+            if viz.peak != before {
+                viz_dirty = true;
+            }
+            ui.label(rt(t!(app.lang, "пик", "peak"), 13.0, t.muted));
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(rt(t!(app.lang, "акцент", "accent"), 12.0, t.faint));
+            color_edit(ui, &mut viz.color, t);
+            ui.add_space(10.0);
+            ui.label(rt(
+                t!(app.lang, "навбар — сторона", "nav bar side"),
+                12.0,
+                t.faint,
+            ));
+            for (key, ru, en) in [("left", "лево", "left"), ("right", "право", "right")] {
+                if ui
+                    .selectable_label(viz.nav_side == key, rt(t!(app.lang, ru, en), 12.0, t.muted))
+                    .clicked()
+                {
+                    viz.nav_side = key.to_string();
+                    viz_dirty = true;
+                }
+            }
+        });
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            ui.label(rt(
+                t!(app.lang, "якорь на циферблате", "clock anchor"),
+                12.0,
+                t.faint,
+            ));
+            for (key, ru, en) in [
+                ("tl", "вл", "tl"),
+                ("tc", "вц", "tc"),
+                ("tr", "вп", "tr"),
+                ("ml", "цл", "ml"),
+                ("mc", "цц", "mc"),
+                ("mr", "цп", "mr"),
+                ("bl", "нл", "bl"),
+                ("bc", "нц", "bc"),
+                ("br", "нп", "br"),
+            ] {
+                if ui
+                    .selectable_label(viz.anchor == key, rt(t!(app.lang, ru, en), 12.0, t.muted))
+                    .clicked()
+                {
+                    viz.anchor = key.to_string();
+                    viz_dirty = true;
+                }
+            }
+            ui.add_space(8.0);
+            let mut offset_x = viz.offset_x as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "сдвиг X", "offset X"),
+                &mut offset_x,
+                -50.0..=50.0,
+                |v| format!("{:.0}", v),
+            ) {
+                viz.offset_x = offset_x.round() as i16;
+                viz_dirty = true;
+            }
+            let mut offset_y = viz.offset_y as f32;
+            if theme::slider(
+                ui,
+                t,
+                t!(app.lang, "сдвиг Y", "offset Y"),
+                &mut offset_y,
+                -50.0..=50.0,
+                |v| format!("{:.0}", v),
+            ) {
+                viz.offset_y = offset_y.round() as i16;
+                viz_dirty = true;
+            }
+        });
+        ui.add_space(8.0);
+        if theme::ghost(ui, t!(app.lang, "сбросить", "reset"), t).clicked() {
+            viz = VizCfg::default();
+            viz_dirty = true;
+        }
+        if theme::primary(ui, t!(app.lang, "применить", "apply"), t).clicked() {
+            viz_dirty = true;
+        }
+        crate::viz::preview(ui, app, t);
+        app.cfg.viz = viz;
+        if viz_dirty {
+            app.save();
+        }
     });
 
     if style_dirty {

@@ -1543,7 +1543,7 @@ impl App {
                                     && slide.signum() == vel.signum();
                                 let commit = !self.swipe_blocked
                                     && self.page_anchor.is_some()
-                                    && (slide.abs() > width * 0.15 || flick);
+                                    && (slide.abs() > width * 0.10 || flick);
                                 if commit {
                                     // The cue belongs to the flick itself; the
                                     // page lands a fraction of a second later.
@@ -4469,10 +4469,10 @@ impl App {
         let from = self.page_slide;
         let dist = to - from;
         let ratio = (dist.abs() / width.max(1.0)).min(1.0);
-        // The turn takes the same time as an arrow turn for a full page, and
-        // proportionally less when only a short way is left: the movement keeps
-        // one speed instead of a short gap crawling for a third of a second.
-        let dur = PAGE_SLIDE * (0.45 + 0.55 * ratio);
+        // The turn takes at least PAGE_SLIDE / 2, and up to a full PAGE_SLIDE
+        // for a full page drag: the movement keeps one speed instead of a short
+        // gap crawling for a third of a second.
+        let dur = (PAGE_SLIDE * (0.5 + 0.5 * ratio)).max(PAGE_SLIDE * 0.25);
         self.page_turn_from = from;
         self.page_turn_to = to;
         self.page_turn_at = Instant::now();

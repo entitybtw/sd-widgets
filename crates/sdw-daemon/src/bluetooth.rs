@@ -433,6 +433,7 @@ pub fn start(action: &str, address: &str, lang: Lang) -> Result<(), String> {
             | "scan_off"
             | "power_on"
             | "power_off"
+            | "power_cycle"
             | "pair_connect"
             | "connect"
             | "disconnect"
@@ -448,7 +449,10 @@ pub fn start(action: &str, address: &str, lang: Lang) -> Result<(), String> {
             t!(lang, "неизвестное действие:", "unknown action:")
         ));
     }
-    let needs_address = !matches!(action, "scan" | "scan_off" | "power_on" | "power_off");
+    let needs_address = !matches!(
+        action,
+        "scan" | "scan_off" | "power_on" | "power_off" | "power_cycle"
+    );
     if needs_address && !valid_address(address) {
         return Err(t!(lang, "неверный адрес устройства", "invalid device address").to_string());
     }
@@ -536,6 +540,11 @@ fn action_impl(action: &str, address: &str, lang: Lang) -> Result<String, String
             .map(|_| t!(lang, "bluetooth включён", "bluetooth is on").to_string()),
         "power_off" => run(lang, &["power", "off"])
             .map(|_| t!(lang, "bluetooth выключен", "bluetooth is off").to_string()),
+        // A reload that restarts the adapter itself: power off and then power
+        // on, so BlueZ drops its state and reads a clean adapter again.
+        "power_cycle" => run(lang, &["power", "off"])
+            .and_then(|_| run(lang, &["power", "on"]))
+            .map(|_| t!(lang, "bluetooth перезагружен", "bluetooth restarted").to_string()),
         // One press from the deck has to be enough: BlueZ keeps pairing and
         // connecting as two separate steps, so the daemon runs both and only
         // reports success when the device is actually connected.
