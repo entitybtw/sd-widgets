@@ -643,17 +643,18 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
         let recent: Vec<Notification> = app.notifications.iter().rev().take(3).cloned().collect();
         for n in recent {
             let color = notification_color(t, &n);
+            let app_name = notification_line(if n.app.is_empty() { "system" } else { &n.app }, 40);
             ui.horizontal(|ui| {
                 theme::dot(ui, color, true);
                 ui.label(
-                    RichText::new(if n.app.is_empty() { "system" } else { &n.app })
+                    RichText::new(&app_name)
                         .family(FontFamily::Monospace)
                         .size(10.5)
                         .color(color),
                 );
                 ui.add(
                     egui::Label::new(
-                        RichText::new(util::truncate(&n.summary, 72))
+                        RichText::new(notification_line(&n.summary, 72))
                             .size(13.5)
                             .color(t.strong),
                     )
@@ -2958,6 +2959,67 @@ fn notification_thumb(
     ui.add_space(12.0);
 }
 
+/// Notification text is external input. A few desktop tools send a body with
+/// many newlines or a very long path; letting that raw text choose the row
+/// height makes one notification push the whole list away. Keep the content
+/// readable, but make every preview a single bounded line.
+pub(crate) fn notification_line(text: &str, max_chars: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    util::truncate(&compact, max_chars)
+}
+
+/// Screenshot tools commonly emit a fresh notification for every saved file,
+/// with only the path in the body changing. Keep the newest row and show a
+/// count for consecutive screenshot notices, otherwise a burst can turn the
+/// notification page into a wall of identical rows.
+struct NotificationRow {
+    notification: Notification,
+    repeats: usize,
+}
+
+fn screenshot_group(n: &Notification) -> Option<String> {
+    let key = format!("{} {} {}", n.app, n.icon, n.summary).to_lowercase();
+    if [
+        "screenshot",
+        "screen shot",
+        "скрин",
+        "niri",
+        "grim",
+        "spectacle",
+    ]
+    .iter()
+    .any(|part| key.contains(part))
+    {
+        Some(format!(
+            "{}|{}",
+            n.app.to_lowercase(),
+            n.summary.to_lowercase()
+        ))
+    } else {
+        None
+    }
+}
+
+fn compact_notification_rows(source: Vec<Notification>) -> Vec<NotificationRow> {
+    let mut rows: Vec<NotificationRow> = Vec::with_capacity(source.len());
+    for notification in source {
+        let key = screenshot_group(&notification);
+        if let Some(key) = key {
+            if let Some(last) = rows.last_mut() {
+                if screenshot_group(&last.notification).as_deref() == Some(key.as_str()) {
+                    last.repeats += 1;
+                    continue;
+                }
+            }
+        }
+        rows.push(NotificationRow {
+            notification,
+            repeats: 1,
+        });
+    }
+    rows
+}
+
 /// A rough guess at the app family, so a plain notification still gets a
 /// meaningful glyph instead of a generic bell.
 pub(crate) fn notif_glyph(app: &str, icon: &str) -> &'static str {
@@ -3124,9 +3186,9 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
         ui.add_space(4.0);
     }
 
-    // One compact row per notification: a colour hairline on the left, the
-    // picture, two lines of text and the age. No big paddings — a screenful
-    // is a dozen of them.
+    // One compact row per notification: a small urgency marker on the left,
+    // the picture, two lines of text and the age. No big paddings — a
+    // screenful is a dozen of them.
     let source: Vec<Notification> = if app.notif_hist {
         let needle = app.notif_query.trim().to_lowercase();
         app.notif_log
@@ -3142,6 +3204,7 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
     } else {
         app.notifications.iter().rev().cloned().collect()
     };
+    let source = compact_notification_rows(source);
 
     if source.is_empty() {
         theme::card(ui, t, |ui| {
@@ -3180,18 +3243,26 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
         .auto_shrink([false, false])
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .show(ui, |ui| {
-            for n in source {
+            for row in source {
+                let n = row.notification;
                 let color = notification_color(t, &n);
+                let app_name =
+                    notification_line(if n.app.is_empty() { "system" } else { &n.app }, 48);
+                let summary = notification_line(&n.summary, 120);
+                let body = notification_line(&n.body, 220);
                 let art = app.notif_texture(ui.ctx(), n.id, &n.image);
-                let row = egui::Frame::new()
+                let card = egui::Frame::new()
                     .fill(t.card)
                     .stroke(Stroke::new(1.0, t.line))
                     .corner_radius(CornerRadius::ZERO)
                     .inner_margin(Margin::symmetric(10, 7))
                     .show(ui, |ui| {
-                        let bar = ui.max_rect().left_top();
+                        // Keep urgency as a tiny marker. A full-height yellow
+                        // stripe made long Niri/screenshot notifications look
+                        // infinite and turned a burst into a wall of colour.
+                        let bar = ui.max_rect().left_top() + egui::vec2(0.0, 10.0);
                         ui.painter().rect_filled(
-                            egui::Rect::from_min_size(bar, Vec2::new(2.0, ui.max_rect().height())),
+                            egui::Rect::from_min_size(bar, Vec2::splat(5.0)),
                             CornerRadius::ZERO,
                             color,
                         );
@@ -3202,14 +3273,10 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                 ui.set_max_width(close.max(120.0));
                                 ui.horizontal(|ui| {
                                     ui.label(
-                                        RichText::new(if n.app.is_empty() {
-                                            "system"
-                                        } else {
-                                            &n.app
-                                        })
-                                        .family(FontFamily::Monospace)
-                                        .size(10.5)
-                                        .color(color),
+                                        RichText::new(&app_name)
+                                            .family(FontFamily::Monospace)
+                                            .size(10.5)
+                                            .color(color),
                                     );
                                     ui.label(
                                         RichText::new(age(n.ts, app.lang))
@@ -3220,20 +3287,25 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                     if n.urgency >= 2 {
                                         theme::chip(ui, t!(app.lang, "важно", "urgent"), t.bad);
                                     }
+                                    if row.repeats > 1 {
+                                        ui.label(
+                                            RichText::new(format!("×{}", row.repeats))
+                                                .family(FontFamily::Monospace)
+                                                .size(10.0)
+                                                .color(t.warn),
+                                        );
+                                    }
                                 });
                                 ui.add(
                                     egui::Label::new(
-                                        RichText::new(&n.summary)
-                                            .size(14.0)
-                                            .strong()
-                                            .color(t.strong),
+                                        RichText::new(&summary).size(14.0).strong().color(t.strong),
                                     )
                                     .truncate(),
                                 );
-                                if !n.body.is_empty() {
+                                if !body.is_empty() {
                                     ui.add(
                                         egui::Label::new(
-                                            RichText::new(&n.body).size(12.0).color(t.muted),
+                                            RichText::new(&body).size(12.0).color(t.muted),
                                         )
                                         .truncate(),
                                     );
@@ -3262,7 +3334,7 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 // on the computer, which is what a person reaching for it
                 // means.
                 let hit = ui.interact(
-                    row.response.rect,
+                    card.response.rect,
                     egui::Id::new(("deck-notif", n.id)),
                     Sense::click(),
                 );
@@ -7711,6 +7783,47 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
 #[cfg(test)]
 mod light_tests {
     use super::*;
+
+    fn notification(app: &str, summary: &str, body: &str) -> Notification {
+        Notification {
+            app: app.into(),
+            summary: summary.into(),
+            body: body.into(),
+            ..Notification::default()
+        }
+    }
+
+    #[test]
+    fn notification_line_flattens_and_bounds_external_text() {
+        assert_eq!(
+            notification_line("  first\n\n second\tthird  ", 20),
+            "first second third"
+        );
+        assert_eq!(notification_line("a very long path", 8), "a very …");
+    }
+
+    #[test]
+    fn screenshot_notifications_collapse_only_consecutive_matching_rows() {
+        let rows = compact_notification_rows(vec![
+            notification("niri", "Screenshot saved", "/tmp/a.png"),
+            notification("niri", "Screenshot saved", "/tmp/b.png"),
+            notification("discord", "message", "same shape is not a screenshot"),
+            notification("niri", "Screenshot saved", "/tmp/c.png"),
+        ]);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].repeats, 2);
+        assert_eq!(rows[1].repeats, 1);
+        assert_eq!(rows[2].repeats, 1);
+    }
+
+    #[test]
+    fn ordinary_notifications_are_never_collapsed() {
+        let rows = compact_notification_rows(vec![
+            notification("mail", "New message", "hello"),
+            notification("mail", "New message", "hello"),
+        ]);
+        assert_eq!(rows.len(), 2);
+    }
 
     fn lamp(modes: &[&str], extra: serde_json::Value) -> HaEntity {
         let mut attrs = serde_json::json!({ "supported_color_modes": modes });

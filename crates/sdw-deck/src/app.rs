@@ -5495,6 +5495,12 @@ impl App {
                 1 => t.warn,
                 _ => t.bad,
             };
+            let app_name = crate::pages::notification_line(
+                if p.app.is_empty() { "system" } else { &p.app },
+                42,
+            );
+            let summary = crate::pages::notification_line(&p.summary, 100);
+            let body = crate::pages::notification_line(&p.body, 180);
             let offset = Vec2::new(-18.0, top + i as f32 * 108.0 - (1.0 - ease) * 14.0);
             egui::Area::new(Id::new(("notif-popup", p.id)))
                 .anchor(Align2::RIGHT_TOP, offset)
@@ -5537,28 +5543,17 @@ impl App {
                                             ));
                                         }
                                         ui.label(
-                                            RichText::new(if p.app.is_empty() {
-                                                "system"
-                                            } else {
-                                                &p.app
-                                            })
-                                            .family(FontFamily::Monospace)
-                                            .size(10.5)
-                                            .color(color),
+                                            RichText::new(&app_name)
+                                                .family(FontFamily::Monospace)
+                                                .size(10.5)
+                                                .color(color),
                                         );
                                     });
                                     ui.label(
-                                        RichText::new(&p.summary)
-                                            .size(15.0)
-                                            .strong()
-                                            .color(t.strong),
+                                        RichText::new(&summary).size(15.0).strong().color(t.strong),
                                     );
-                                    if !p.body.is_empty() {
-                                        ui.label(
-                                            RichText::new(sdw_core::util::truncate(&p.body, 120))
-                                                .size(12.0)
-                                                .color(t.muted),
-                                        );
+                                    if !body.is_empty() {
+                                        ui.label(RichText::new(&body).size(12.0).color(t.muted));
                                     }
                                 });
                                 let hit = ui.interact(
