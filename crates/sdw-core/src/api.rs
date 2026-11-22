@@ -399,11 +399,6 @@ impl Client {
         Ok(Box::new(body.into_reader()))
     }
 
-    pub fn monitor_input(&self, input: &MonitorInput) -> ApiResult<Value> {
-        let body = serde_json::to_value(input).unwrap_or_default();
-        self.request("POST", "/api/v1/monitor/input", Some(&body))
-    }
-
     pub fn monitor_frame(&self) -> ApiResult<Vec<u8>> {
         let url = self.url("/api/v1/monitor/frame");
         let mut r = self

@@ -153,7 +153,6 @@ fn handle(state: Arc<AppState>, mut req: Request) {
             state.monitor.stop();
             respond_json(req, 200, &state.monitor.status())
         }
-        (Method::Post, "/api/v1/monitor/input") => monitor_input(state, req),
         (Method::Get, "/api/v1/monitor/frame") => monitor_frame(state, req),
 
         (Method::Get, "/api/v1/audio") => respond_json(req, 200, &state.audio.status()),
@@ -589,22 +588,10 @@ fn monitor_start(state: Arc<AppState>, mut req: Request) {
                 c.monitor.height = status.height;
                 c.monitor.fps = status.fps;
                 c.monitor.quality = status.quality;
-                c.monitor.input_enabled = body.input_enabled;
             });
             respond_json(req, 200, &status)
         }
         Err(e) => error(req, 500, &e),
-    }
-}
-
-fn monitor_input(state: Arc<AppState>, mut req: Request) {
-    let body: MonitorInput = match read_json(&mut req) {
-        Ok(b) => b,
-        Err(e) => return error(req, 400, &e),
-    };
-    match state.monitor.input(&body) {
-        Ok(()) => respond_json(req, 200, &json!({"ok": true})),
-        Err(e) => error(req, 400, &e),
     }
 }
 
@@ -663,7 +650,6 @@ fn remote_command(state: Arc<AppState>, mut req: Request) {
                 height: cfg.monitor.height,
                 fps: cfg.monitor.fps,
                 quality: cfg.monitor.quality,
-                input_enabled: cfg.monitor.input_enabled,
                 sudo_password: String::new(),
             };
             state.monitor.start(&req, &cfg).map(|s| {
@@ -1349,9 +1335,6 @@ fn patch_config(state: Arc<AppState>, mut req: Request) {
             if let Some(v) = m.get("quality").and_then(Value::as_u64) {
                 c.monitor.quality = v as u8;
             }
-            if let Some(v) = m.get("input_enabled").and_then(Value::as_bool) {
-                c.monitor.input_enabled = v;
-            }
         }
         if let Some(v) = body.get("viiper") {
             if let Some(b) = v.get("enabled").and_then(Value::as_bool) {
@@ -1451,7 +1434,6 @@ fn redacted_config(state: &AppState) -> Value {
             "height": cfg.monitor.height,
             "fps": cfg.monitor.fps,
             "quality": cfg.monitor.quality,
-            "input_enabled": cfg.monitor.input_enabled,
         },
         "notifications": { "enabled": cfg.notifications.enabled, "own_service": cfg.notifications.own_service },
         "ha": {

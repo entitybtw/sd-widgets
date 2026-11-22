@@ -79,7 +79,6 @@ pub struct MonitorCfg {
     pub height: u32,
     pub fps: u32,
     pub quality: u8,
-    pub input_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,7 +166,6 @@ impl Default for MonitorCfg {
             height: 800,
             fps: 15,
             quality: 75,
-            input_enabled: false,
         }
     }
 }

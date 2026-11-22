@@ -120,7 +120,6 @@ struct ScreenForm {
     height: u32,
     fps: u32,
     quality: u8,
-    input: bool,
     sudo: String,
     step: usize,
     preset: usize,
@@ -137,7 +136,6 @@ impl Default for ScreenForm {
             height: 800,
             fps: 15,
             quality: 75,
-            input: false,
             sudo: String::new(),
             step: 0,
             preset: 0,
@@ -805,7 +803,6 @@ impl App {
             height: self.screen.height,
             fps: self.screen.fps,
             quality: self.screen.quality,
-            input_enabled: self.screen.input,
             sudo_password: self.screen.sudo.clone(),
         };
         let state = self.state.clone();
@@ -826,7 +823,6 @@ impl App {
                     c.monitor.height = st.height;
                     c.monitor.fps = st.fps;
                     c.monitor.quality = st.quality;
-                    c.monitor.input_enabled = st.input_enabled;
                 });
             }
             TaskResult::Monitor(r)
@@ -2501,7 +2497,6 @@ impl App {
             self.screen.height = s.monitor.height;
             self.screen.fps = s.monitor.fps;
             self.screen.quality = s.monitor.quality;
-            self.screen.input = s.monitor.input_enabled;
             self.screen_loaded = true;
         }
         self.page_header(
@@ -2559,7 +2554,7 @@ impl App {
                     let avail = ui.available_width().min(720.0);
                     let aspect = s.monitor.width as f32 / s.monitor.height.max(1) as f32;
                     let size = egui::vec2(avail, avail / aspect.max(0.2));
-                    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+                    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                     ui.painter().rect_filled(rect, 0.0, t.well);
                     ui.painter().image(
                         tex.id(),
@@ -2569,45 +2564,6 @@ impl App {
                     );
                     ui.painter()
                         .rect_stroke(rect, 0.0, t.hairline(), egui::StrokeKind::Inside);
-                    if s.monitor.input_enabled && resp.clicked() {
-                        if let Some(pos) = resp.interact_pointer_pos() {
-                            let x = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-                            let y = ((pos.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
-                            let state = self.state.clone();
-                            let input = MonitorInput {
-                                x,
-                                y,
-                                action: "click".into(),
-                                amount: 0,
-                                text: String::new(),
-                            };
-                            let lang = self.lang;
-                            self.spawn(move || {
-                                TaskResult::Msg(
-                                    state.monitor.input(&input).map(|_| {
-                                        t!(lang, "клик отправлен", "click sent").to_string()
-                                    }),
-                                )
-                            });
-                        }
-                    }
-                    small(
-                        ui,
-                        if s.monitor.input_enabled {
-                            t!(
-                                self.lang,
-                                "клик по превью = клик на компьютере",
-                                "click the preview = click on the computer"
-                            )
-                        } else {
-                            t!(
-                                self.lang,
-                                "управление мышью выключено",
-                                "pointer control is off"
-                            )
-                        },
-                        t.faint,
-                    );
                 } else {
                     small(
                         ui,
@@ -2812,16 +2768,6 @@ impl App {
                         ui.label(hud(t!(self.lang, "качество", "quality"), t.faint));
                         ui.add(
                             egui::Slider::new(&mut self.screen.quality, 30..=95).show_value(true),
-                        );
-                    });
-                    ui.horizontal(|ui| {
-                        ui.checkbox(
-                            &mut self.screen.input,
-                            t!(
-                                self.lang,
-                                "управление мышью с дека",
-                                "pointer control from the deck"
-                            ),
                         );
                     });
                     // VKMS is the part that makes sway, a virtual machine and

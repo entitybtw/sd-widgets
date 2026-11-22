@@ -480,7 +480,6 @@ pub struct MonitorStatus {
     pub quality: u8,
     pub frame_age_ms: u64,
     pub frames: u64,
-    pub input_enabled: bool,
     pub outputs: Vec<DisplayOutput>,
     pub tools: Vec<ToolStatus>,
     pub config_hint: String,
@@ -584,8 +583,6 @@ pub struct MonitorStart {
     pub fps: u32,
     #[serde(default = "default_quality")]
     pub quality: u8,
-    #[serde(default)]
-    pub input_enabled: bool,
     /// Optional sudo password for backends that need root (VKMS).
     #[serde(default)]
     pub sudo_password: String,
@@ -596,21 +593,6 @@ fn deck_width() -> u32 {
 }
 fn deck_height() -> u32 {
     800
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MonitorInput {
-    /// Normalized 0..1 coordinates inside the streamed output.
-    pub x: f32,
-    pub y: f32,
-    /// move | down | up | click | double_click | right_click | middle_click |
-    /// scroll_up | scroll_down | scroll_left | scroll_right | text
-    pub action: String,
-    #[serde(default)]
-    pub amount: i32,
-    /// What to type, for the `text` action.
-    #[serde(default)]
-    pub text: String,
 }
 
 // ---------------------------------------------------------------- notifications
@@ -1991,7 +1973,6 @@ pub struct StreamCfg {
     pub height: u32,
     pub fps: u32,
     pub quality: u8,
-    pub input: bool,
 }
 
 impl Default for StreamCfg {
@@ -2004,7 +1985,6 @@ impl Default for StreamCfg {
             height: 800,
             fps: 15,
             quality: 75,
-            input: false,
         }
     }
 }

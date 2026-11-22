@@ -66,12 +66,16 @@ Gamepad input itself is not HTTP: the Deck sends compact binary state packets to
 | Method | Path | Body / result |
 | --- | --- | --- |
 | `GET` | `/api/v1/monitor` | `MonitorStatus`: running, backend, position, width, height, fps, quality, output, error. |
-| `POST` | `/api/v1/monitor/start` | `MonitorStart`: mode (`virtual`/`mirror`), backend, position, output, size, fps, quality, input flag. |
+| `POST` | `/api/v1/monitor/start` | `MonitorStart`: mode (`virtual`/`mirror`), backend, position, output, size, fps, quality. |
 | `POST` | `/api/v1/monitor/stop` | Stops the monitor and removes the virtual output. |
-| `POST` | `/api/v1/monitor/input` | `MonitorInput`: normalized `x`/`y`, an `action` — `move`, `down`, `up`, `click`, `double_click`, `right_click`, `middle_click`, `scroll_up`/`down`/`left`/`right` with `amount` wheel steps, or `text` with the `text` to type. |
 | `GET` | `/api/v1/monitor/frame` | Latest JPEG frame. |
 
 Position values: `auto`, `right`, `left`, `above`, `below`.
+
+The monitor is view-only: the deck looks at the computer's screen, and the
+daemon exposes no way to move its pointer or type on it. The controls in the
+daemon window act on the computer through the same declared actions as the
+rest of the API, never through the stream.
 
 ## Audio
 

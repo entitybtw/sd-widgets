@@ -1,4 +1,5 @@
-//! Extra-screen streaming and remote pointer input.
+//! Extra-screen streaming: a virtual output on the computer, captured as JPEG
+//! for the deck to look at.
 //!
 //! There is no single portable way to add a monitor, so the daemon detects the
 //! compositor and picks the least surprising mechanism:
@@ -47,7 +48,6 @@ struct Inner {
     height: u32,
     fps: u32,
     quality: u8,
-    input_enabled: bool,
     outputs: Vec<DisplayOutput>,
     tools: Vec<ToolStatus>,
     config_hint: String,
@@ -74,9 +74,6 @@ pub struct MonitorManager {
     stop: Mutex<Arc<AtomicBool>>,
     child: Arc<Mutex<Option<Child>>>,
     frames: Arc<AtomicU64>,
-    /// The uinput absolute pointer, created on the first remote move. It is
-    /// dropped when the stream stops, so an idle daemon owns no input device.
-    pointer: Mutex<Option<crate::pointer::AbsolutePointer>>,
     logger: Logger,
 }
 
@@ -93,7 +90,6 @@ impl MonitorManager {
             height: 800,
             fps: 15,
             quality: 75,
-            input_enabled: false,
             outputs: Vec::new(),
             tools: Vec::new(),
             config_hint: String::new(),
@@ -128,7 +124,6 @@ impl MonitorManager {
             stop: Mutex::new(Arc::new(AtomicBool::new(true))),
             child: Arc::new(Mutex::new(None)),
             frames: Arc::new(AtomicU64::new(0)),
-            pointer: Mutex::new(None),
             logger,
         }
     }
@@ -155,7 +150,6 @@ impl MonitorManager {
             quality: inner.quality,
             frame_age_ms: age,
             frames: self.frames.load(Ordering::Relaxed),
-            input_enabled: inner.input_enabled,
             outputs: inner.outputs.clone(),
             tools: inner.tools.clone(),
             config_hint: inner.config_hint.clone(),
@@ -269,11 +263,6 @@ impl MonitorManager {
             inner.layout_restore = None;
             inner.rfb = false;
             inner.note.clear();
-        }
-        // The virtual input device belongs to the stream: remove it with the
-        // picture instead of leaving an absolute mouse in the desktop.
-        if let Ok(mut pointer) = self.pointer.lock() {
-            *pointer = None;
         }
     }
 
@@ -603,7 +592,6 @@ impl MonitorManager {
             inner.height = height;
             inner.fps = fps;
             inner.quality = quality;
-            inner.input_enabled = req.input_enabled;
             inner.last_error.clear();
             inner.note = note.clone();
             inner.started_at = now_ms();
@@ -729,73 +717,6 @@ impl MonitorManager {
         Ok(self.status())
     }
 
-    pub fn input(&self, input: &MonitorInput) -> Result<(), String> {
-        let (rect, outputs, enabled, compositor) = {
-            let i = self.inner.lock().map_err(|_| "monitor lock")?;
-            (
-                i.output_rect,
-                i.outputs.clone(),
-                i.input_enabled,
-                i.compositor.clone(),
-            )
-        };
-        if !enabled {
-            return Err("Управление мышью выключено в настройках экрана".into());
-        }
-        if input.action == "text" {
-            return inject_text(&compositor, &input.text);
-        }
-        let x = rect.0 + (input.x.clamp(0.0, 1.0) * rect.2 as f32) as i32;
-        let y = rect.1 + (input.y.clamp(0.0, 1.0) * rect.3 as f32) as i32;
-        if compositor == "x11" {
-            return inject_pointer(&compositor, x, y, &input.action, input.amount);
-        }
-        // On Wayland an absolute uinput device is the only way to put the
-        // cursor exactly under the finger: ydotool's `--absolute` is a reset
-        // plus a relative move and acceleration bends it. The device covers
-        // the whole desktop, so the normalized position is mapped from the
-        // streamed output into the compositor's global box.
-        let global = global_rect(&outputs, rect);
-        let nx = if global.2 > 0 {
-            ((x - global.0) as f32 / global.2 as f32).clamp(0.0, 1.0)
-        } else {
-            input.x.clamp(0.0, 1.0)
-        };
-        let ny = if global.3 > 0 {
-            ((y - global.1) as f32 / global.3 as f32).clamp(0.0, 1.0)
-        } else {
-            input.y.clamp(0.0, 1.0)
-        };
-        let mut slot = self.pointer.lock().unwrap_or_else(|e| e.into_inner());
-        if slot.is_none() {
-            match crate::pointer::AbsolutePointer::open() {
-                Ok(p) => *slot = Some(p),
-                Err(e) => {
-                    // No /dev/uinput access: keep the old tool path, but say
-                    // why once in the log so "the cursor jumps" is diagnosable.
-                    self.logger
-                        .warn(format!("точное управление мышью недоступно: {e}"));
-                }
-            }
-        }
-        let pointer_error = match slot.as_mut() {
-            Some(p) => match p.send(nx, ny, &input.action, input.amount) {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    *slot = None;
-                    Some(e)
-                }
-            },
-            None => None,
-        };
-        inject_pointer(&compositor, x, y, &input.action, input.amount).map_err(|e| {
-            match pointer_error {
-                Some(p) => format!("{e}; {p}"),
-                None => e,
-            }
-        })
-    }
-
     fn outputs(&self) -> Vec<DisplayOutput> {
         self.inner
             .lock()
@@ -870,30 +791,6 @@ fn output_rect(outputs: &[DisplayOutput], name: &str) -> (i32, i32, u32, u32) {
     } else {
         (0, 0, 1280, 800)
     }
-}
-
-/// The box that the compositor calls the whole desktop: every enabled output
-/// plus the streamed one (which may be newer than the cached output list).
-/// An absolute pointer finds the cursor by this box, not by the streamed
-/// output alone, so a second real monitor stays reachable and the virtual
-/// output is not treated as the whole world.
-fn global_rect(outputs: &[DisplayOutput], streamed: (i32, i32, u32, u32)) -> (i32, i32, u32, u32) {
-    let mut min_x = streamed.0;
-    let mut min_y = streamed.1;
-    let mut max_x = streamed.0.saturating_add(streamed.2.max(1) as i32);
-    let mut max_y = streamed.1.saturating_add(streamed.3.max(1) as i32);
-    for o in outputs.iter().filter(|o| o.enabled) {
-        min_x = min_x.min(o.x);
-        min_y = min_y.min(o.y);
-        max_x = max_x.max(o.x.saturating_add(o.width.max(1) as i32));
-        max_y = max_y.max(o.y.saturating_add(o.height.max(1) as i32));
-    }
-    (
-        min_x,
-        min_y,
-        (max_x - min_x).max(1) as u32,
-        (max_y - min_y).max(1) as u32,
-    )
 }
 
 /// Top-left corner for a new output of `w`×`h`, placed relative to the
@@ -2043,9 +1940,9 @@ fn capture_grim(
 ) -> Result<(), String> {
     let interval = Duration::from_millis((1000 / fps.max(1)).max(16) as u64);
     let mut failures = 0u32;
-    // A screencast without the pointer is useless for remote control: ask grim
-    // to paint the cursor into the frame. Older builds do not know `-c`, so fall
-    // back to a cursorless capture on the first failure and stay there.
+    // Paint the computer's own cursor into the frame, so the person can follow
+    // what happens while looking. Older builds do not know `-c`, so fall back
+    // to a cursorless capture on the first failure and stay there.
     let mut with_cursor = true;
     while !stop.load(Ordering::Relaxed) {
         let started = Instant::now();
@@ -2281,165 +2178,6 @@ fn capture_ffmpeg(
 
 fn find_marker(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
-}
-
-// ---------------------------------------------------------------- pointer input
-
-fn inject_pointer(
-    compositor: &str,
-    x: i32,
-    y: i32,
-    action: &str,
-    amount: i32,
-) -> Result<(), String> {
-    if cfg!(windows) {
-        return windows_pointer(x, y, action, amount);
-    }
-    let has_ydotool = sdw_core::util::has("ydotool");
-    let has_xdotool = sdw_core::util::has("xdotool");
-    let use_ydotool = has_ydotool && compositor != "x11";
-    if use_ydotool {
-        move_ydotool(x, y)?;
-        match action {
-            "down" => click_ydotool("0x40"),
-            "up" => click_ydotool("0x80"),
-            "click" => click_ydotool("0xC0"),
-            "move" => Ok(()),
-            "double_click" => click_ydotool("0xC0").and_then(|_| click_ydotool("0xC0")),
-            "right_click" => click_ydotool("0xC1"),
-            "middle_click" => click_ydotool("0xC2"),
-            "scroll_up" => scroll_ydotool(0, amount.max(1)),
-            "scroll_down" => scroll_ydotool(0, -amount.max(1)),
-            "scroll_left" => scroll_ydotool(-amount.max(1), 0),
-            "scroll_right" => scroll_ydotool(amount.max(1), 0),
-            _ => Ok(()),
-        }
-    } else if has_xdotool {
-        sdw_core::util::run("xdotool", &["mousemove", &x.to_string(), &y.to_string()])?;
-        let button = |b: &str| sdw_core::util::run("xdotool", &["click", b]).map(|_| ());
-        match action {
-            "down" => sdw_core::util::run("xdotool", &["mousedown", "1"]).map(|_| ()),
-            "up" => sdw_core::util::run("xdotool", &["mouseup", "1"]).map(|_| ()),
-            "click" => button("1"),
-            "move" => Ok(()),
-            "double_click" => sdw_core::util::run(
-                "xdotool",
-                &["click", "--repeat", "2", "--delay", "110", "1"],
-            )
-            .map(|_| ()),
-            "right_click" => button("3"),
-            "middle_click" => button("2"),
-            // X11 wheel buttons: 4/5 vertical, 6/7 horizontal.
-            "scroll_up" => repeat_wheel("4", amount.max(1)),
-            "scroll_down" => repeat_wheel("5", amount.max(1)),
-            "scroll_left" => repeat_wheel("6", amount.max(1)),
-            "scroll_right" => repeat_wheel("7", amount.max(1)),
-            _ => Ok(()),
-        }
-    } else {
-        Err("Для управления мышью установите ydotool (Wayland) или xdotool (X11)".into())
-    }
-}
-
-/// Type a line on the computer. Every character is treated as data: the
-/// command is an argument list, never a shell string.
-fn inject_text(compositor: &str, text: &str) -> Result<(), String> {
-    if text.trim().is_empty() {
-        return Ok(());
-    }
-    if cfg!(windows) {
-        // SendKeys treats some characters as commands; each is wrapped in
-        // braces so a password or a path with ( ) { } + ^ % ~ types as itself.
-        let mut escaped = String::with_capacity(text.len() * 2);
-        for c in text.chars() {
-            if matches!(c, '+' | '^' | '%' | '~' | '(' | ')' | '{' | '}' | '[' | ']') {
-                escaped.push('{');
-                escaped.push(c);
-                escaped.push('}');
-            } else if c == '\n' {
-                escaped.push_str("{ENTER}");
-            } else {
-                escaped.push(c);
-            }
-        }
-        let script = format!(
-            r#"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.SendKeys]::SendWait('{escaped}')"#
-        );
-        return sdw_core::util::run("powershell", &["-NoProfile", "-Command", &script]).map(|_| ());
-    }
-    let has_ydotool = sdw_core::util::has("ydotool");
-    let has_xdotool = sdw_core::util::has("xdotool");
-    if has_ydotool && compositor != "x11" {
-        sdw_core::util::run("ydotool", &["type", "--", text]).map(|_| ())
-    } else if has_xdotool {
-        sdw_core::util::run(
-            "xdotool",
-            &["type", "--clearmodifiers", "--delay", "12", "--", text],
-        )
-        .map(|_| ())
-    } else {
-        Err("Для ввода с клавиатуры установите ydotool (Wayland) или xdotool (X11)".into())
-    }
-}
-
-fn move_ydotool(x: i32, y: i32) -> Result<(), String> {
-    sdw_core::util::run(
-        "ydotool",
-        &[
-            "mousemove",
-            "--absolute",
-            "-x",
-            &x.to_string(),
-            "-y",
-            &y.to_string(),
-        ],
-    )
-    .map(|_| ())
-    .map_err(|e| format!("ydotool (запущен ли ydotoold?): {e}"))
-}
-
-fn click_ydotool(btn: &str) -> Result<(), String> {
-    sdw_core::util::run("ydotool", &["click", btn])
-        .map(|_| ())
-        .map_err(|e| format!("ydotool click: {e}"))
-}
-
-fn scroll_ydotool(x: i32, y: i32) -> Result<(), String> {
-    sdw_core::util::run(
-        "ydotool",
-        &[
-            "mousemove",
-            "-w",
-            "-x",
-            &x.to_string(),
-            "-y",
-            &y.to_string(),
-        ],
-    )
-    .map(|_| ())
-    .map_err(|e| format!("ydotool scroll: {e}"))
-}
-
-/// One wheel click per step: `xdotool click` takes a single button, and a
-/// repeated call is what every desktop sees as a real wheel.
-fn repeat_wheel(button: &str, steps: i32) -> Result<(), String> {
-    for _ in 0..steps.clamp(1, 20) {
-        sdw_core::util::run("xdotool", &["click", button])?;
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn windows_pointer(x: i32, y: i32, action: &str, amount: i32) -> Result<(), String> {
-    let script = format!(
-        r#"Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point({x},{y}); $s = '[DllImport("user32.dll")] public static extern void mouse_event(int f, int x, int y, int d, int e);'; Add-Type -MemberDefinition $s -Name W -Namespace N; $f = 0; $n = 1; switch ('{action}') {{ 'down' {{ $f = 2 }} 'up' {{ $f = 4 }} 'click' {{ $f = 6 }} 'double_click' {{ $f = 6; $n = 2 }} 'right_click' {{ $f = 0x18 }} 'middle_click' {{ $f = 0x20 }} 'scroll_up' {{ $f = 0x800; $d = {amount} * 120 }} 'scroll_down' {{ $f = 0x800; $d = -{amount} * 120 }} 'scroll_left' {{ $f = 0x1000; $d = {amount} * 120 }} 'scroll_right' {{ $f = 0x1000; $d = -{amount} * 120 }} }}; if ($f -ne 0) {{ for ($i = 0; $i -lt $n; $i++) {{ [N.W]::mouse_event($f,0,0,$d,0) }} }}"#
-    );
-    sdw_core::util::run("powershell", &["-NoProfile", "-Command", &script]).map(|_| ())
-}
-
-#[cfg(not(windows))]
-fn windows_pointer(_x: i32, _y: i32, _action: &str, _amount: i32) -> Result<(), String> {
-    Err("Windows input недоступен".into())
 }
 
 fn rfb_capture(
@@ -2721,43 +2459,5 @@ mod tests {
     fn resolutions() {
         assert_eq!(parse_resolution("2560 x 1440"), Some((2560, 1440)));
         assert_eq!(parse_resolution("1920 x 1080 (Retina)"), Some((1920, 1080)));
-    }
-
-    /// Every remote action names a real xdotool button, so a right click is
-    /// never silently a left one.
-    #[test]
-    fn x11_actions_reach_xdotool() {
-        let dir = std::env::temp_dir().join(format!("sdw-xdotool-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = dir.join("calls");
-        let script = dir.join("xdotool");
-        std::fs::write(
-            &script,
-            format!("#!/bin/sh\necho \"$@\" >> {}\n", log.display()),
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perm = std::fs::metadata(&script).unwrap().permissions();
-            perm.set_mode(0o755);
-            std::fs::set_permissions(&script, perm).unwrap();
-        }
-        let old = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{old}", dir.display()));
-        let r = inject_pointer("x11", 10, 20, "double_click", 2);
-        let r2 = inject_pointer("x11", 10, 20, "scroll_down", 2);
-        let r3 = inject_pointer("x11", 10, 20, "middle_click", 0);
-        std::env::set_var("PATH", old);
-        r.unwrap();
-        r2.unwrap();
-        r3.unwrap();
-        let calls = std::fs::read_to_string(&log).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-        assert!(calls.contains("mousemove 10 20"), "{calls}");
-        assert!(calls.contains("click --repeat 2 --delay 110 1"), "{calls}");
-        assert_eq!(calls.matches("click 5").count(), 2, "{calls}");
-        assert!(calls.contains("click 2"), "{calls}");
     }
 }

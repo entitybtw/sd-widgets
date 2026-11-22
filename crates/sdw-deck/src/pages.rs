@@ -2567,7 +2567,6 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 height: app.stream.height,
                 fps: app.stream.fps,
                 quality: app.stream.quality,
-                input_enabled: app.stream.input,
                 sudo_password: String::new(),
             };
             if let Some(c) = app.client() {
@@ -2697,45 +2696,6 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
         );
     }
 
-    if app.stream.input {
-        // The keyboard field sits under the picture, outside the settings
-        // card: on the deck that card reaches past the bottom bar, and a field
-        // there would be a field nobody can see.
-        ui.add_space(8.0);
-        theme::card(ui, t, |ui| {
-            // A line typed here goes to the computer's focused window: a
-            // search field, a password, a terminal — without the on-screen
-            // keyboard covering the picture.
-            ui.add_space(6.0);
-            let hint = t!(app.lang, "текст на компьютере", "text on the computer");
-            let resp = ui.add(
-                TextEdit::singleline(&mut app.stream_text)
-                    .hint_text(hint)
-                    .desired_width(360.0),
-            );
-            let send = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            let mut go = send;
-            ui.horizontal(|ui| {
-                if theme::ghost(ui, t!(app.lang, "набрать", "type it"), t).clicked() {
-                    go = true;
-                }
-                theme::small(
-                    ui,
-                    t!(
-                        app.lang,
-                        "печатается там, где на компьютере стоит курсор. enter отправляет.",
-                        "it is typed where the cursor is on the computer. enter sends."
-                    ),
-                    t.faint,
-                );
-            });
-            if go && !app.stream_text.is_empty() {
-                let text = std::mem::take(&mut app.stream_text);
-                app.send_text(text);
-            }
-        });
-    }
-
     ui.add_space(10.0);
     theme::card(ui, t, |ui| {
         monitor_settings(ui, app, t);
@@ -2756,16 +2716,6 @@ pub fn screen(app: &mut App, ui: &mut Ui, t: &Tokens) {
             app.stream.quality = quality.min(95) as u8;
             app.save_soon();
         }
-        ui.horizontal(|ui| {
-            if theme::switch(ui, &mut app.stream.input, t).changed() {
-                app.save_soon();
-            }
-            ui.label(
-                RichText::new(t!(app.lang, "мышь и клавиатура", "mouse and keyboard"))
-                    .size(12.5)
-                    .color(t.muted),
-            );
-        });
         if !monitor.config_hint.is_empty() {
             ui.add_space(4.0);
             ui.horizontal_top(|ui| {
