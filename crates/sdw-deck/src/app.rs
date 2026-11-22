@@ -362,8 +362,9 @@ pub enum Task {
     },
     /// Bluetooth adapter and devices.
     Bluetooth(Result<sdw_core::model::BluetoothStatus, String>),
-    /// Result of a Bluetooth action; the page reloads afterwards.
-    BtAction(Result<String, String>),
+    /// Result of a Bluetooth action: the message and whether the daemon is
+    /// running it in the background (the outcome then arrives in the status).
+    BtAction(Result<(String, bool), String>),
     /// The Deck sink was muted or unmuted.
     QuickMute(Result<bool, String>),
     /// The Deck's own volume (level, muted) and panel brightness.
@@ -710,6 +711,10 @@ pub struct App {
     /// The action in flight and the device it belongs to, so its row spins
     /// while BlueZ pairs or connects.
     pub bluetooth_busy: Option<(String, String)>,
+    /// The job number seen when the press was sent, and when the deck started
+    /// waiting. A later status with a bigger number says how it ended.
+    pub bluetooth_seq: u64,
+    pub bluetooth_wait: Option<Instant>,
 
     /// Pull-down control panel: the Deck's own volume and brightness plus the
     /// newest notifications.
@@ -1037,6 +1042,8 @@ impl App {
             bluetooth_err: String::new(),
             bluetooth_remove: None,
             bluetooth_busy: None,
+            bluetooth_seq: 0,
+            bluetooth_wait: None,
             quick_open: false,
             quick_volume: None,
             quick_muted: false,
@@ -2515,19 +2522,27 @@ impl App {
         };
         let (action, address) = (action.to_string(), address.to_string());
         // Answer the press before the computer does: the chip flips and the row
-        // starts spinning at once, then the reply brings the real state.
+        // starts spinning at once, then the status polls bring the real state.
         self.bluetooth_optimistic(&action, &address);
         self.bluetooth_busy = Some((action.clone(), address.clone()));
+        self.bluetooth_seq = self.bluetooth.as_ref().map(|b| b.action_seq).unwrap_or(0);
+        self.bluetooth_wait = Some(Instant::now());
         let lang = self.lang;
         self.spawn(move || {
             Task::BtAction(
                 client
                     .bluetooth_action(&action, &address)
                     .map(|v| {
-                        v.get("message")
+                        let message = v
+                            .get("message")
                             .and_then(|m| m.as_str())
                             .map(str::to_string)
-                            .unwrap_or_else(|| t!(lang, "готово", "done").to_string())
+                            .unwrap_or_else(|| t!(lang, "готово", "done").to_string());
+                        let started = v
+                            .get("started")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        (message, started)
                     })
                     .map_err(|e| e.to_string()),
             )
@@ -3758,6 +3773,15 @@ impl App {
         {
             self.bluetooth_pending = false;
         }
+        // A job that never reports back must not spin forever. The status poll
+        // keeps running, so the real state still lands when BlueZ answers.
+        if self
+            .bluetooth_wait
+            .is_some_and(|at| at.elapsed() > Duration::from_secs(90))
+        {
+            self.bluetooth_busy = None;
+            self.bluetooth_wait = None;
+        }
         if self.control_apps_pending
             && self
                 .control_apps_at
@@ -4300,6 +4324,17 @@ impl App {
             Task::Bluetooth(Ok(status)) => {
                 self.bluetooth_pending = false;
                 self.bluetooth_err = status.error.clone();
+                // A background action reports through the snapshot: when its
+                // number moved and it is no longer running, say how it ended.
+                if status.action_seq > self.bluetooth_seq
+                    && !status.action_running
+                    && !status.action_message.is_empty()
+                {
+                    self.bluetooth_seq = status.action_seq;
+                    self.bluetooth_busy = None;
+                    self.bluetooth_wait = None;
+                    self.toast(status.action_message.clone(), status.action_ok);
+                }
                 self.bluetooth = Some(status);
             }
             Task::Bluetooth(Err(e)) => {
@@ -4318,17 +4353,25 @@ impl App {
                     e
                 };
             }
-            Task::BtAction(Ok(message)) => {
-                self.toast(message, true);
-                self.bluetooth_busy = None;
-                self.bluetooth_err.clear();
-                // The daemon refreshes its snapshot right after the action;
-                // the next poll (a few seconds away) shows the real state.
-                // Reloading at once would read the snapshot from before it.
-                self.bluetooth_at = Some(Instant::now());
+            Task::BtAction(Ok((message, started))) => {
+                if started {
+                    // The daemon took the job; the row keeps spinning and the
+                    // status poll brings the outcome (and any error) without a
+                    // request that waits on BlueZ for a minute.
+                    self.bluetooth_at = Some(Instant::now());
+                } else {
+                    self.toast(message, true);
+                    self.bluetooth_busy = None;
+                    self.bluetooth_wait = None;
+                    self.bluetooth_err.clear();
+                    // An older daemon answered after doing the work; the next
+                    // poll shows the state it already refreshed.
+                    self.bluetooth_at = Some(Instant::now());
+                }
             }
             Task::BtAction(Err(e)) => {
                 self.bluetooth_busy = None;
+                self.bluetooth_wait = None;
                 self.bluetooth_at = Some(Instant::now());
                 self.toast(e, false);
             }

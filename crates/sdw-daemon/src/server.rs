@@ -756,12 +756,12 @@ fn bluetooth_action(state: Arc<AppState>, mut req: Request) {
         .unwrap_or("")
         .trim();
     let lang = sdw_core::Lang::from_code(&state.cfg().lang);
-    match crate::bluetooth::action(action, address, lang) {
-        Ok(message) => {
+    match crate::bluetooth::start(action, address, lang) {
+        Ok(()) => {
             state
                 .logger
-                .info(format!("Bluetooth {action} {address}: {message}"));
-            respond_json(req, 200, &json!({"ok": true, "message": message}))
+                .info(format!("Bluetooth {action} {address}: started"));
+            respond_json(req, 200, &json!({"ok": true, "started": true}))
         }
         Err(e) => error(req, 400, &e),
     }

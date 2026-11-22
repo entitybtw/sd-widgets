@@ -27,6 +27,29 @@ struct Cached {
 
 static CACHE: Mutex<Option<Cached>> = Mutex::new(None);
 
+/// One action started from the deck. BlueZ can spend most of a minute in a
+/// pair followed by a connect; holding the HTTP request for that long blocked
+/// every other poll on the daemon and the page showed `timeout: global` even
+/// though the device had connected. The action now runs on its own thread and
+/// the status carries its number, whether it is still running and its final
+/// message, so the deck sees the real state while it happens.
+#[derive(Default)]
+struct Job {
+    seq: u64,
+    running: bool,
+    ok: bool,
+    message: String,
+}
+
+static JOB: Mutex<Option<Job>> = Mutex::new(None);
+
+fn job_running() -> bool {
+    JOB.lock()
+        .ok()
+        .and_then(|j| j.as_ref().map(|j| j.running))
+        .unwrap_or(false)
+}
+
 /// Mark the snapshot stale without throwing the list away: after a press the
 /// page keeps showing what it had until the fresh read lands, instead of
 /// flashing "unavailable" for a poll.
@@ -40,14 +63,18 @@ pub fn invalidate() {
 
 pub fn status(lang: Lang) -> BluetoothStatus {
     let mut due = false;
-    let snapshot = if let Ok(mut cache) = CACHE.lock() {
+    let running = job_running();
+    let mut snapshot = if let Ok(mut cache) = CACHE.lock() {
         let c = cache.get_or_insert_with(|| Cached {
             status: BluetoothStatus::default(),
             at: Instant::now() - Duration::from_secs(60),
             reading: false,
         });
-        let ttl = if c.status.discovering {
-            Duration::from_secs(2)
+        // While an action runs, a one-second snapshot lets the deck show
+        // "paired" and then "connected" as BlueZ reaches each step, instead of
+        // only the final state.
+        let ttl = if c.status.discovering || running {
+            Duration::from_secs(1)
         } else {
             Duration::from_secs(4)
         };
@@ -59,6 +86,14 @@ pub fn status(lang: Lang) -> BluetoothStatus {
     } else {
         BluetoothStatus::default()
     };
+    if let Ok(job) = JOB.lock() {
+        if let Some(job) = job.as_ref() {
+            snapshot.action_seq = job.seq;
+            snapshot.action_running = job.running;
+            snapshot.action_ok = job.ok;
+            snapshot.action_message = job.message.clone();
+        }
+    }
     if due {
         std::thread::spawn(move || {
             refresh(lang);
@@ -374,20 +409,84 @@ fn upower_battery(address: &str) -> Option<u8> {
     None
 }
 
-/// Run one declared Bluetooth action. Addresses are checked here, so the deck
-/// cannot use the CLI as a free-form command channel.
+/// Run one declared Bluetooth action on the calling thread. The daemon's own
+/// window uses this; an HTTP request uses [`start`] so BlueZ never blocks the
+/// server.
 pub fn action(action: &str, address: &str, lang: Lang) -> Result<String, String> {
-    // Every action changes what a status read would say; never answer the
-    // next poll from the cache. The fresh read runs after the reply, on its
-    // own thread: pairing already waits on BlueZ for up to a minute, and a
-    // second blocking read made the deck's own request time out even though
-    // the action had worked.
     invalidate();
     let action = action.trim();
     let result = action_impl(action, address, lang);
     invalidate();
     schedule_refresh(lang);
     result
+}
+
+/// Start one declared action on its own thread and answer at once. Pairing and
+/// connecting can take almost a minute together; the deck waits for the
+/// status poll to show each step and its final message, so a working action no
+/// longer ends in `timeout: global`.
+pub fn start(action: &str, address: &str, lang: Lang) -> Result<(), String> {
+    let action = action.trim();
+    let known = matches!(
+        action,
+        "scan"
+            | "scan_off"
+            | "power_on"
+            | "power_off"
+            | "pair_connect"
+            | "connect"
+            | "disconnect"
+            | "pair"
+            | "trust"
+            | "untrust"
+            | "remove"
+            | "info"
+    );
+    if !known {
+        return Err(format!(
+            "{} {action}",
+            t!(lang, "неизвестное действие:", "unknown action:")
+        ));
+    }
+    let needs_address = !matches!(action, "scan" | "scan_off" | "power_on" | "power_off");
+    if needs_address && !valid_address(address) {
+        return Err(t!(lang, "неверный адрес устройства", "invalid device address").to_string());
+    }
+    {
+        let mut guard = JOB.lock().map_err(|_| "bluetooth job lock".to_string())?;
+        let job = guard.get_or_insert_with(Job::default);
+        if job.running {
+            return Err(t!(
+                lang,
+                "предыдущая команда ещё выполняется",
+                "the previous command is still running"
+            )
+            .to_string());
+        }
+        job.seq = job.seq.wrapping_add(1);
+        job.running = true;
+        job.ok = false;
+        job.message.clear();
+    }
+    invalidate();
+    let (action, address) = (action.to_string(), address.to_string());
+    std::thread::spawn(move || {
+        let result = action_impl(&action, &address, lang);
+        let (ok, message) = match result {
+            Ok(message) => (true, message),
+            Err(e) => (false, e),
+        };
+        if let Ok(mut guard) = JOB.lock() {
+            if let Some(job) = guard.as_mut() {
+                job.running = false;
+                job.ok = ok;
+                job.message = message;
+            }
+        }
+        invalidate();
+        schedule_refresh(lang);
+    });
+    Ok(())
 }
 
 /// Start one background read unless one is already running. Every caller that
@@ -466,7 +565,17 @@ fn action_impl(action: &str, address: &str, lang: Lang) -> Result<String, String
             if !valid_address(address) {
                 return Err(invalid());
             }
-            run(lang, &["--timeout", "20", action, address]).map(|_| message(lang, action, address))
+            // Only connect and pair actually wait for BlueZ. Every other verb
+            // answers at once, and passing `--timeout 20` to them made
+            // bluetoothctl sleep the whole twenty seconds before exiting, so
+            // a press looked stuck and the state arrived ages later.
+            let mut args: Vec<&str> = match action {
+                "connect" | "pair" => vec!["--timeout", "25"],
+                _ => Vec::new(),
+            };
+            args.push(action);
+            args.push(address);
+            run(lang, &args).map(|_| message(lang, action, address))
         }
         other => Err(format!(
             "{} {other}",

@@ -1728,17 +1728,26 @@ pub fn bluetooth(app: &mut App, ui: &mut Ui, t: &Tokens) {
         .unwrap_or(false);
     // A press must show up at once, so the page keeps a short poll: a
     // connected headphone, a scan that finished or a device that dropped out
-    // reaches the list while the page is open instead of after a wait. The
-    // read costs a couple of milliseconds on the daemon side.
+    // reaches the list while the page is open instead of after a wait. While
+    // an action runs it polls every second, so "paired" and "connected" appear
+    // as BlueZ reaches each step instead of only at the end.
+    let busy = app.bluetooth_busy.is_some();
+    let every = if busy {
+        1
+    } else if discovering {
+        2
+    } else {
+        4
+    };
     let stale = app
         .bluetooth_at
-        .map(|at| at.elapsed() > Duration::from_secs(if discovering { 2 } else { 4 }))
+        .map(|at| at.elapsed() > Duration::from_secs(every))
         .unwrap_or(true);
-    if online && stale && app.bluetooth_busy.is_none() {
+    if online && stale {
         app.load_bluetooth();
     }
     ui.ctx()
-        .request_repaint_after(Duration::from_secs(if discovering { 1 } else { 2 }));
+        .request_repaint_after(Duration::from_secs(if busy || discovering { 1 } else { 2 }));
 
     let status = app.bluetooth.clone();
     let mut action: Option<(&'static str, String)> = None;
