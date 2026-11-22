@@ -26,8 +26,43 @@ struct Inner {
     senders: HashMap<u64, String>,
 }
 
+/// Where the history lives between daemon restarts. A restart used to wipe
+/// every notification the person had not read yet; the file keeps them.
+fn history_path() -> std::path::PathBuf {
+    sdw_core::util::data_dir().join("notifications.json")
+}
+
+fn load_history(path: &std::path::Path) -> (VecDeque<Notification>, u64) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return (VecDeque::new(), 1);
+    };
+    let Ok(list) = serde_json::from_str::<Vec<Notification>>(&text) else {
+        // A half-written file from a crash is not worth a failed start: begin
+        // empty and let the next save replace it.
+        return (VecDeque::new(), 1);
+    };
+    let next = list.iter().map(|n| n.id).max().unwrap_or(0) + 1;
+    (list.into(), next)
+}
+
+fn save_history(path: &std::path::Path, items: &VecDeque<Notification>) {
+    if let Some(dir) = path.parent() {
+        let _ = sdw_core::util::ensure_dir(dir);
+    }
+    let Ok(text) = serde_json::to_string(items) else {
+        return;
+    };
+    // Write beside the file and rename, so a crash never leaves half a list.
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
 pub struct NotificationStore {
     inner: Mutex<Inner>,
+    /// The file the history is kept in across restarts.
+    history: std::path::PathBuf,
     logger: Logger,
     owns_service: AtomicBool,
     /// The session bus connection we serve notifications on, kept so an
@@ -43,32 +78,48 @@ impl NotificationStore {
         } else {
             "Windows"
         };
+        // Notifications the person has not read yet survived a daemon restart
+        // in a file; pick them up before the first frame so the deck shows the
+        // history it had a moment ago.
+        let history = history_path();
+        let (items, next_id) = load_history(&history);
+        let count = items.len() as u32;
+        let unread = items.iter().filter(|n| n.urgency == 0).count() as u32;
+        let recent: Vec<Notification> = items.iter().rev().take(30).cloned().collect();
         Self {
             inner: Mutex::new(Inner {
-                items: VecDeque::new(),
-                next_id: 1,
+                items,
+                next_id,
                 status: NotificationStatus {
                     enabled,
                     listening: false,
-                    count: 0,
-                    unread: 0,
+                    count,
+                    unread,
                     backend: backend.into(),
                     error: if cfg!(target_os = "linux") {
                         String::new()
                     } else {
                         "Зеркалирование уведомлений пока доступно на Linux".into()
                     },
-                    recent: Vec::new(),
+                    recent,
                 },
                 enabled,
                 actions: HashMap::new(),
                 senders: HashMap::new(),
             }),
+            history,
             logger,
             owns_service: AtomicBool::new(false),
             #[cfg(target_os = "linux")]
             service: Mutex::new(None),
         }
+    }
+
+    /// Write the current history to disk. Called after every change while the
+    /// same lock is held, so the file always matches the list: notifications
+    /// arrive rarely enough that the small write costs nothing.
+    fn persist(&self, items: &VecDeque<Notification>) {
+        save_history(&self.history, items);
     }
 
     pub fn status(&self) -> NotificationStatus {
@@ -150,6 +201,10 @@ impl NotificationStore {
         let summary = notification_text(summary);
         let body = notification_text(body);
         if summary.trim().is_empty() && body.trim().is_empty() {
+            // A `replaces` that carries no text still closed the old one.
+            if replaces != 0 {
+                self.persist(&inner.items);
+            }
             return 0;
         }
         let id = if replaces != 0 {
@@ -218,6 +273,7 @@ impl NotificationStore {
                 inner.senders.remove(&dropped.id);
             }
         }
+        self.persist(&inner.items);
         id
     }
 
@@ -282,6 +338,7 @@ impl NotificationStore {
             i.items.clear();
             i.actions.clear();
             i.senders.clear();
+            self.persist(&i.items);
         }
     }
 
@@ -291,6 +348,7 @@ impl NotificationStore {
             inner.items.retain(|n| n.id != id);
             inner.actions.remove(&id);
             inner.senders.remove(&id);
+            self.persist(&inner.items);
         }
     }
 
@@ -303,6 +361,7 @@ impl NotificationStore {
             inner.items.retain(|n| n.id != id);
             inner.actions.remove(&id);
             inner.senders.remove(&id);
+            self.persist(&inner.items);
             id
         };
         #[cfg(target_os = "linux")]
@@ -354,6 +413,7 @@ impl NotificationStore {
         while inner.items.len() > 120 {
             inner.items.pop_front();
         }
+        self.persist(&inner.items);
     }
 
     pub fn start(self: Arc<Self>, stop: Arc<AtomicBool>, own_service: bool) {
@@ -1027,5 +1087,44 @@ mod tests {
     fn dbus_octal_escapes_decode() {
         assert_eq!(unescape("\\320\\237\\321\\200\\320\\270"), "При");
         assert_eq!(unescape("a\\nb\\\"c\\\\d"), "a\nb\"c\\d");
+    }
+
+    #[test]
+    fn history_comes_back_after_a_restart() {
+        use super::{load_history, save_history};
+        use sdw_core::model::Notification;
+        use std::collections::VecDeque;
+
+        let path =
+            std::env::temp_dir().join(format!("sdw-notif-{}.json", sdw_core::model::random_id(6)));
+        let mut items = VecDeque::new();
+        for (id, summary) in [(4, "первое"), (7, "второе")] {
+            items.push_back(Notification {
+                id,
+                app: "Test".into(),
+                summary: summary.into(),
+                body: String::new(),
+                icon: String::new(),
+                image: String::new(),
+                urgency: 1,
+                ts: 1_700_000_000_000,
+                has_actions: false,
+            });
+        }
+        save_history(&path, &items);
+        let (loaded, next) = load_history(&path);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].summary, "первое");
+        assert_eq!(loaded[1].summary, "второе");
+        // The next notification continues after the highest saved id, so a
+        // restart never reuses an id the deck still remembers.
+        assert_eq!(next, 8);
+
+        // A file from a crash mid-write is ignored instead of failing the daemon.
+        std::fs::write(&path, "{not json").unwrap();
+        let (empty, next) = load_history(&path);
+        assert!(empty.is_empty());
+        assert_eq!(next, 1);
+        let _ = std::fs::remove_file(path);
     }
 }
