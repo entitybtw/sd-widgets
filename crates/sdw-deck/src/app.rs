@@ -547,10 +547,9 @@ pub struct App {
     pub page_turn_from: f32,
     pub page_turn_to: f32,
     pub page_turn_at: Instant,
-    /// How long the turn runs and the speed it starts with: the release keeps
-    /// the speed the finger gave the page and loses it smoothly.
+    /// How long the turn runs: a full page takes as long as an arrow turn,
+    /// a short remainder proportionally less.
     pub page_turn_dur: f32,
-    pub page_turn_vel: f32,
     pub page_turn_to_page: Option<Page>,
     pub page_turn_active: bool,
     /// Where the finger grabbed the page. The preview is measured from this
@@ -837,7 +836,6 @@ impl App {
             page_turn_to: 0.0,
             page_turn_at: Instant::now(),
             page_turn_dur: 0.3,
-            page_turn_vel: 0.0,
             page_turn_to_page: None,
             page_turn_active: false,
             page_anchor: None,
@@ -1311,12 +1309,7 @@ impl App {
                     if dir < 0.0 { Cue::Navigate } else { Cue::Back },
                 );
                 self.page_silent = true;
-                self.start_page_turn(
-                    dir * w,
-                    self.step_page(if dir < 0.0 { 1 } else { -1 }),
-                    w,
-                    0.0,
-                );
+                self.start_page_turn(dir * w, self.step_page(if dir < 0.0 { 1 } else { -1 }), w);
                 self.page_silent = false;
             } else {
                 self.on_input(DeckEvent::Gesture(spec));
@@ -1551,11 +1544,10 @@ impl App {
                                         to,
                                         self.step_page(if slide < 0.0 { 1 } else { -1 }),
                                         width,
-                                        vel,
                                     );
                                     self.page_silent = false;
                                 } else if slide != 0.0 {
-                                    self.start_page_turn(0.0, None, width, vel);
+                                    self.start_page_turn(0.0, None, width);
                                 }
                             }
                             self.page_anchor = None;
@@ -3688,31 +3680,24 @@ impl App {
         }
         self.apply_scale(ctx);
         // The turn after the finger left: the offset eases from where it was
-        // released to where the page belongs, so a swipe keeps moving in its
-        // own direction instead of snapping to a stop under the finger.
-        let dragging = self.edge_swipe.is_some() || !self.touch.points.is_empty();
-        if !dragging {
-            if self.page_turn_active {
-                let dur = self.page_turn_dur.max(0.01);
-                let k = (self.page_turn_at.elapsed().as_secs_f32() / dur).min(1.0);
-                // Cubic Hermite: starts with the speed the finger had and
-                // arrives with none, so the release is neither a yank nor a
-                // stop. The start speed is clamped to keep the curve monotone.
-                let k2 = k * k;
-                let k3 = k2 * k;
-                let h01 = 3.0 * k2 - 2.0 * k3;
-                let h10 = k3 - 2.0 * k2 + k;
-                self.page_slide = self.page_turn_from
-                    + (self.page_turn_to - self.page_turn_from) * h01
-                    + dur * self.page_turn_vel * h10;
-                if k >= 1.0 {
-                    self.finish_page_turn();
-                } else {
-                    ctx.request_repaint();
-                }
+        // released to where the page belongs. It runs even while the touch
+        // point is still in this frame's list — the release already happened,
+        // and waiting for the list to empty made the first frame stall.
+        if self.page_turn_active {
+            let dur = self.page_turn_dur.max(0.01);
+            let k = (self.page_turn_at.elapsed().as_secs_f32() / dur).min(1.0);
+            // The same ease-out as an arrow turn: it leaves at once and settles
+            // without a stop, so a release never pauses before it moves.
+            let ease = 1.0 - (1.0 - k).powi(3);
+            self.page_slide =
+                self.page_turn_from + (self.page_turn_to - self.page_turn_from) * ease;
+            if k >= 1.0 {
+                self.finish_page_turn();
             } else {
-                self.page_slide = 0.0;
+                ctx.request_repaint();
             }
+        } else if self.edge_swipe.is_none() && self.touch.points.is_empty() {
+            self.page_slide = 0.0;
         }
         // The page a tap or an arrow left slides out for a third of a second.
         if let Some((_, _, _, at)) = self.page_from {
@@ -4436,7 +4421,7 @@ impl App {
     /// page must reach, `width` the page width and `vel` the finger's speed in
     /// points per second. With animations off there is nothing to carry, so
     /// the page switches at once.
-    fn start_page_turn(&mut self, to: f32, page: Option<Page>, width: f32, vel: f32) {
+    fn start_page_turn(&mut self, to: f32, page: Option<Page>, width: f32) {
         if !theme::style().animations {
             self.page_slide = 0.0;
             if let Some(p) = page {
@@ -4448,29 +4433,14 @@ impl App {
         let from = self.page_slide;
         let dist = to - from;
         let ratio = (dist.abs() / width.max(1.0)).min(1.0);
-        // A full turn is a quick slide: long enough to read, short enough that
-        // the deck never feels slow. A page that only slides back is shorter;
-        // nothing was turned.
-        let dur = if page.is_some() {
-            0.24 + 0.18 * ratio
-        } else {
-            0.18 + 0.12 * ratio
-        };
-        // The release keeps the finger's speed, but only up to a little above
-        // the average speed of the turn. A fast flick used to spend most of
-        // the distance in the first frames and then crawl, which read as a
-        // jerk; capping the start keeps the movement even.
-        let limit = 1.15 * dist.abs() / dur;
-        let vel = if dist >= 0.0 {
-            vel.clamp(-0.35 * limit, limit)
-        } else {
-            vel.clamp(-limit, 0.35 * limit)
-        };
+        // The turn takes the same time as an arrow turn for a full page, and
+        // proportionally less when only a short way is left: the movement keeps
+        // one speed instead of a short gap crawling for a third of a second.
+        let dur = PAGE_SLIDE * (0.45 + 0.55 * ratio);
         self.page_turn_from = from;
         self.page_turn_to = to;
         self.page_turn_at = Instant::now();
         self.page_turn_dur = dur;
-        self.page_turn_vel = vel;
         self.page_turn_to_page = page;
         self.page_turn_active = true;
     }
@@ -4484,14 +4454,16 @@ impl App {
         self.page_slide = 0.0;
         self.page_turn_from = 0.0;
         self.page_turn_to = 0.0;
-        self.page_turn_vel = 0.0;
         if let Some(p) = self.page_turn_to_page.take() {
             // The release already played the cue and the finger already
             // showed where the page comes from: no fade, no second sound.
             self.page_silent = true;
-            self.page_instant = true;
             self.set_page(p);
             self.page_silent = false;
+            // `set_page` clears the flag at its start, so it goes after it: the
+            // page already arrived under the finger and the entrance animation
+            // would otherwise slide it in a second time.
+            self.page_instant = true;
         }
     }
 
