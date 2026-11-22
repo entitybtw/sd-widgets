@@ -7063,12 +7063,13 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
             }
         });
         ui.add_space(2.0);
-        if theme::slider(
+        if theme::slider_step(
             ui,
             t,
             t!(app.lang, "шаг сетки", "grid step"),
             &mut style.grid_step,
             16.0..=64.0,
+            1.0,
             |v| format!("{v:.0} px"),
         ) {
             theme::css_set(
@@ -7078,12 +7079,13 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
             );
             style_dirty = true;
         }
-        if theme::slider(
+        if theme::slider_step(
             ui,
             t,
             t!(app.lang, "яркость сетки", "grid alpha"),
             &mut style.grid_alpha,
             0.0..=40.0,
+            1.0,
             |v| format!("{v:.0}"),
         ) {
             theme::css_set(

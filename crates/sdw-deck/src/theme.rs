@@ -1407,6 +1407,39 @@ pub fn slider_with_width(
     slider_ex_width(ui, t, width, label, value, range, fmt).0
 }
 
+/// The smallest step that still gives the slider a comfortable number of
+/// positions: a percent-scale slider moves by one, a 0…10 value by a tenth, a
+/// speed or a UI scale by a hundredth. Nothing is ever rounded to a whole
+/// number just because its range is short — that is what turned the UI scale
+/// into 100 % / 200 % and left most of its range unreachable.
+pub fn auto_step(lo: f32, hi: f32) -> f32 {
+    let span = (hi - lo).abs();
+    if span >= 20.0 {
+        1.0
+    } else if span >= 3.0 {
+        0.1
+    } else if span >= 0.3 {
+        0.01
+    } else {
+        0.001
+    }
+}
+
+/// A slider with an explicit value step: `1.0` for whole numbers, `0.1` for a
+/// tenth, and so on. Use it when the stored value must stay on a grid.
+pub fn slider_step(
+    ui: &mut Ui,
+    t: &Tokens,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    fmt: impl Fn(f32) -> String,
+) -> bool {
+    let width = ui.available_width();
+    slider_ex_step_width(ui, t, width, label, value, range, step, fmt).0
+}
+
 /// [`slider_ex`] at an explicit width.
 pub fn slider_ex_width(
     ui: &mut Ui,
@@ -1417,8 +1450,24 @@ pub fn slider_ex_width(
     range: std::ops::RangeInclusive<f32>,
     fmt: impl Fn(f32) -> String,
 ) -> (bool, bool) {
+    let step = auto_step(*range.start(), *range.end());
+    slider_ex_step_width(ui, t, width, label, value, range, step, fmt)
+}
+
+/// [`slider_ex_width`] with the step chosen by the caller.
+pub fn slider_ex_step_width(
+    ui: &mut Ui,
+    t: &Tokens,
+    width: f32,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+    fmt: impl Fn(f32) -> String,
+) -> (bool, bool) {
     let (lo, hi) = (*range.start(), *range.end());
     let span = (hi - lo).max(f32::EPSILON);
+    let step = step.abs().max(f32::EPSILON);
     let height = 40.0;
     let width = width.max(160.0);
     let (row, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
@@ -1441,12 +1490,12 @@ pub fn slider_ex_width(
         if let Some(pos) = resp.interact_pointer_pos() {
             let nk = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
             let raw = lo + nk * span;
-            // Integers snap; everything else keeps a hundredth.
-            let next = if span <= 12.0 {
-                raw.round()
-            } else {
-                (raw * 100.0).round() / 100.0
-            };
+            // Snap to the slider's own step, counted from the low end, so the
+            // value is exactly on the grid and shows the same number the user
+            // sees. A hundredth of a step prevents float noise at the edges.
+            let next = lo + ((raw - lo) / step).round() * step;
+            let next = (next * 10000.0).round() / 10000.0;
+            let next = next.clamp(lo, hi);
             if (next - *value).abs() > f32::EPSILON {
                 *value = next;
                 changed = true;
@@ -1527,7 +1576,8 @@ pub fn slider_ex_width(
     (changed, released)
 }
 
-/// The same slider for whole numbers.
+/// The same slider for whole numbers: the step is exactly one, so a drag can
+/// never park the value between two ticks.
 pub fn slider_u32(
     ui: &mut Ui,
     t: &Tokens,
@@ -1536,12 +1586,13 @@ pub fn slider_u32(
     range: std::ops::RangeInclusive<u32>,
 ) -> bool {
     let mut current = *value as f32;
-    let changed = slider(
+    let changed = slider_step(
         ui,
         t,
         label,
         &mut current,
         *range.start() as f32..=*range.end() as f32,
+        1.0,
         |v| format!("{:.0}", v),
     );
     if changed {
