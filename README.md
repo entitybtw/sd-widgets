@@ -59,7 +59,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control or gesture. |
 | **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality; view-only on the Deck. |
 | **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. A cava-style visualizer reads the computer's own mix and is fully adjustable. |
-| **Notifications** | Mirrored desktop notifications, newest first, unread counters. |
+| **Notifications** | Mirrored desktop notifications, newest first, unread counters; each card slides away with a sideways swipe, and "read all" clears the counters in one press. |
 | **Home Assistant** | Rooms and areas with lights, curtains, climate and media widgets, not a wall of every entity. |
 | **Binds** | Buttons, chords and swipe gestures mapped to actions or remote commands. |
 | **Clock** | A full-screen clock in four styles, each fully configurable and saved as a preset or an addon. |

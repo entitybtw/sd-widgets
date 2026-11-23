@@ -26,6 +26,11 @@ use std::time::{Duration, Instant};
 /// arrives; a smooth slide, not a fade with a small nudge.
 const PAGE_SLIDE: f32 = 0.20;
 
+/// How long a swiped notification takes to slide out of the list before it is
+/// really dismissed, and how far a pull must go to count as a swipe.
+const NOTIF_SLIDE: f32 = 0.16;
+const NOTIF_SWIPE_MIN: f32 = 72.0;
+
 /// The inset the floating arrows take on each side of the page. The page
 /// content lives between them, so this is also the part of the window a page
 /// turn may actually move across.
@@ -358,6 +363,35 @@ pub struct NotifPopup {
     pub at: Instant,
 }
 
+/// A notification card pulled aside by the finger, the way a phone dismisses
+/// one: it follows the finger sideways and leaves the list on release.
+#[derive(Clone, Copy)]
+pub struct NotifDrag {
+    pub id: u64,
+    pub start: egui::Pos2,
+    pub dx: f32,
+    pub dy: f32,
+    /// The card's width on screen; the pull is judged against it.
+    pub span: f32,
+    /// The drag is clearly sideways, so the card owns it and the page does not.
+    pub sideways: bool,
+    pub at: Instant,
+}
+
+/// A card on its way out: it slides over the edge over a few frames before it
+/// is really dismissed, so a swipe reads as a movement, not a disappearance.
+#[derive(Clone, Copy)]
+pub struct NotifLeaving {
+    pub id: u64,
+    /// +1 to the right, -1 to the left, 0 when the pull fell short and the
+    /// card glides back into the list.
+    pub dir: f32,
+    /// Where the finger let go, so the slide starts there without a jump.
+    pub from: f32,
+    pub span: f32,
+    pub at: Instant,
+}
+
 /// Battery of a Bluetooth or USB headset, as UPower reports it.
 #[derive(Debug, Clone)]
 pub struct Headset {
@@ -650,6 +684,20 @@ pub struct App {
     pub notif_hist: bool,
     pub notif_last_id: u64,
     pub notif_unread: u32,
+    /// Ids already read. New notifications start unread; opening the page or
+    /// "read all" takes them out of this set's complement.
+    pub notif_read: HashSet<u64>,
+    /// Screen rects of the cards drawn last frame, so a sideways drag that
+    /// starts on one belongs to the card and not to the page turn.
+    pub notif_rows: Vec<(u64, Rect)>,
+    /// The card under the finger right now.
+    pub notif_drag: Option<NotifDrag>,
+    /// Cards sliding out before they are dismissed.
+    pub notif_leaving: Vec<NotifLeaving>,
+    /// The pointer gesture started on a card: the page swipe stands down.
+    pub notif_own: bool,
+    /// The release of that gesture is being handled in this frame.
+    pub notif_own_release: bool,
     pub notif_pending: bool,
     pub last_notif: Instant,
 
@@ -928,6 +976,12 @@ impl App {
             notif_hist: false,
             notif_last_id: 0,
             notif_unread: 0,
+            notif_read: HashSet::new(),
+            notif_rows: Vec::new(),
+            notif_drag: None,
+            notif_leaving: Vec::new(),
+            notif_own: false,
+            notif_own_release: false,
             notif_pending: false,
             last_notif: Instant::now() - Duration::from_secs(5),
             pair_url: String::new(),
@@ -1294,6 +1348,128 @@ impl App {
         self.pad_buttons = buttons;
     }
 
+    /// A notification card that can be swiped away, under the pointer. The
+    /// last frame's rects are used: cards do not move between frames except
+    /// while one is already being pulled.
+    fn notif_row_at(&self, pos: egui::Pos2) -> Option<(u64, Rect)> {
+        self.notif_rows
+            .iter()
+            .rev()
+            .find(|(_, rect)| rect.contains(pos))
+            .copied()
+    }
+
+    /// Turn a sideways pull on a notification into an offset, and a release
+    /// past the threshold into a slide out of the list.
+    ///
+    /// This runs on the raw pointer events before egui sees them, so the list
+    /// still scrolls under a vertical drag and the page swipe leaves the card
+    /// alone. Native touch and an emulated mouse can both report the same
+    /// gesture; the first press claims it and the rest is ignored.
+    fn notif_drag_tick(&mut self, raw: &egui::RawInput) {
+        self.notif_own_release = false;
+        for event in &raw.events {
+            match event {
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    ..
+                } => {
+                    self.notif_drag_begin(*pos);
+                }
+                egui::Event::PointerMoved(pos) => self.notif_drag_move(*pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                } => {
+                    self.notif_drag_end(*pos);
+                }
+                egui::Event::PointerGone => {
+                    self.notif_drag = None;
+                    self.notif_own = false;
+                }
+                egui::Event::Touch { phase, pos, .. } => match phase {
+                    egui::TouchPhase::Start => self.notif_drag_begin(*pos),
+                    egui::TouchPhase::Move => self.notif_drag_move(*pos),
+                    egui::TouchPhase::End | egui::TouchPhase::Cancel => self.notif_drag_end(*pos),
+                },
+                _ => {}
+            }
+        }
+    }
+
+    fn notif_drag_begin(&mut self, pos: egui::Pos2) {
+        if self.notif_drag.is_some() || self.notif_own {
+            return;
+        }
+        let Some((id, rect)) = self.notif_row_at(pos) else {
+            return;
+        };
+        self.notif_drag = Some(NotifDrag {
+            id,
+            start: pos,
+            dx: 0.0,
+            dy: 0.0,
+            span: rect.width(),
+            sideways: false,
+            at: Instant::now(),
+        });
+    }
+
+    fn notif_drag_move(&mut self, pos: egui::Pos2) {
+        let Some(mut drag) = self.notif_drag else {
+            return;
+        };
+        drag.dx = pos.x - drag.start.x;
+        drag.dy = pos.y - drag.start.y;
+        if !drag.sideways {
+            if drag.dx.abs() > 12.0 && drag.dx.abs() > drag.dy.abs() * 1.2 {
+                drag.sideways = true;
+                // The card owns the gesture from here: the page turn and the
+                // panel pull stand down. Before this point the vertical drag
+                // still scrolls the list and closes the control centre.
+                self.notif_own = true;
+            } else if drag.dy.abs() > 12.0 && drag.dy.abs() >= drag.dx.abs() {
+                // A vertical drag belongs to the list: it scrolls, the card
+                // stays put.
+                self.notif_drag = None;
+                return;
+            }
+        }
+        self.notif_drag = Some(drag);
+    }
+
+    fn notif_drag_end(&mut self, pos: egui::Pos2) {
+        if let Some(mut drag) = self.notif_drag.take() {
+            if drag.sideways {
+                drag.dx = pos.x - drag.start.x;
+                let span = drag.span.max(1.0);
+                let commit = (span * 0.30).clamp(NOTIF_SWIPE_MIN, 260.0);
+                let flick = drag.at.elapsed() < Duration::from_millis(320) && drag.dx.abs() > 56.0;
+                let dir = drag.dx.signum();
+                self.notif_leaving.retain(|l| l.id != drag.id);
+                self.notif_leaving.push(NotifLeaving {
+                    id: drag.id,
+                    dir: if drag.dx.abs() >= commit || flick {
+                        dir
+                    } else {
+                        0.0
+                    },
+                    from: drag.dx,
+                    span,
+                    at: Instant::now(),
+                });
+            }
+        }
+        if self.notif_own {
+            self.notif_own_release = true;
+            self.notif_own = false;
+        }
+    }
+
     /// Touch gestures on the page surface.
     ///
     /// Native touch events are turned into `GestureSpec`s here (multi-finger
@@ -1304,6 +1480,9 @@ impl App {
             self.touch.reset();
             return;
         }
+        // A gesture that began on a notification card belongs to that card:
+        // its release dismisses the card, never turns the page.
+        let own = self.notif_own || self.notif_own_release;
         let rect = raw.screen_rect.unwrap_or_else(|| ctx.content_rect());
         let now = Instant::now();
         let mut finished = None;
@@ -1338,6 +1517,7 @@ impl App {
         }
         if finished.is_none()
             && theme::style().animations
+            && !own
             && !self.gamepad_on
             && !self.binds.capture
             && !self.touch_blocked
@@ -1363,7 +1543,12 @@ impl App {
             }
         }
         if let Some((spec, vel)) = finished {
-            if spec.fingers == 1 && spec.kind == GestureKind::Swipe && !self.touch_blocked {
+            if own {
+                // The card took the gesture; make sure no preview is left.
+                self.page_anchor = None;
+                self.page_slide = 0.0;
+                self.touch_blocked = true;
+            } else if spec.fingers == 1 && spec.kind == GestureKind::Swipe && !self.touch_blocked {
                 // egui-winit also turns the touch into a mouse drag, and the
                 // raw swipe below would turn the page a second time. Remember
                 // the gesture so that fallback stands down for this release.
@@ -1438,7 +1623,15 @@ impl App {
                     // keep moving under a finger that already wants it.
                     self.finish_page_turn();
                     self.page_anchor = None;
-                    self.edge_swipe = Some((pos, pos, Instant::now()));
+                    if self.notif_own || self.notif_own_release {
+                        // The press landed on a notification card: the card
+                        // owns the gesture, so the page neither pulls nor
+                        // turns. Vertical drags still scroll the list.
+                        self.swipe_blocked = true;
+                        self.edge_swipe = None;
+                    } else {
+                        self.edge_swipe = Some((pos, pos, Instant::now()));
+                    }
                     out.push(egui::Event::PointerButton {
                         pos,
                         button: egui::PointerButton::Primary,
@@ -1447,6 +1640,14 @@ impl App {
                     });
                 }
                 egui::Event::PointerMoved(pos) => {
+                    if self.notif_own {
+                        // A card took this gesture over: whatever the page
+                        // previewed in the first pixels is dropped.
+                        self.swipe_blocked = true;
+                        self.page_anchor = None;
+                        self.page_slide = 0.0;
+                        self.edge_swipe = None;
+                    }
                     if let Some(id) = ctx.dragged_id() {
                         // The page ScrollArea claims every drag so it can
                         // scroll. A slider or a tile drag is a different id
@@ -1850,7 +2051,7 @@ impl App {
                 );
             }
             if page == Page::Notifications {
-                self.notif_unread = 0;
+                self.read_all_notifs();
             }
             if page == Page::HomeAssistant {
                 self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
@@ -1946,6 +2147,9 @@ impl App {
         self.last_status = Instant::now() - Duration::from_secs(5);
         self.notifications.clear();
         self.notif_art.clear();
+        self.notif_read.clear();
+        self.notif_leaving.clear();
+        self.notif_drag = None;
         self.notif_last_id = 0;
         self.notif_unread = 0;
         self.notif_pending = false;
@@ -2693,8 +2897,16 @@ impl App {
 
     /// Drop a notification locally and on the computer.
     pub fn dismiss_notif(&mut self, id: u64) {
+        let live = self.notifications.iter().any(|n| n.id == id);
+        let was_read = self.notif_read.remove(&id);
         self.notifications.retain(|n| n.id != id);
         self.notif_log.retain(|n| n.id != id);
+        self.popups.retain(|p| p.id != id);
+        // An unread notification that is swiped away is no longer waiting to
+        // be read, so the badge follows the list down.
+        if live && !was_read {
+            self.notif_unread = self.notif_unread.saturating_sub(1);
+        }
         if let Some(c) = self.client() {
             self.spawn(move || {
                 Task::Msg(
@@ -2703,6 +2915,78 @@ impl App {
                         .map_err(|e| e.to_string()),
                 )
             });
+        }
+    }
+
+    /// Mark every notification as read: the badge goes away and the unread
+    /// markers on the cards fade. Nothing is dismissed — a swipe or "clear"
+    /// does that.
+    pub fn read_all_notifs(&mut self) {
+        self.notif_unread = 0;
+        self.notif_read
+            .extend(self.notifications.iter().map(|n| n.id));
+        // Reading everything also puts the floating popups away: they were the
+        // same unread notifications.
+        self.popups.clear();
+    }
+
+    /// Whether this notification has been read already.
+    pub fn notif_seen(&self, id: u64) -> bool {
+        self.notif_read.contains(&id)
+    }
+
+    /// True while a card is sliding out: taps on it must do nothing.
+    pub fn notif_leaving(&self, id: u64) -> bool {
+        self.notif_leaving.iter().any(|l| l.id == id)
+    }
+
+    /// How far a card is pulled aside and how solid it is drawn.
+    ///
+    /// The finger's own offset while it holds the card; after a release that
+    /// counts as a swipe, an accelerating slide over the edge.
+    pub fn notif_slide(&self, id: u64) -> (f32, f32) {
+        if let Some(d) = &self.notif_drag {
+            if d.id == id && d.sideways {
+                let span = d.span.max(1.0);
+                let alpha = (1.0 - (d.dx.abs() / span) * 0.55).clamp(0.2, 1.0);
+                return (d.dx, alpha);
+            }
+        }
+        if let Some(l) = self.notif_leaving.iter().find(|l| l.id == id) {
+            let p = (l.at.elapsed().as_secs_f32() / NOTIF_SLIDE).clamp(0.0, 1.0);
+            if l.dir == 0.0 {
+                // The pull fell short: glide back into place.
+                return (l.from * (1.0 - p * p), 1.0);
+            }
+            let to = l.dir * (l.span.max(1.0) + 24.0);
+            let off = l.from + (to - l.from) * p * p;
+            return (off, (1.0 - p).clamp(0.0, 1.0));
+        }
+        (0.0, 1.0)
+    }
+
+    /// Finish the slides that have run their course and forget the rows that
+    /// are gone. Runs once per frame, before any page draws.
+    fn tick_notif_slides(&mut self, ctx: &egui::Context) {
+        let mut done = Vec::new();
+        self.notif_leaving.retain(|l| {
+            if l.at.elapsed().as_secs_f32() >= NOTIF_SLIDE {
+                if l.dir != 0.0 {
+                    done.push(l.id);
+                }
+                false
+            } else {
+                true
+            }
+        });
+        for id in done {
+            self.dismiss_notif(id);
+        }
+        if !self.notif_leaving.is_empty() || self.notif_drag.is_some() {
+            ctx.request_repaint();
+        }
+        if self.notif_drag.is_some_and(|d| d.sideways) {
+            ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
         }
     }
 
@@ -4217,8 +4501,9 @@ impl App {
                 }
                 let live: HashSet<u64> = self.notifications.iter().map(|n| n.id).collect();
                 self.notif_art.retain(|id, _| live.contains(id));
+                self.notif_read.retain(|id| live.contains(id));
                 if self.page == Page::Notifications {
-                    self.notif_unread = 0;
+                    self.read_all_notifs();
                 } else {
                     self.notif_unread = self.notif_unread.saturating_add(added);
                     if added > 0 {
@@ -5685,6 +5970,7 @@ impl App {
 
 impl eframe::App for App {
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.notif_drag_tick(raw);
         self.pad_ui(ctx, raw);
         self.touch_gesture_tick(ctx, raw);
         self.swipe_raw(ctx, raw);
@@ -5692,9 +5978,13 @@ impl eframe::App for App {
 
     fn ui(&mut self, root: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = root.ctx().clone();
+        // Both notification lists register their cards as they are drawn; the
+        // raw input of the next frame reads the rects.
+        self.notif_rows.clear();
         self.quick_clicked = false;
         self.maybe_check_updates();
         self.tick(&ctx);
+        self.tick_notif_slides(&ctx);
         self.keyboard_tick(&ctx);
         if let Some(at) = self.save_at {
             if at.elapsed() >= Duration::from_millis(400) {
