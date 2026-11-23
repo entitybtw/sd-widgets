@@ -604,7 +604,10 @@ fn field_ui(app: &mut App, ui: &mut Ui, t: &Tokens, id: &str, field: &AddonField
             }
             "number" => {
                 let mut n = value.as_f64().unwrap_or(0.0);
-                let mut drag = egui::DragValue::new(&mut n);
+                // A number field must not change when a scroll drag passes
+                // over it: the speed is zero, so dragging does nothing. A
+                // click still opens the field for typing.
+                let mut drag = egui::DragValue::new(&mut n).speed(0.0);
                 if let Some(min) = field.min {
                     drag = drag.range(min..=field.max.unwrap_or(f64::MAX));
                 }
