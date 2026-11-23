@@ -45,7 +45,10 @@
 - `addons_ui.rs` — the Addons page: import, enable, settings, themes, clocks and
   daemon action buttons.
 - `theme.rs` — Grid tokens, CSS variable parser, presets, backdrop, tiles,
-  arrows, switches, chips.
+  arrows, switches, chips. A slider is a rail painted by hand with a single
+  handle: only the knob senses the pointer, so a scroll that starts on the rail
+  moves the page instead of the value, and a drag that starts on the knob and
+  goes up or down does not change the number either.
 - `deck_view.rs` — the drawn Steam Deck and live control highlighting.
 - `binds.rs` — bind list, editor and capture.
 - `input.rs` — evdev reader, gestures and button codes.

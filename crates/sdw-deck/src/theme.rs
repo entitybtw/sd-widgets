@@ -537,8 +537,8 @@ pub fn apply(ctx: &egui::Context, dark: bool) {
         s.spacing.item_spacing = Vec2::new(12.0, 10.0) * density;
         s.spacing.button_padding = Vec2::new(18.0, 10.0) * density;
         s.spacing.interact_size.y = 42.0 * density;
-        // A sensible default for a slider that shares its row; the full-width
-        // ones set `slider_len` themselves.
+        // egui's own `Slider` is no longer used on the deck, but the spacing
+        // is kept for any widget that still reads it.
         s.spacing.slider_width = 220.0;
         s.text_styles = [
             (
@@ -1372,19 +1372,6 @@ pub fn slider(
     slider_ex(ui, t, label, value, range, fmt).0
 }
 
-/// egui's own `Slider` takes its length from `spacing.slider_width`, not from
-/// `add_sized`, so a wide row would leave a stubby 180 px track in the middle.
-/// Set the spacing before adding one.
-pub fn slider_len(ui: &mut Ui, width: f32) {
-    ui.spacing_mut().slider_width = width.max(90.0);
-    // The rail is painted with `widgets.inactive.bg_fill`, which is the card
-    // colour: on a card the unfilled part of the track disappears and a slider
-    // looks cut off at its handle. The trough takes the hairline colour, so the
-    // whole track reads as one bar with the accent fill on top of it.
-    let t = Tokens::get(ui.ctx());
-    ui.visuals_mut().widgets.inactive.bg_fill = t.line;
-}
-
 /// The slider with a second flag: `true` when the finger or mouse was let go,
 /// which is the moment to send a value to a remote device.
 pub fn slider_ex(
@@ -1473,7 +1460,6 @@ pub fn slider_ex_step_width(
 ) -> (bool, bool) {
     let (lo, hi) = (*range.start(), *range.end());
     let span = (hi - lo).max(f32::EPSILON);
-    let step = step.abs().max(f32::EPSILON);
     let height = 40.0;
     let width = width.max(160.0);
     let (row, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
@@ -1483,18 +1469,137 @@ pub fn slider_ex_step_width(
         egui::pos2(row.left() + label_w, row.center().y - 5.0),
         egui::pos2(row.right() - value_w, row.center().y + 5.0),
     );
-    let resp = ui.interact(
-        egui::Rect::from_min_max(
-            egui::pos2(track.left() - 6.0, row.top()),
-            egui::pos2(row.right(), row.bottom()),
-        ),
-        ui.id().with(("slider", label)),
-        Sense::click_and_drag(),
+    let id = ui.id().with(("slider", label));
+    let (changed, released, hot, _) = slider_knob(ui, track, row, id, lo, hi, step, value);
+    let p = ui.painter();
+    p.text(
+        egui::pos2(row.left(), row.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::new(12.5, FontFamily::Proportional),
+        t.muted,
     );
-    let mut changed = false;
-    if (resp.dragged() || resp.clicked()) {
+    paint_slider(ui, t, track, (*value - lo) / span, hot);
+    ui.painter().text(
+        egui::pos2(row.right(), row.center().y),
+        egui::Align2::RIGHT_CENTER,
+        fmt(*value),
+        FontId::new(12.5, FontFamily::Monospace),
+        if hot { t.strong } else { t.muted },
+    );
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    (changed, released)
+}
+
+/// The rail and the knob of a slider with no label and no value text: the
+/// compact form for rows that print their own number.
+///
+/// Returns `(changed, released, dragged)`. Only the knob is a handle, exactly
+/// as in [`slider_ex`], so a scroll that starts on the rail scrolls the page
+/// instead of changing the value.
+pub fn slider_bar(
+    ui: &mut Ui,
+    t: &Tokens,
+    width: f32,
+    height: f32,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+    step: f32,
+) -> (bool, bool, bool) {
+    let (lo, hi) = (*range.start(), *range.end());
+    let span = (hi - lo).max(f32::EPSILON);
+    let (row, _) =
+        ui.allocate_exact_size(Vec2::new(width.max(90.0), height.max(24.0)), Sense::hover());
+    let track = egui::Rect::from_min_max(
+        egui::pos2(row.left(), row.center().y - 5.0),
+        egui::pos2(row.right(), row.center().y + 5.0),
+    );
+    let id = ui.next_auto_id();
+    // The interact below registers under this id by hand, so the id must be
+    // spent here: otherwise the next widget in the same row would take it and
+    // the two would fight over the same drag.
+    ui.skip_ahead_auto_ids(1);
+    let (changed, released, hot, dragged) = slider_knob(ui, track, row, id, lo, hi, step, value);
+    paint_slider(ui, t, track, (*value - lo) / span, hot);
+    if hot {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    (changed, released, dragged)
+}
+
+/// Read a press or a drag on the knob of `track` in `row`. Only the knob senses
+/// the pointer: a finger on the rail belongs to the list, so a scroll never
+/// changes a value. The grab area is wider than the 12 px knob so a thumb finds
+/// it, but it stays a small target next to a rail of hundreds of pixels.
+///
+/// Returns `(changed, released, hot, dragged)`: the value moved, the drag just
+/// ended, the knob is hovered or held, and it is being dragged right now.
+fn slider_knob(
+    ui: &mut Ui,
+    track: egui::Rect,
+    row: egui::Rect,
+    id: egui::Id,
+    lo: f32,
+    hi: f32,
+    step: f32,
+    value: &mut f32,
+) -> (bool, bool, bool, bool) {
+    let span = (hi - lo).max(f32::EPSILON);
+    let step = step.abs().max(f32::EPSILON);
+    let kx = track.left() + track.width() * ((*value - lo) / span).clamp(0.0, 1.0);
+    let hit = egui::Rect::from_center_size(
+        egui::pos2(kx, row.center().y),
+        Vec2::new(40.0, row.height()),
+    )
+    .intersect(egui::Rect::from_min_max(
+        egui::pos2(track.left() - 10.0, row.top()),
+        egui::pos2(track.right() + 10.0, row.bottom()),
+    ));
+    let resp = ui.interact(hit, id, Sense::click_and_drag());
+    // Where inside the knob the finger landed. Without it the knob would jump
+    // to the finger's centre on the first frame of the drag.
+    let grab_id = id.with("grab");
+    // A drag that is going up or down is a scroll, not a value change. The
+    // direction is decided once, when the pointer has travelled a few pixels;
+    // after that a slightly diagonal slide keeps working as a slider. Without
+    // this a scroll that starts on a knob nudge the number by a step or two.
+    let mode_id = id.with("mode");
+    if resp.drag_started() || resp.clicked() {
         if let Some(pos) = resp.interact_pointer_pos() {
-            let nk = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
+            ui.data_mut(|d| {
+                d.insert_temp(grab_id, pos.x - kx);
+                d.insert_temp(mode_id, 0u8);
+            });
+        }
+    }
+    let mut changed = false;
+    if resp.dragged() || resp.clicked() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            if resp.dragged() {
+                let mode = ui.data(|d| d.get_temp::<u8>(mode_id)).unwrap_or(0);
+                // 0 = undecided, 1 = sliding, 2 = scrolling.
+                let mode = if mode == 0 {
+                    let d = resp.drag_delta();
+                    if d.length() < 3.0 {
+                        0
+                    } else if d.x.abs() > d.y.abs() * 1.2 {
+                        1
+                    } else {
+                        2
+                    }
+                } else {
+                    mode
+                };
+                ui.data_mut(|d| d.insert_temp(mode_id, mode));
+                if mode != 1 {
+                    let hot = resp.hovered();
+                    return (false, false, hot, resp.dragged());
+                }
+            }
+            let grab = ui.data(|d| d.get_temp::<f32>(grab_id)).unwrap_or(0.0);
+            let nk = ((pos.x - grab - track.left()) / track.width()).clamp(0.0, 1.0);
             let raw = lo + nk * span;
             // Snap to the slider's own step, counted from the low end, so the
             // value is exactly on the grid and shows the same number the user
@@ -1508,28 +1613,20 @@ pub fn slider_ex_step_width(
             }
         }
     }
-    let k = ((*value - lo) / span).clamp(0.0, 1.0);
-    let kx = track.left() + track.width() * k;
+    let hot = resp.hovered() || resp.dragged();
+    let released = resp.drag_stopped() || (changed && !resp.dragged());
+    (changed, released, hot, resp.dragged())
+}
+
+/// Paint the rail, the fill and the knob at `k` (0…1) along `track`.
+fn paint_slider(ui: &Ui, t: &Tokens, track: egui::Rect, k: f32, hot: bool) {
+    let kx = track.left() + track.width() * k.clamp(0.0, 1.0);
     let p = ui.painter();
-    p.text(
-        egui::pos2(row.left(), row.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        FontId::new(12.5, FontFamily::Proportional),
-        t.muted,
-    );
     p.rect_filled(track, t.r(0.0), t.well);
     p.rect_stroke(
         track,
         t.r(0.0),
-        Stroke::new(
-            1.0,
-            if resp.hovered() || resp.dragged() {
-                t.line_strong
-            } else {
-                t.line
-            },
-        ),
+        Stroke::new(1.0, if hot { t.line_strong } else { t.line }),
         egui::StrokeKind::Inside,
     );
     for step in 1..4 {
@@ -1549,37 +1646,15 @@ pub fn slider_ex_step_width(
             t.accent.gamma_multiply(0.55),
         );
     }
-    let knob = egui::Rect::from_center_size(egui::pos2(kx, row.center().y), Vec2::new(12.0, 26.0));
+    let knob =
+        egui::Rect::from_center_size(egui::pos2(kx, track.center().y), Vec2::new(12.0, 26.0));
     p.rect_filled(knob, t.r(0.0), t.accent);
     p.rect_stroke(
         knob,
         t.r(0.0),
-        Stroke::new(
-            1.5,
-            if resp.dragged() {
-                t.strong
-            } else {
-                t.line_strong
-            },
-        ),
+        Stroke::new(1.5, if hot { t.strong } else { t.line_strong }),
         egui::StrokeKind::Inside,
     );
-    p.text(
-        egui::pos2(row.right(), row.center().y),
-        egui::Align2::RIGHT_CENTER,
-        fmt(*value),
-        FontId::new(12.5, FontFamily::Monospace),
-        if resp.hovered() || resp.dragged() {
-            t.strong
-        } else {
-            t.muted
-        },
-    );
-    if resp.hovered() || resp.dragged() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
-    }
-    let released = resp.drag_stopped() || (changed && !resp.dragged());
-    (changed, released)
 }
 
 /// The same slider for whole numbers: the step is exactly one, so a drag can

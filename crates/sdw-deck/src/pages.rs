@@ -2562,10 +2562,16 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     .size(13.0)
                     .color(t.muted),
             );
-            theme::slider_len(ui, 150.0);
-            let r = ui
-                .add(egui::Slider::new(&mut app.deck_view.cfg.scale, 0.6..=1.4).show_value(false));
-            if r.drag_stopped() || r.lost_focus() {
+            let (_, released, _) = theme::slider_bar(
+                ui,
+                t,
+                150.0,
+                30.0,
+                &mut app.deck_view.cfg.scale,
+                0.6..=1.4,
+                0.01,
+            );
+            if released {
                 app.save();
             }
             theme::switch(ui, &mut app.deck_view.cfg.labels, t);
@@ -3669,19 +3675,23 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
                 // position
                 let length = if st.length > 1.0 { st.length } else { 1.0 };
-                let mut pos = app.media.seeking.unwrap_or(st.position).clamp(0.0, length);
+                let length_f = length as f32;
+                let mut pos_f = app.media.seeking.unwrap_or(st.position).clamp(0.0, length) as f32;
                 ui.spacing_mut().interact_size.y = 30.0;
-                theme::slider_len(ui, ui.available_width());
-                let r = ui.add_sized(
-                    [ui.available_width(), 30.0],
-                    egui::Slider::new(&mut pos, 0.0..=length)
-                        .show_value(false)
-                        .trailing_fill(true),
+                let (_, released, dragged) = theme::slider_bar(
+                    ui,
+                    t,
+                    ui.available_width(),
+                    30.0,
+                    &mut pos_f,
+                    0.0..=length_f,
+                    theme::auto_step(0.0, length_f),
                 );
-                if r.dragged() {
+                let pos = pos_f as f64;
+                if dragged {
                     app.media.seeking = Some(pos);
                 }
-                if r.drag_stopped() {
+                if released {
                     app.media_command("seek", pos);
                 }
                 ui.horizontal(|ui| {
@@ -3800,14 +3810,18 @@ pub fn media(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 let mut vol = st.volume.min(100) as i32;
                 // The value and the two buttons sit to the right of the
                 // slider; it must not take their room.
-                theme::slider_len(ui, row - 196.0);
-                let r = ui.add_sized(
-                    [(row - 196.0).max(120.0), 34.0],
-                    egui::Slider::new(&mut vol, 0..=100)
-                        .show_value(false)
-                        .trailing_fill(true),
+                let mut v = vol as f32;
+                let (_, released, _) = theme::slider_bar(
+                    ui,
+                    t,
+                    (row - 196.0).max(120.0),
+                    34.0,
+                    &mut v,
+                    0.0..=100.0,
+                    1.0,
                 );
-                if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                vol = v.round() as i32;
+                if released {
                     volume_call = Some(vol as f64);
                 }
                 ui.label(
@@ -4459,19 +4473,22 @@ fn ha_card(
                                 width - 60.0,
                                 34.0,
                                 |ui| {
-                                    theme::slider_len(ui, slider_w);
-                                    let r = ui.add_sized(
-                                        [slider_w, 34.0],
-                                        egui::Slider::new(&mut pct, 1..=100)
-                                            .step_by(1.0)
-                                            .show_value(false)
-                                            .trailing_fill(true),
+                                    let mut v = pct as f32;
+                                    let (_, released, dragged) = theme::slider_bar(
+                                        ui,
+                                        t,
+                                        slider_w,
+                                        34.0,
+                                        &mut v,
+                                        1.0..=100.0,
+                                        1.0,
                                     );
-                                    if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                                    pct = v.round() as i32;
+                                    if released {
                                         send = Some(pct.clamp(1, 100) as u8);
                                     }
                                     shown.set(pct);
-                                    dragging.set(r.dragged());
+                                    dragging.set(dragged);
                                 },
                                 |ui| {
                                     // While the finger moves, follow it;
@@ -4530,15 +4547,18 @@ fn ha_card(
                         ui.horizontal(|ui| {
                             ui.label(theme::icon(theme::icon::THERMOSTAT, 17.0, t.faint));
                             ui.spacing_mut().interact_size.y = 30.0;
-                            theme::slider_len(ui, width - 100.0);
-                            let r = ui.add_sized(
-                                [(width - 100.0).max(90.0), 30.0],
-                                egui::Slider::new(&mut k, min as i32..=max as i32)
-                                    .step_by(step as f64)
-                                    .show_value(false)
-                                    .trailing_fill(true),
+                            let mut kv = k as f32;
+                            let (_, released, _) = theme::slider_bar(
+                                ui,
+                                t,
+                                (width - 100.0).max(90.0),
+                                30.0,
+                                &mut kv,
+                                min as f32..=max as f32,
+                                step as f32,
                             );
-                            if r.drag_stopped() || (r.changed() && !r.dragged()) {
+                            k = kv.round() as i32;
+                            if released {
                                 actions.push(HaAction {
                                     call: ha_service(
                                         e,
@@ -4781,14 +4801,18 @@ fn ha_card(
                             // label that follows it in this row.
                             let used = (width - 220.0).max(90.0);
                             ui.spacing_mut().interact_size.y = 30.0;
-                            theme::slider_len(ui, used - 60.0);
-                            let r = ui.add_sized(
-                                [used - 60.0, 30.0],
-                                egui::Slider::new(&mut pos, 0..=100)
-                                    .show_value(false)
-                                    .trailing_fill(true),
+                            let mut pv = pos as f32;
+                            let (_, released, _) = theme::slider_bar(
+                                ui,
+                                t,
+                                used - 60.0,
+                                30.0,
+                                &mut pv,
+                                0.0..=100.0,
+                                1.0,
                             );
-                            if r.drag_stopped() {
+                            pos = pv.round() as i32;
+                            if released {
                                 actions.push(HaAction {
                                     call: ha_service(
                                         e,
@@ -4977,13 +5001,18 @@ fn ha_card(
                         if let Some(vol) = e.attributes.get("volume_level").and_then(|v| v.as_f64())
                         {
                             let mut pct = (vol * 100.0).round() as i32;
-                            theme::slider_len(ui, width - 80.0);
-                            let r = ui.add(
-                                egui::Slider::new(&mut pct, 0..=100)
-                                    .show_value(false)
-                                    .trailing_fill(true),
+                            let mut v = pct as f32;
+                            let (_, released, _) = theme::slider_bar(
+                                ui,
+                                t,
+                                width - 80.0,
+                                30.0,
+                                &mut v,
+                                0.0..=100.0,
+                                1.0,
                             );
-                            if r.drag_stopped() {
+                            pct = v.round() as i32;
+                            if released {
                                 actions.push(HaAction {
                                     call: ha_service(
                                         e,
@@ -5063,14 +5092,18 @@ fn ha_card(
                             .map(|v| v.round() as i32)
                             .unwrap_or(if on { 100 } else { 0 });
                         ui.spacing_mut().interact_size.y = 34.0;
-                        theme::slider_len(ui, width - 130.0);
-                        let r = ui.add_sized(
-                            [(width - 130.0).max(90.0), 34.0],
-                            egui::Slider::new(&mut pct, 0..=100)
-                                .show_value(false)
-                                .trailing_fill(true),
+                        let mut v = pct as f32;
+                        let (_, released, _) = theme::slider_bar(
+                            ui,
+                            t,
+                            (width - 130.0).max(90.0),
+                            34.0,
+                            &mut v,
+                            0.0..=100.0,
+                            1.0,
                         );
-                        if r.drag_stopped() {
+                        pct = v.round() as i32;
+                        if released {
                             actions.push(HaAction {
                                 call: ha_service(e, "set_percentage", json!({ "percentage": pct })),
                                 entity: e.entity_id.clone(),
