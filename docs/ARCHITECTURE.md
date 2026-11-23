@@ -36,8 +36,10 @@
   page transition), key input, screen sharing (`pump_share`: an egui screenshot,
   halved and JPEG-packed off the ui thread while the daemon asks for it).
   Notification cards are pulled aside on raw pointer input, before egui, so a
-  sideways swipe dismisses the card while a vertical drag still scrolls; the
-  read state lives only on the Deck, the daemon keeps the actual notifications.
+  sideways swipe dismisses the card while a vertical drag still scrolls. A card
+  is unread until it is tapped, swiped away or covered by "read all"; the badge
+  is recomputed from those cards, so the two never disagree. That state lives
+  only on the Deck, the daemon keeps the actual notifications.
 - `pages.rs` — home grid and every page, including the Look page.
 - `clock.rs` — the four clock renderers and their controls.
 - `addons_ui.rs` — the Addons page: import, enable, settings, themes, clocks and

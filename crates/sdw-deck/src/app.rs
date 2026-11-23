@@ -1518,6 +1518,7 @@ impl App {
         if finished.is_none()
             && theme::style().animations
             && !own
+            && !self.quick_open
             && !self.gamepad_on
             && !self.binds.capture
             && !self.touch_blocked
@@ -1543,7 +1544,22 @@ impl App {
             }
         }
         if let Some((spec, vel)) = finished {
-            if own {
+            if self.quick_open {
+                // The control centre covers the screen: a finger on it belongs
+                // to the panel, never to the page behind it. An upward swipe
+                // pulls the panel away; everything else is left alone. Without
+                // this the same touch turned a page under the open panel.
+                if spec.fingers == 1
+                    && spec.kind == GestureKind::Swipe
+                    && spec.dir == Some(SwipeDir::Up)
+                {
+                    self.quick_pull = 0.0;
+                    self.start_quick_settle(self.quick_height.max(1.0), false);
+                }
+                self.page_anchor = None;
+                self.page_slide = 0.0;
+                self.touch_blocked = true;
+            } else if own {
                 // The card took the gesture; make sure no preview is left.
                 self.page_anchor = None;
                 self.page_slide = 0.0;
@@ -2049,9 +2065,6 @@ impl App {
                         Cue::Back
                     },
                 );
-            }
-            if page == Page::Notifications {
-                self.read_all_notifs();
             }
             if page == Page::HomeAssistant {
                 self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
@@ -2897,16 +2910,13 @@ impl App {
 
     /// Drop a notification locally and on the computer.
     pub fn dismiss_notif(&mut self, id: u64) {
-        let live = self.notifications.iter().any(|n| n.id == id);
-        let was_read = self.notif_read.remove(&id);
+        self.notif_read.remove(&id);
         self.notifications.retain(|n| n.id != id);
         self.notif_log.retain(|n| n.id != id);
         self.popups.retain(|p| p.id != id);
-        // An unread notification that is swiped away is no longer waiting to
-        // be read, so the badge follows the list down.
-        if live && !was_read {
-            self.notif_unread = self.notif_unread.saturating_sub(1);
-        }
+        // A card that is gone cannot be unread, so the badge follows the list
+        // down on its own.
+        self.sync_notif_badge();
         if let Some(c) = self.client() {
             self.spawn(move || {
                 Task::Msg(
@@ -2918,13 +2928,36 @@ impl App {
         }
     }
 
+    /// How many live notifications still carry the unread mark.
+    pub fn unread_notifs(&self) -> u32 {
+        self.notifications
+            .iter()
+            .filter(|n| !self.notif_read.contains(&n.id))
+            .count() as u32
+    }
+
+    /// Recompute the badge from the cards. The counter is never carried on its
+    /// own: a dismissal, a swipe, a tap and "read all" all end here, so the
+    /// number and the marks can never drift apart.
+    fn sync_notif_badge(&mut self) {
+        self.notif_unread = self.unread_notifs();
+    }
+
+    /// Mark one notification read, as tapping or activating it in the panel
+    /// does. The badge follows.
+    pub fn mark_notif_read(&mut self, id: u64) {
+        if self.notif_read.insert(id) {
+            self.sync_notif_badge();
+        }
+    }
+
     /// Mark every notification as read: the badge goes away and the unread
     /// markers on the cards fade. Nothing is dismissed — a swipe or "clear"
     /// does that.
     pub fn read_all_notifs(&mut self) {
-        self.notif_unread = 0;
         self.notif_read
             .extend(self.notifications.iter().map(|n| n.id));
+        self.sync_notif_badge();
         // Reading everything also puts the floating popups away: they were the
         // same unread notifications.
         self.popups.clear();
@@ -3009,6 +3042,7 @@ impl App {
     /// desktop notification would do. The row leaves the deck only when the
     /// computer confirms, so a failed tap does not eat the notification.
     pub fn activate_notif(&mut self, id: u64) {
+        self.popups.retain(|p| p.id != id);
         let Some(c) = self.client() else {
             self.toast(
                 t!(self.lang, "нет активного компьютера", "no active computer"),
@@ -3016,6 +3050,9 @@ impl App {
             );
             return;
         };
+        // Opening it on the computer is as good as reading it here; a tap that
+        // could not reach the computer leaves the card unread.
+        self.mark_notif_read(id);
         self.spawn(move || Task::NotifActivated {
             id,
             result: c
@@ -4464,6 +4501,8 @@ impl App {
                 self.notifications.retain(|n| have.contains(&n.id));
                 let live: HashSet<u64> = self.notif_log.iter().map(|n| n.id).collect();
                 self.notif_art.retain(|id, _| live.contains(id));
+                self.notif_read.retain(|id| live.contains(id));
+                self.sync_notif_badge();
             }
             Task::NotifLog(Err(e)) => {
                 self.notif_log_pending = false;
@@ -4502,14 +4541,13 @@ impl App {
                 let live: HashSet<u64> = self.notifications.iter().map(|n| n.id).collect();
                 self.notif_art.retain(|id, _| live.contains(id));
                 self.notif_read.retain(|id| live.contains(id));
-                if self.page == Page::Notifications {
-                    self.read_all_notifs();
-                } else {
-                    self.notif_unread = self.notif_unread.saturating_add(added);
-                    if added > 0 {
-                        sound::play(&self.cfg.sound, Cue::Notify);
-                    }
+                // A card starts unread wherever it arrives; only a tap, a swipe
+                // or "read all" changes that. The page being open is not a
+                // reading, otherwise its own button could never do anything.
+                if added > 0 && self.page != Page::Notifications {
+                    sound::play(&self.cfg.sound, Cue::Notify);
                 }
+                self.sync_notif_badge();
             }
             Task::Notifications(Err(_)) => {
                 self.notif_pending = false;

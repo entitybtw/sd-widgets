@@ -1364,10 +1364,15 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
 
     // A dim layer behind the panel; a tap on it closes the panel. It fades out
     // together with the panel instead of vanishing on the closing frame.
+    //
+    // It sits at the very front, above the dock, the arrows and every other
+    // floating control: while the panel is up it is the only thing on the
+    // screen a finger may reach, so a tap or a swipe never acts on the page
+    // behind the shade.
     if reveal > 0.001 {
         egui::Area::new(egui::Id::new("deck-quick-shade"))
             .fixed_pos(rect.min)
-            .order(egui::Order::Middle)
+            .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 let sense = if app.quick_open {
                     Sense::click()
@@ -3221,7 +3226,9 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 });
             }
         }
-        if theme::ghost(ui, t!(app.lang, "прочитать все", "read all"), t).clicked() {
+        if app.notif_unread > 0
+            && theme::ghost(ui, t!(app.lang, "прочитать все", "read all"), t).clicked()
+        {
             app.read_all_notifs();
         }
         if !app.notif_log.is_empty()
@@ -3244,6 +3251,7 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
             app.notif_leaving.clear();
             app.notif_drag = None;
             app.notif_last_id = 0;
+            app.notif_unread = 0;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if let Some(s) = &app.status {
