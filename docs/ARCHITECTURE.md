@@ -85,7 +85,13 @@
 
 - `server.rs` — `tiny_http` router, auth middleware, all REST handlers.
 - `state.rs` — shared state, logger, job manager, Home Assistant runtime.
-- `viiper.rs` — VIIPER client, pad lifecycle, password handling.
+- `viiper.rs` — VIIPER client, pad lifecycle, password handling. The API key
+  lives where the running server reads it: `/etc/viiper/viiper.key.txt` for a
+  root system service, otherwise `$XDG_CONFIG_HOME/github.com/Alia5/viiper/`.
+  A root service's file is unreadable to the daemon, so the password typed into
+  the settings is what the client uses; a key left in the user's directory is
+  ignored while a root server runs, because it belongs to another server and
+  would only earn a 401.
 - `monitor.rs` — monitor creation per backend, layout, config patching, capture,
   RFB client, frame buffer. niri gets a native virtual output when the running
   compositor offers `create-virtual-output` (biri), otherwise a VKMS connector.

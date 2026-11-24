@@ -1668,12 +1668,15 @@ impl App {
                     .clicked()
                 {
                     let pass = self.setup_viiper_pass.trim().to_string();
-                    let _ = self.state.viiper.write_key(&pass);
+                    let written = self.state.viiper.write_key(&pass);
                     self.save(|c| c.viiper.password = pass);
-                    self.toast(
-                        t!(self.lang, "пароль viiper сохранён", "viiper password saved"),
-                        true,
-                    );
+                    match written {
+                        Ok(()) => self.toast(
+                            t!(self.lang, "пароль viiper сохранён", "viiper password saved"),
+                            true,
+                        ),
+                        Err(e) => self.toast(e, false),
+                    }
                 }
             });
         });
@@ -2309,19 +2312,36 @@ impl App {
                     .clicked()
                 {
                     let pass = self.viiper_pass.trim().to_string();
-                    let _ = self.state.viiper.write_key(&pass);
+                    let written = self.state.viiper.write_key(&pass);
                     self.save(|c| c.viiper.password = pass);
-                    self.toast(
-                        t!(self.lang, "пароль viiper сохранён", "viiper password saved"),
-                        true,
-                    );
+                    match written {
+                        Ok(()) => self.toast(
+                            t!(self.lang, "пароль viiper сохранён", "viiper password saved"),
+                            true,
+                        ),
+                        Err(e) => self.toast(e, false),
+                    }
                 }
                 small(
                     ui,
                     &format!(
                         "{} · {}",
                         s.viiper.key_path,
-                        if s.viiper.password_set {
+                        if s.viiper.system_service {
+                            if s.viiper.password_set {
+                                t!(
+                                    self.lang,
+                                    "служба root · пароль задан здесь, файл ключа меняется через sudo",
+                                    "root service · the password is set here, the key file changes through sudo"
+                                )
+                            } else {
+                                t!(
+                                    self.lang,
+                                    "служба root · вставьте пароль из этого файла (sudo cat)",
+                                    "root service · paste the password from this file (sudo cat)"
+                                )
+                            }
+                        } else if s.viiper.password_set {
                             t!(self.lang, "ключ найден", "key found")
                         } else {
                             t!(

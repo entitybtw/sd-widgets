@@ -328,14 +328,75 @@ fn running_as_root() -> bool {
     }
 }
 
+/// True when a VIIPER server runs as root, typically its own system service.
+///
+/// Root VIIPER keeps its API key in `/etc/viiper/viiper.key.txt`, a file an
+/// unprivileged daemon can neither read nor write. A key left in the user's
+/// config directory then belongs to some other, stopped server: using it would
+/// only fail the handshake, and showing it would point at the wrong file.
+#[cfg(target_os = "linux")]
+pub fn viiper_system_service() -> bool {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    if let Ok(slot) = CACHE.lock() {
+        if let Some((at, value)) = *slot {
+            if at.elapsed() < Duration::from_secs(5) {
+                return value;
+            }
+        }
+    }
+    let found = root_viiper_process();
+    if let Ok(mut slot) = CACHE.lock() {
+        *slot = Some((Instant::now(), found));
+    }
+    found
+}
+
+#[cfg(target_os = "linux")]
+fn root_viiper_process() -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let dir = entry.path();
+        let comm = std::fs::read_to_string(dir.join("comm")).unwrap_or_default();
+        if comm.trim() != "viiper" {
+            continue;
+        }
+        let status = std::fs::read_to_string(dir.join("status")).unwrap_or_default();
+        let root = status.lines().any(|line| {
+            line.strip_prefix("Uid:")
+                .and_then(|rest| rest.split_whitespace().next())
+                == Some("0")
+        });
+        if root {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn viiper_system_service() -> bool {
+    false
+}
+
 /// Where VIIPER stores its API key.
 ///
 /// VIIPER itself uses `/etc/viiper` when the server runs as root and the XDG
-/// config directory otherwise, so the daemon must look in the same place.
+/// config directory otherwise, so the daemon must look in the same place. A
+/// root server may be someone else's service while this daemon runs as a user,
+/// so a running root VIIPER decides the path too, not only our own uid.
 pub fn viiper_key_path() -> PathBuf {
     #[cfg(target_os = "linux")]
     {
-        if running_as_root() {
+        if running_as_root() || viiper_system_service() {
             return PathBuf::from("/etc/viiper/viiper.key.txt");
         }
         sdw_core::util::config_dir()
@@ -362,6 +423,12 @@ pub fn viiper_key_paths() -> Vec<PathBuf> {
     let mut out = vec![viiper_key_path()];
     #[cfg(target_os = "linux")]
     {
+        // A running root service keeps the key where this daemon cannot read
+        // it. A file in the user's directory then belongs to a server that is
+        // not running, and feeding it to the root server only earns a 401.
+        if viiper_system_service() {
+            return out;
+        }
         let mut add = |p: PathBuf| {
             if !out.contains(&p) {
                 out.push(p);

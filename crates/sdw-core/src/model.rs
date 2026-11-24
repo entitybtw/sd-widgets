@@ -274,6 +274,10 @@ pub struct ViiperStatus {
     pub usb_addr: String,
     pub password_set: bool,
     pub key_path: String,
+    /// A root VIIPER service owns the key file; the daemon can only use a
+    /// password typed into its own settings.
+    #[serde(default)]
+    pub system_service: bool,
     pub usbip_installed: bool,
     pub auto_start: bool,
     pub error: String,

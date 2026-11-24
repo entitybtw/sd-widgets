@@ -138,16 +138,23 @@ impl ViiperManager {
     pub fn write_key(&self, password: &str) -> Result<(), String> {
         let path = self.key_path();
         let password = password.trim();
+        let failed = |e: std::io::Error| {
+            format!(
+                "не удалось записать {}: {e}. Пароль сохранён в настройках демона \
+                 и используется для подключения; ключ службы меняется через sudo.",
+                path.display()
+            )
+        };
         if password.is_empty() {
             if path.exists() {
-                std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+                std::fs::remove_file(&path).map_err(failed)?;
             }
             return Ok(());
         }
         if let Some(parent) = path.parent() {
-            sdw_core::util::ensure_dir(parent).map_err(|e| e.to_string())?;
+            sdw_core::util::ensure_dir(parent).map_err(failed)?;
         }
-        sdw_core::util::atomic_write(&path, password.as_bytes()).map_err(|e| e.to_string())?;
+        sdw_core::util::atomic_write(&path, password.as_bytes()).map_err(failed)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -225,9 +232,18 @@ impl ViiperManager {
         };
         let mut error = self.error();
         if !running && error.is_empty() && Self::port_open(cfg) {
+            let where_key = if config::viiper_system_service() {
+                format!(
+                    "Ключ службы root: {} — прочитать его можно только через \
+                     sudo cat, поэтому проще вставить пароль ниже.",
+                    key_path.display()
+                )
+            } else {
+                format!("Ключ можно прочитать в {}.", key_path.display())
+            };
             error = format!(
-                "Порт {} занят, но VIIPER не принял подключение без пароля.\
-                 Укажите пароль VIIPER ниже или скопируйте ключ из /etc/viiper/viiper.key.txt.",
+                "Порт {} занят, но VIIPER не принял подключение. \
+                 Введите пароль VIIPER ниже. {where_key}",
                 cfg.viiper.api_addr
             );
         }
@@ -239,6 +255,8 @@ impl ViiperManager {
             usb_addr: cfg.viiper.usb_addr.clone(),
             password_set,
             key_path: key_path.display().to_string(),
+            system_service: config::viiper_system_service()
+                && !self.started_by_us.load(Ordering::Relaxed),
             usbip_installed: sdw_core::util::has("usbip"),
             auto_start: cfg.viiper.auto_start,
             error,
@@ -260,11 +278,14 @@ impl ViiperManager {
         // Starting a second server would only produce a confusing bind error.
         if Self::port_open(cfg) {
             let key = self.key(cfg);
+            let key_path = self.key_path();
             let msg = if key.is_empty() {
                 format!(
                     "VIIPER уже слушает {}, но требует авторизацию. \
-                     Введите пароль VIIPER в этом разделе (его можно прочитать в /etc/viiper/viiper.key.txt).",
-                    cfg.viiper.api_addr
+                     Введите пароль VIIPER в этом разделе: ключ лежит в {} \
+                     (у службы root его можно прочитать только через sudo cat).",
+                    cfg.viiper.api_addr,
+                    key_path.display()
                 )
             } else {
                 format!(
