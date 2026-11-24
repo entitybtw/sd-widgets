@@ -2954,13 +2954,36 @@ impl App {
     /// Mark every notification as read: the badge goes away and the unread
     /// markers on the cards fade. Nothing is dismissed — a swipe or "clear"
     /// does that.
+    ///
+    /// Both lists the deck holds are covered: the live one and the history it
+    /// fetched. A record that only reached the history (an older notification
+    /// the live list no longer kept) still counts as read, so pressing this
+    /// twice can never leave a second batch behind.
     pub fn read_all_notifs(&mut self) {
-        self.notif_read
-            .extend(self.notifications.iter().map(|n| n.id));
+        let was = self.notif_unread;
+        let ids: Vec<u64> = self
+            .notifications
+            .iter()
+            .map(|n| n.id)
+            .chain(self.notif_log.iter().map(|n| n.id))
+            .collect();
+        self.notif_read.extend(ids);
         self.sync_notif_badge();
         // Reading everything also puts the floating popups away: they were the
         // same unread notifications.
         self.popups.clear();
+        // Say so. The cards only step back a little, and a press that leaves
+        // the list looking the same is what made this feel broken.
+        if was > 0 {
+            self.toast(
+                t!(
+                    self.lang,
+                    "все уведомления прочитаны",
+                    "all notifications read"
+                ),
+                true,
+            );
+        }
     }
 
     /// Whether this notification has been read already.

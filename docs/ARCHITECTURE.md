@@ -40,6 +40,9 @@
   is unread until it is tapped, swiped away or covered by "read all"; the badge
   is recomputed from those cards, so the two never disagree. That state lives
   only on the Deck, the daemon keeps the actual notifications.
+  The control centre is an `egui::Modal`: its dim layer lives inside the same
+  egui layer as the panel, so a tap outside closes it and no area can ever end
+  up between the dim layer and the panel and swallow a button press.
 - `pages.rs` — home grid and every page, including the Look page.
 - `clock.rs` — the four clock renderers and their controls.
 - `addons_ui.rs` — the Addons page: import, enable, settings, themes, clocks and

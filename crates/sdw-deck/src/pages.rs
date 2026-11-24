@@ -1362,388 +1362,371 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
     let mut close = false;
     let mut shade_clicked = false;
 
-    // A dim layer behind the panel; a tap on it closes the panel. It fades out
-    // together with the panel instead of vanishing on the closing frame.
-    //
-    // It sits at the very front, above the dock, the arrows and every other
-    // floating control: while the panel is up it is the only thing on the
-    // screen a finger may reach, so a tap or a swipe never acts on the page
-    // behind the shade.
-    if reveal > 0.001 {
-        egui::Area::new(egui::Id::new("deck-quick-shade"))
-            .fixed_pos(rect.min)
-            .order(egui::Order::Foreground)
-            .show(ctx, |ui| {
-                let sense = if app.quick_open {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                };
-                let (_, resp) = ui.allocate_exact_size(rect.size(), sense);
-                ui.painter().rect_filled(
-                    rect,
-                    CornerRadius::ZERO,
-                    Color32::from_black_alpha((96.0 * reveal).round() as u8),
-                );
-                if resp.clicked() {
-                    close = true;
-                    shade_clicked = true;
-                }
-            });
-    }
-
     let mut jump_notif = false;
     let mut dismiss: Option<u64> = None;
     let mut activate: Option<u64> = None;
-    let panel = egui::Area::new(egui::Id::new("deck-quick-panel"))
+    // The panel is a modal: the dim layer is drawn inside the same egui layer
+    // as the panel, and a tap on it arrives as the modal's backdrop. Two areas
+    // at the same order (a separate shade and the panel) were a trap: pressing
+    // the shade moved it above the panel for good, and from then on every press
+    // inside the panel went to the shade and closed it instead of reaching a
+    // button — exactly how a working "read all" looked dead. A modal's backdrop
+    // can never get above its own content, and it also keeps the dock, the
+    // arrows and the page behind out of reach while the panel is up.
+    let frame = egui::Frame::new()
+        .fill(if t.dark {
+            Color32::from_rgba_premultiplied(0x12, 0x18, 0x20, (252.0 * reveal) as u8)
+        } else {
+            Color32::from_rgba_premultiplied(0xf7, 0xf9, 0xfc, (252.0 * reveal) as u8)
+        })
+        .stroke(Stroke::new(
+            1.0,
+            t.line_strong.gamma_multiply(reveal.max(0.15)),
+        ))
+        .corner_radius(CornerRadius::ZERO)
+        .inner_margin(Margin::symmetric(18, 12));
+    let area = egui::Area::new(egui::Id::new("deck-quick-panel"))
         .fixed_pos(pos)
         .order(egui::Order::Foreground)
         // The panel has to leave the screen when it is pulled up: with the
         // default constraint egui pinned it to the top edge and only the
         // fade was left, which is why the close looked like a snap.
         .constrain(false)
+        // The finger drags the panel through the raw pointer stream, not
+        // through egui: the area itself must not sense clicks.
+        .sense(egui::Sense::hover());
+    let panel = egui::Modal::new(egui::Id::new("deck-quick-panel"))
+        .area(area)
+        // The dim fades out with the panel instead of vanishing on the last
+        // frame of the close.
+        .backdrop_color(Color32::from_black_alpha((96.0 * reveal).round() as u8))
+        .frame(frame)
         .show(ctx, |ui| {
-            egui::Frame::new()
-                .fill(if t.dark {
-                    Color32::from_rgba_premultiplied(0x12, 0x18, 0x20, (252.0 * reveal) as u8)
-                } else {
-                    Color32::from_rgba_premultiplied(0xf7, 0xf9, 0xfc, (252.0 * reveal) as u8)
-                })
-                .stroke(Stroke::new(
-                    1.0,
-                    t.line_strong.gamma_multiply(reveal.max(0.15)),
-                ))
-                .corner_radius(CornerRadius::ZERO)
-                .inner_margin(Margin::symmetric(18, 12))
-                .show(ui, |ui| {
-                    ui.set_width(width - 36.0);
-                    ui.horizontal(|ui| {
-                        ui.label(theme::hud(
-                            t!(lang, "центр управления", "control center"),
-                            t.faint,
-                        ));
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if theme::icon_button(ui, theme::icon::CLOSE, t, 26.0, false).clicked()
-                            {
-                                close = true;
-                            }
-                            if theme::icon_button(ui, theme::icon::NOTIFICATIONS, t, 26.0, false)
-                                .clicked()
-                            {
-                                jump_notif = true;
-                            }
-                            ui.label(
-                                RichText::new(t!(
-                                    lang,
-                                    "стяните вниз сверху экрана",
-                                    "drag down from the top"
-                                ))
-                                .size(11.0)
-                                .color(t.faint),
-                            );
-                        });
-                    });
-                    ui.add_space(4.0);
-
-                    if app.cfg.viz.enabled && app.cfg.viz.shade {
-                        crate::viz::ui(
-                            ui,
-                            app,
-                            t,
-                            crate::viz::size(
-                                app,
-                                Some(Vec2::new(ui.available_width().min(420.0), 60.0)),
-                            ),
-                        );
-                        ui.add_space(6.0);
+            ui.set_width(width - 36.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::hud(
+                    t!(lang, "центр управления", "control center"),
+                    t.faint,
+                ));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::icon_button(ui, theme::icon::CLOSE, t, 26.0, false).clicked() {
+                        close = true;
                     }
-
-                    // The Deck's own sound and light.
-                    if let Some(level) = app.quick_volume {
-                        let mut volume = level as f32;
-                        let muted = app.quick_muted;
-                        let (_, released) = theme::slider_ex(
-                            ui,
-                            t,
-                            t!(lang, "громкость деки", "deck volume"),
-                            &mut volume,
-                            0.0..=100.0,
-                            |x| {
-                                if muted {
-                                    t!(lang, "выкл", "mute").to_string()
-                                } else {
-                                    format!("{}%", x.round() as u8)
-                                }
-                            },
-                        );
-                        if released {
-                            app.quick_set_volume(volume.round() as u8);
-                        } else if volume.round() as u8 != level {
-                            app.quick_volume = Some(volume.round() as u8);
-                        }
-                    } else {
-                        theme::small(
-                            ui,
-                            t!(
-                                lang,
-                                "на деке не найден звуковой сервер (wpctl или pactl).",
-                                "no sound server was found on the deck (wpctl or pactl)."
-                            ),
-                            t.muted,
-                        );
+                    if theme::icon_button(ui, theme::icon::NOTIFICATIONS, t, 26.0, false).clicked()
+                    {
+                        jump_notif = true;
                     }
-
-                    if let Some(level) = app.quick_brightness {
-                        let mut value = level as f32;
-                        let (_, released) = theme::slider_ex(
-                            ui,
-                            t,
-                            t!(lang, "яркость", "brightness"),
-                            &mut value,
-                            1.0..=100.0,
-                            |x| format!("{}%", x.round() as u8),
-                        );
-                        if released {
-                            app.quick_set_brightness(value.round() as u8);
-                        } else if value.round() as u8 != level {
-                            app.quick_brightness = Some(value.round() as u8);
-                        }
-                    }
-
-                    // The deck's screen going to the computer is a switch here,
-                    // not a hidden setting: one press stops the share and the
-                    // sound, and the daemon's page goes dark.
-                    ui.horizontal(|ui| {
-                        let mut share = app.cfg.mirror_deck;
-                        if theme::switch(ui, &mut share, t).changed() {
-                            app.cfg.mirror_deck = share;
-                            app.save();
-                            if !share {
-                                app.stop_share();
-                            }
-                        }
-                        ui.label(
-                            RichText::new(t!(
-                                lang,
-                                "трансляция экрана на пк",
-                                "share this screen with the pc"
-                            ))
-                            .size(13.0)
-                            .color(t.muted),
-                        );
-                    });
-                    ui.add_space(4.0);
-
-                    ui.horizontal(|ui| {
-                        let muted = app.quick_muted;
-                        let glyph = if muted {
-                            theme::icon::VOLUME_OFF
-                        } else {
-                            theme::icon::VOLUME_UP
-                        };
-                        if theme::icon_button(ui, glyph, t, 28.0, muted).clicked() {
-                            app.quick_toggle_mute();
-                        }
-                        if theme::ghost(ui, t!(lang, "убавить", "quieter"), t).clicked() {
-                            let next = app.quick_volume.unwrap_or(30).saturating_sub(5);
-                            app.quick_set_volume(next);
-                        }
-                        if theme::ghost(ui, t!(lang, "прибавить", "louder"), t).clicked() {
-                            let next = (app.quick_volume.unwrap_or(30) + 5).min(100);
-                            app.quick_set_volume(next);
-                        }
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if theme::ghost(ui, t!(lang, "все уведомления", "all notifications"), t)
-                                .clicked()
-                            {
-                                jump_notif = true;
-                            }
-                            if app.notif_unread > 0 {
-                                if theme::ghost(ui, t!(lang, "прочитать все", "read all"), t)
-                                    .clicked()
-                                {
-                                    app.read_all_notifs();
-                                }
-                            }
-                        });
-                    });
-
-                    ui.add_space(6.0);
-                    if app.notifications.is_empty() {
-                        theme::small(ui, t!(lang, "уведомлений нет", "no notifications"), t.muted);
-                        return;
-                    }
-                    ui.label(theme::hud(
-                        &format!(
-                            "{} · {}",
-                            t!(lang, "уведомления", "notifications"),
-                            app.notifications.len()
-                        ),
-                        t.faint,
-                    ));
-                    ui.add_space(2.0);
-                    // How many cards fit between here and the bottom edge.
-                    // At a larger UI scale the screen holds far fewer points,
-                    // and a fixed four pushed the buttons under the edge:
-                    // the panel could not be used at all. The list answers
-                    // to the room that is really left, measured from the
-                    // cards the last frame drew.
-                    let list_top = ui.cursor().top();
-                    // Eight points to the screen edge and twelve of the frame's
-                    // own bottom margin stay free, so a row never ends flush
-                    // against the edge.
-                    let room = (rect.bottom() - 20.0 - list_top).max(0.0);
-                    let card_h = app.quick_card_h.clamp(48.0, 240.0);
-                    let rows = ((room / card_h).floor() as usize).clamp(1, 4);
-                    let newest: Vec<Notification> =
-                        app.notifications.iter().rev().take(rows).cloned().collect();
-                    let mut drawn = 0usize;
-                    let mut span_top = list_top;
-                    let mut span_bottom = list_top;
-                    for n in newest {
-                        let color = notification_color(t, &n);
-                        let (off, alpha) = app.notif_slide(n.id);
-                        let leaving = app.notif_leaving(n.id);
-                        let unread = !app.notif_seen(n.id);
-                        let mut close_rect: Option<Rect> = None;
-                        let card =
-                            notification_slot(ui, n.id, "deck-quick-slot", off, alpha, |ui| {
-                                egui::Frame::new()
-                                    .fill(t.card)
-                                    .stroke(Stroke::new(1.0, color.gamma_multiply(0.35)))
-                                    .corner_radius(CornerRadius::ZERO)
-                                    .inner_margin(Margin::symmetric(14, 11))
-                                    // A tap anywhere on the card opens it on the
-                                    // computer, the way clicking it there would.
-                                    .show(ui, |ui| {
-                                        ui.set_width(ui.available_width());
-                                        ui.horizontal(|ui| {
-                                            ui.label(theme::icon(
-                                                notif_glyph(&n.app, &n.icon),
-                                                20.0,
-                                                color,
-                                            ));
-                                            ui.add_space(3.0);
-                                            ui.vertical(|ui| {
-                                                ui.horizontal(|ui| {
-                                                    ui.label(
-                                                        RichText::new(if n.app.is_empty() {
-                                                            t!(lang, "уведомление", "notification")
-                                                        } else {
-                                                            &n.app
-                                                        })
-                                                        .size(10.5)
-                                                        .strong()
-                                                        .color(color),
-                                                    );
-                                                    if unread {
-                                                        unread_marker(ui, t);
-                                                    }
-                                                    ui.with_layout(
-                                                        Layout::right_to_left(Align::Center),
-                                                        |ui| {
-                                                            let close = theme::icon_button(
-                                                                ui,
-                                                                theme::icon::CLOSE,
-                                                                t,
-                                                                22.0,
-                                                                false,
-                                                            );
-                                                            close_rect = Some(close.rect);
-                                                            if close.clicked() {
-                                                                dismiss = Some(n.id);
-                                                            }
-                                                            ui.label(
-                                                                RichText::new(age(n.ts, lang))
-                                                                    .family(FontFamily::Monospace)
-                                                                    .size(10.0)
-                                                                    .color(t.faint),
-                                                            );
-                                                        },
-                                                    );
-                                                });
-                                                ui.add(
-                                                    egui::Label::new(
-                                                        RichText::new(if n.summary.is_empty() {
-                                                            &n.app
-                                                        } else {
-                                                            &n.summary
-                                                        })
-                                                        .size(15.0)
-                                                        .strong()
-                                                        .color(t.strong),
-                                                    )
-                                                    .truncate(),
-                                                );
-                                                if !n.body.is_empty() {
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            RichText::new(util::truncate(
-                                                                &n.body, 160,
-                                                            ))
-                                                            .size(12.0)
-                                                            .color(t.muted),
-                                                        )
-                                                        .wrap(),
-                                                    );
-                                                }
-                                            });
-                                        });
-                                    })
-                                    .response
-                            });
-                        if leaving {
-                            // The card is already sliding out: it takes no taps.
-                            if drawn == 0 {
-                                span_top = card.rect.top();
-                            }
-                            span_bottom = card.rect.bottom();
-                            drawn += 1;
-                            ui.add_space(4.0);
-                            continue;
-                        }
-                        app.notif_rows.push((n.id, card.rect));
-                        let hit = ui.interact(
-                            card.rect,
-                            egui::Id::new(("deck-quick-notif", n.id)),
-                            Sense::click(),
-                        );
-                        if hit.clicked() {
-                            // The card's click area sits over the close button;
-                            // the button keeps its meaning by where the finger
-                            // landed.
-                            let on_close = hit
-                                .interact_pointer_pos()
-                                .is_some_and(|pos| close_rect.is_some_and(|r| r.contains(pos)));
-                            if on_close {
-                                dismiss = Some(n.id);
-                            } else {
-                                activate = Some(n.id);
-                            }
-                        }
-                        if hit.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        hit.on_hover_text(t!(
+                    ui.label(
+                        RichText::new(t!(
                             lang,
-                            "нажмите, чтобы открыть на компьютере",
-                            "tap to open it on the computer"
-                        ));
-                        if drawn == 0 {
-                            span_top = card.rect.top();
-                        }
-                        span_bottom = card.rect.bottom();
-                        drawn += 1;
-                        ui.add_space(4.0);
-                    }
-                    // Remember the real card height for the next opening: text
-                    // wraps differently in every language and at every width,
-                    // so a constant would be wrong somewhere.
-                    if drawn > 0 {
-                        app.quick_card_seen = (span_bottom - span_top + 4.0) / drawn as f32;
-                    }
+                            "стяните вниз сверху экрана",
+                            "drag down from the top"
+                        ))
+                        .size(11.0)
+                        .color(t.faint),
+                    );
                 });
+            });
+            ui.add_space(4.0);
+
+            if app.cfg.viz.enabled && app.cfg.viz.shade {
+                crate::viz::ui(
+                    ui,
+                    app,
+                    t,
+                    crate::viz::size(app, Some(Vec2::new(ui.available_width().min(420.0), 60.0))),
+                );
+                ui.add_space(6.0);
+            }
+
+            // The Deck's own sound and light.
+            if let Some(level) = app.quick_volume {
+                let mut volume = level as f32;
+                let muted = app.quick_muted;
+                let (_, released) = theme::slider_ex(
+                    ui,
+                    t,
+                    t!(lang, "громкость деки", "deck volume"),
+                    &mut volume,
+                    0.0..=100.0,
+                    |x| {
+                        if muted {
+                            t!(lang, "выкл", "mute").to_string()
+                        } else {
+                            format!("{}%", x.round() as u8)
+                        }
+                    },
+                );
+                if released {
+                    app.quick_set_volume(volume.round() as u8);
+                } else if volume.round() as u8 != level {
+                    app.quick_volume = Some(volume.round() as u8);
+                }
+            } else {
+                theme::small(
+                    ui,
+                    t!(
+                        lang,
+                        "на деке не найден звуковой сервер (wpctl или pactl).",
+                        "no sound server was found on the deck (wpctl or pactl)."
+                    ),
+                    t.muted,
+                );
+            }
+
+            if let Some(level) = app.quick_brightness {
+                let mut value = level as f32;
+                let (_, released) = theme::slider_ex(
+                    ui,
+                    t,
+                    t!(lang, "яркость", "brightness"),
+                    &mut value,
+                    1.0..=100.0,
+                    |x| format!("{}%", x.round() as u8),
+                );
+                if released {
+                    app.quick_set_brightness(value.round() as u8);
+                } else if value.round() as u8 != level {
+                    app.quick_brightness = Some(value.round() as u8);
+                }
+            }
+
+            // The deck's screen going to the computer is a switch here,
+            // not a hidden setting: one press stops the share and the
+            // sound, and the daemon's page goes dark.
+            ui.horizontal(|ui| {
+                let mut share = app.cfg.mirror_deck;
+                if theme::switch(ui, &mut share, t).changed() {
+                    app.cfg.mirror_deck = share;
+                    app.save();
+                    if !share {
+                        app.stop_share();
+                    }
+                }
+                ui.label(
+                    RichText::new(t!(
+                        lang,
+                        "трансляция экрана на пк",
+                        "share this screen with the pc"
+                    ))
+                    .size(13.0)
+                    .color(t.muted),
+                );
+            });
+            ui.add_space(4.0);
+
+            ui.horizontal(|ui| {
+                let muted = app.quick_muted;
+                let glyph = if muted {
+                    theme::icon::VOLUME_OFF
+                } else {
+                    theme::icon::VOLUME_UP
+                };
+                if theme::icon_button(ui, glyph, t, 28.0, muted).clicked() {
+                    app.quick_toggle_mute();
+                }
+                if theme::ghost(ui, t!(lang, "убавить", "quieter"), t).clicked() {
+                    let next = app.quick_volume.unwrap_or(30).saturating_sub(5);
+                    app.quick_set_volume(next);
+                }
+                if theme::ghost(ui, t!(lang, "прибавить", "louder"), t).clicked() {
+                    let next = (app.quick_volume.unwrap_or(30) + 5).min(100);
+                    app.quick_set_volume(next);
+                }
+            });
+
+            ui.add_space(6.0);
+            // The notification actions sit on their own row. In the
+            // volume row a large font pushed them past the panel edge,
+            // and a widget clipped by its parent can no longer be
+            // pressed at all — which is exactly how "read all" looked
+            // broken. A wrapped row never clips.
+            ui.horizontal_wrapped(|ui| {
+                if app.notif_unread > 0
+                    && theme::ghost(ui, t!(lang, "прочитать все", "read all"), t).clicked()
+                {
+                    app.read_all_notifs();
+                }
+                if theme::ghost(ui, t!(lang, "все уведомления", "all notifications"), t).clicked()
+                {
+                    jump_notif = true;
+                }
+            });
+            if app.notifications.is_empty() {
+                theme::small(ui, t!(lang, "уведомлений нет", "no notifications"), t.muted);
+                return;
+            }
+            ui.label(theme::hud(
+                &format!(
+                    "{} · {}",
+                    t!(lang, "уведомления", "notifications"),
+                    app.notifications.len()
+                ),
+                t.faint,
+            ));
+            ui.add_space(2.0);
+            // How many cards fit between here and the bottom edge.
+            // At a larger UI scale the screen holds far fewer points,
+            // and a fixed four pushed the buttons under the edge:
+            // the panel could not be used at all. The list answers
+            // to the room that is really left, measured from the
+            // cards the last frame drew.
+            let list_top = ui.cursor().top();
+            // Eight points to the screen edge and twelve of the frame's
+            // own bottom margin stay free, so a row never ends flush
+            // against the edge.
+            let room = (rect.bottom() - 20.0 - list_top).max(0.0);
+            let card_h = app.quick_card_h.clamp(48.0, 240.0);
+            let rows = ((room / card_h).floor() as usize).clamp(1, 4);
+            let newest: Vec<Notification> =
+                app.notifications.iter().rev().take(rows).cloned().collect();
+            let mut drawn = 0usize;
+            let mut span_top = list_top;
+            let mut span_bottom = list_top;
+            for n in newest {
+                let color = notification_color(t, &n);
+                let (off, alpha) = app.notif_slide(n.id);
+                let leaving = app.notif_leaving(n.id);
+                let unread = !app.notif_seen(n.id);
+                // A read card steps back instead of looking untouched:
+                // the dot alone was too small a difference to see, so
+                // "read all" looked like it had done nothing.
+                let alpha = alpha * if unread { 1.0 } else { 0.6 };
+                let mut close_rect: Option<Rect> = None;
+                let card = notification_slot(ui, n.id, "deck-quick-slot", off, alpha, |ui| {
+                    egui::Frame::new()
+                        .fill(t.card)
+                        .stroke(Stroke::new(1.0, color.gamma_multiply(0.35)))
+                        .corner_radius(CornerRadius::ZERO)
+                        .inner_margin(Margin::symmetric(14, 11))
+                        // A tap anywhere on the card opens it on the
+                        // computer, the way clicking it there would.
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(theme::icon(notif_glyph(&n.app, &n.icon), 20.0, color));
+                                ui.add_space(3.0);
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(if n.app.is_empty() {
+                                                t!(lang, "уведомление", "notification")
+                                            } else {
+                                                &n.app
+                                            })
+                                            .size(10.5)
+                                            .strong()
+                                            .color(color),
+                                        );
+                                        if unread {
+                                            unread_marker(ui, t);
+                                        }
+                                        ui.with_layout(
+                                            Layout::right_to_left(Align::Center),
+                                            |ui| {
+                                                let close = theme::icon_button(
+                                                    ui,
+                                                    theme::icon::CLOSE,
+                                                    t,
+                                                    22.0,
+                                                    false,
+                                                );
+                                                close_rect = Some(close.rect);
+                                                if close.clicked() {
+                                                    dismiss = Some(n.id);
+                                                }
+                                                ui.label(
+                                                    RichText::new(age(n.ts, lang))
+                                                        .family(FontFamily::Monospace)
+                                                        .size(10.0)
+                                                        .color(t.faint),
+                                                );
+                                            },
+                                        );
+                                    });
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(if n.summary.is_empty() {
+                                                &n.app
+                                            } else {
+                                                &n.summary
+                                            })
+                                            .size(15.0)
+                                            .strong()
+                                            .color(t.strong),
+                                        )
+                                        .truncate(),
+                                    );
+                                    if !n.body.is_empty() {
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(util::truncate(&n.body, 160))
+                                                    .size(12.0)
+                                                    .color(t.muted),
+                                            )
+                                            .wrap(),
+                                        );
+                                    }
+                                });
+                            });
+                        })
+                        .response
+                });
+                if leaving {
+                    // The card is already sliding out: it takes no taps.
+                    if drawn == 0 {
+                        span_top = card.rect.top();
+                    }
+                    span_bottom = card.rect.bottom();
+                    drawn += 1;
+                    ui.add_space(4.0);
+                    continue;
+                }
+                app.notif_rows.push((n.id, card.rect));
+                let hit = ui.interact(
+                    card.rect,
+                    egui::Id::new(("deck-quick-notif", n.id)),
+                    Sense::click(),
+                );
+                if hit.clicked() {
+                    // The card's click area sits over the close button;
+                    // the button keeps its meaning by where the finger
+                    // landed.
+                    let on_close = hit
+                        .interact_pointer_pos()
+                        .is_some_and(|pos| close_rect.is_some_and(|r| r.contains(pos)));
+                    if on_close {
+                        dismiss = Some(n.id);
+                    } else {
+                        activate = Some(n.id);
+                    }
+                }
+                if hit.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                hit.on_hover_text(t!(
+                    lang,
+                    "нажмите, чтобы открыть на компьютере",
+                    "tap to open it on the computer"
+                ));
+                if drawn == 0 {
+                    span_top = card.rect.top();
+                }
+                span_bottom = card.rect.bottom();
+                drawn += 1;
+                ui.add_space(4.0);
+            }
+            // Remember the real card height for the next opening: text
+            // wraps differently in every language and at every width,
+            // so a constant would be wrong somewhere.
+            if drawn > 0 {
+                app.quick_card_seen = (span_bottom - span_top + 4.0) / drawn as f32;
+            }
         });
+    if panel.backdrop_response.clicked() {
+        close = true;
+        shade_clicked = true;
+    }
     // How far the panel has to rise to be fully out of sight, plus the 6 px
     // it sits below the top edge when open. A drag clamps to it and the settle
     // closes over it.
@@ -3365,6 +3348,9 @@ pub fn notifications(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 // The history is what the PC kept; its age says it all, so the
                 // unread marker belongs to the live list only.
                 let unread = !app.notif_hist && !app.notif_seen(n.id);
+                // A read card steps back, so the list visibly answers to
+                // "read all" instead of only losing an 11 px dot.
+                let alpha = alpha * if unread || app.notif_hist { 1.0 } else { 0.6 };
                 let lang = app.lang;
                 let mut close_rect: Option<Rect> = None;
                 let card = notification_slot(ui, n.id, "deck-notif-slot", off, alpha, |ui| {
