@@ -9,6 +9,7 @@ Start here, then open only the page of the task.
 | [`API.md`](API.md) | Every HTTP and UDP message the Deck and the daemon exchange. |
 | [`THEMES.md`](THEMES.md) | The 15-token palette, CSS variables, presets, custom packs, the Look page and top-bar scale. |
 | [`ADDONS.md`](ADDONS.md) | The addon package format, deck and daemon extensions, settings and security. |
+| [`LANGUAGE.md`](LANGUAGE.md) | Language packs: the TOML format, the template, where the folder is and how fallback works. |
 | [`MONITOR.md`](MONITOR.md) | The extra monitor: backends, positions, cursor capture and per-compositor notes. |
 | [`AUDIO.md`](AUDIO.md) | PC audio on the Deck: sources, confirmation, requirements and the streaming API. |
 

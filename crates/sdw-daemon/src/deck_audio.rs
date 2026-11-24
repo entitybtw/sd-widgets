@@ -2,8 +2,9 @@
 //!
 //! The deck records whatever it plays (`parec` on the monitor of its default
 //! output) and posts raw `s16le` chunks to `POST /api/v1/deck/audio`. This
-//! module hands them to one long-lived player process (`pw-cat` or `paplay`),
-//! so the sound starts quickly and stays in step with the picture.
+//! module hands them to one long-lived player process (`pw-cat` or `paplay` on
+//! Linux, `ffplay` on Windows), so the sound starts quickly and stays in step
+//! with the picture.
 //!
 //! Nothing is captured or played unless somebody on the computer is looking at
 //! the deck page: the deck only sends while the mirror is watched, and the
@@ -133,46 +134,76 @@ impl DeckAudio {
 /// The two tools disagree on the format name: `pw-cat` calls 16-bit
 /// little-endian "s16", `paplay` calls it "s16le".
 fn spawn(rate: u32, channels: u8) -> Result<Child, String> {
-    let mut candidates: Vec<(&str, Vec<String>)> = Vec::new();
-    if sdw_core::util::has("pw-cat") {
-        candidates.push((
-            "pw-cat",
-            vec![
-                "--playback".into(),
-                "--raw".into(),
-                "--format=s16".into(),
-                format!("--rate={rate}"),
-                format!("--channels={channels}"),
-                "-".into(),
-            ],
-        ));
-    }
-    if sdw_core::util::has("paplay") {
-        candidates.push((
-            "paplay",
-            vec![
-                "--raw".into(),
-                "--format=s16le".into(),
-                format!("--rate={rate}"),
-                format!("--channels={channels}"),
-                "--".into(),
-            ],
-        ));
-    }
-    let mut last = String::from("нужен pw-cat или paplay (PipeWire или PulseAudio)");
-    for (bin, args) in candidates {
-        match Command::new(bin)
-            .args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        {
-            Ok(child) => return Ok(child),
-            Err(e) => last = format!("{bin}: {e}"),
+    #[cfg(windows)]
+    {
+        // Windows has no pw-cat/paplay; ffplay reads the same raw stream from
+        // its standard input and goes straight to the default output.
+        if sdw_core::util::has("ffplay") {
+            return Command::new("ffplay")
+                .args([
+                    "-nodisp".to_string(),
+                    "-autoexit".to_string(),
+                    "-loglevel".to_string(),
+                    "quiet".to_string(),
+                    "-f".to_string(),
+                    "s16le".to_string(),
+                    "-ar".to_string(),
+                    rate.to_string(),
+                    "-ac".to_string(),
+                    channels.to_string(),
+                    "-".to_string(),
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("ffplay: {e}"));
         }
+        return Err("нужен ffplay (входит в ffmpeg)".into());
     }
-    Err(last)
+    #[cfg(not(windows))]
+    {
+        let mut candidates: Vec<(&str, Vec<String>)> = Vec::new();
+        if sdw_core::util::has("pw-cat") {
+            candidates.push((
+                "pw-cat",
+                vec![
+                    "--playback".into(),
+                    "--raw".into(),
+                    "--format=s16".into(),
+                    format!("--rate={rate}"),
+                    format!("--channels={channels}"),
+                    "-".into(),
+                ],
+            ));
+        }
+        if sdw_core::util::has("paplay") {
+            candidates.push((
+                "paplay",
+                vec![
+                    "--raw".into(),
+                    "--format=s16le".into(),
+                    format!("--rate={rate}"),
+                    format!("--channels={channels}"),
+                    "--".into(),
+                ],
+            ));
+        }
+        let mut last = String::from("нужен pw-cat или paplay (PipeWire или PulseAudio)");
+        for (bin, args) in candidates {
+            match Command::new(bin)
+                .args(&args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(child) => return Ok(child),
+                Err(e) => last = format!("{bin}: {e}"),
+            }
+        }
+        Err(last)
+    }
 }
 
 /// A background tick that closes an idle player and stops it at shutdown.

@@ -1,9 +1,16 @@
-//! Three languages, two appearances. UI strings are written next to their
-//! translations: `t!(lang, "Обзор", "Overview")` keeps Russian and English in
-//! sync and avoids a dictionary of missing keys. Ukrainian lives in the
-//! [`uk`] table, keyed by the Russian text.
+//! Three built-in languages plus any user pack. UI strings are written next to
+//! their translations: `t!(lang, "Обзор", "Overview")` keeps Russian and English
+//! in sync and avoids a dictionary of missing keys. Ukrainian lives in the
+//! [`uk`] table, keyed by the Russian text; a pack in the `lang` folder of the
+//! config directory can add any other language (see [`packs`]).
 
+mod packs;
 mod uk;
+
+pub use packs::{
+    active as active_pack, dir as pack_dir, errors as pack_errors, is_pack, list as pack_list,
+    load as load_packs, set_active as set_pack, template as pack_template,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +21,8 @@ pub enum Lang {
     Ru,
     En,
     Uk,
+    /// A user pack is active; its text comes from [`packs`].
+    Custom,
 }
 
 impl Lang {
@@ -24,6 +33,7 @@ impl Lang {
             Self::Ru => "ru",
             Self::En => "en",
             Self::Uk => "uk",
+            Self::Custom => "custom",
         }
     }
     pub fn label(self) -> &'static str {
@@ -31,6 +41,7 @@ impl Lang {
             Self::Ru => "Русский",
             Self::En => "English",
             Self::Uk => "Українська",
+            Self::Custom => "Custom",
         }
     }
     pub fn short(self) -> &'static str {
@@ -38,13 +49,23 @@ impl Lang {
             Self::Ru => "RU",
             Self::En => "EN",
             Self::Uk => "UK",
+            Self::Custom => "--",
         }
     }
+    /// The built-in language for a stored code. A code that matches an installed
+    /// pack gives [`Lang::Custom`]; packs must be loaded first (see
+    /// [`packs::load`]).
     pub fn from_code(code: &str) -> Self {
         match code.trim().to_ascii_lowercase().as_str() {
             "en" | "eng" | "english" => Self::En,
             "uk" | "ua" | "ukr" | "ukrainian" | "українська" => Self::Uk,
-            _ => Self::Ru,
+            other => {
+                if !other.is_empty() && is_pack(other) {
+                    Self::Custom
+                } else {
+                    Self::Ru
+                }
+            }
         }
     }
     /// The language a plain click cycles to.
@@ -52,7 +73,7 @@ impl Lang {
         match self {
             Self::Ru => Self::En,
             Self::En => Self::Uk,
-            Self::Uk => Self::Ru,
+            Self::Uk | Self::Custom => Self::Ru,
         }
     }
     pub fn is_ukrainian(self) -> bool {
@@ -64,9 +85,14 @@ impl Lang {
 /// for Ukrainian the row of the [`uk`] table; a pair without a Ukrainian row
 /// stays Russian until the table gets one.
 pub fn tr<'a>(lang: Lang, ru: &'a str, en: &'a str) -> &'a str {
+    // An active pack wins over the built-in table: the user picked it on
+    // purpose, and a line it does not translate falls back to English below.
+    if let Some(text) = packs::lookup(ru, en) {
+        return text;
+    }
     match lang {
         Lang::Ru => ru,
-        Lang::En => en,
+        Lang::En | Lang::Custom => en,
         Lang::Uk => uk::lookup(ru).unwrap_or(ru),
     }
 }

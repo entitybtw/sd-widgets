@@ -260,6 +260,8 @@ pub struct App {
     update_path: String,
     /// The new build is on disk and the running process is still the old one.
     update_installed: bool,
+    /// The release source field; empty keeps the built-in repository.
+    update_remote: String,
     last_update_check: Instant,
     update_auto_notified: bool,
 
@@ -509,6 +511,7 @@ impl App {
             update_total: 0,
             update_path: String::new(),
             update_installed: false,
+            update_remote: cfg.update_remote.clone(),
             last_update_check: Instant::now() - Duration::from_secs(86_400),
             update_auto_notified: false,
             install_sel,
@@ -729,7 +732,8 @@ impl App {
         }
         self.update_checking = true;
         self.update_error.clear();
-        self.spawn(|| TaskResult::Update(update::check()));
+        let remote = update::Remote::parse(&self.update_remote).unwrap_or_default();
+        self.spawn(move || TaskResult::Update(update::check_at(&remote)));
     }
 
     fn download_update(&mut self) {
@@ -2750,6 +2754,7 @@ impl App {
                                         MonitorBackend::Mirror,
                                         MonitorBackend::X11,
                                         MonitorBackend::Gdigrab,
+                                        MonitorBackend::Vdd,
                                     ] {
                                         ui.selectable_value(
                                             &mut self.screen.backend,
@@ -4207,11 +4212,49 @@ impl App {
                     }
                 });
             });
-            small(
-                ui,
-                &format!("git.entitybtw.ru · entitybtw/sd-widgets · {}", VERSION),
-                t.faint,
+            let mut text = self.update_remote.clone();
+            let response = ui.add(
+                TextEdit::singleline(&mut text)
+                    .hint_text("https://github.com/owner/repo")
+                    .desired_width(f32::INFINITY),
             );
+            if response.changed() {
+                self.update_remote = text;
+                // The old answer belongs to the old source.
+                self.update_info = None;
+                self.update_error.clear();
+            }
+            if response.lost_focus() {
+                let value = self.update_remote.clone();
+                self.save(move |c| c.update_remote = value);
+                if update::Remote::parse(&self.update_remote).is_ok() {
+                    self.check_updates();
+                }
+            }
+            match update::Remote::parse(&self.update_remote) {
+                Ok(remote) => {
+                    small(ui, &remote.label(), t.faint);
+                    if self.update_remote.trim().is_empty() {
+                        small(
+                            ui,
+                            t!(
+                                self.lang,
+                                "пусто — встроенный источник",
+                                "empty keeps the built-in source"
+                            ),
+                            t.faint,
+                        );
+                    }
+                }
+                Err(e) => small(
+                    ui,
+                    &format!(
+                        "{}: {e}",
+                        t!(self.lang, "адрес не подходит", "the address does not fit")
+                    ),
+                    t.bad,
+                ),
+            }
             if self.update_checking {
                 ui.horizontal(|ui| {
                     ui.spinner();
@@ -5345,6 +5388,31 @@ impl App {
                     self.deck_full = false;
                 }
             });
+        // A visible way out: the same hard-edged button as the rest of the
+        // window, with the close glyph instead of a bare hint, so leaving the
+        // fullscreen stream is obvious and not a guess.
+        egui::Area::new(egui::Id::new("deck-full-exit"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
+            .order(egui::Order::Foreground)
+            .interactable(true)
+            .show(ctx, |ui| {
+                let button = egui::Button::new(hud(theme::icon::CLOSE, t.ink))
+                    .fill(Color32::from_black_alpha(170))
+                    .stroke(Stroke::new(1.0, t.line_strong))
+                    .corner_radius(0.0)
+                    .min_size(egui::vec2(40.0, 40.0));
+                if ui
+                    .add(button)
+                    .on_hover_text(t!(
+                        self.lang,
+                        "выйти из полноэкранного режима",
+                        "leave fullscreen"
+                    ))
+                    .clicked()
+                {
+                    self.deck_full = false;
+                }
+            });
     }
 
     fn deck_ui(&mut self, ui: &mut Ui, t: &Tokens) {
@@ -6101,6 +6169,7 @@ fn backend_label(l: Lang, b: MonitorBackend) -> &'static str {
         MonitorBackend::Mirror => t!(l, "зеркало", "mirror"),
         MonitorBackend::X11 => "x11",
         MonitorBackend::Gdigrab => "windows gdigrab",
+        MonitorBackend::Vdd => t!(l, "VDD виртуальный", "VDD virtual"),
     }
 }
 

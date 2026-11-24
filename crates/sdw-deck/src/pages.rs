@@ -453,6 +453,32 @@ pub fn home(app: &mut App, ui: &mut Ui, t: &Tokens) {
             2.0,
         ));
     }
+    if app.tile_shown("timers") {
+        let running = app.timers.tile_status(app.lang);
+        items.push(HomeItem::Page(
+            Tile {
+                title: t!(app.lang, "таймеры", "timers").into(),
+                subtitle: running.clone().unwrap_or_else(|| {
+                    t!(
+                        app.lang,
+                        "отсчёт, секундомер и помодоро",
+                        "countdown, stopwatch and pomodoro"
+                    )
+                    .into()
+                }),
+                glyph: theme::icon::TIMER.into(),
+                accent: Color32::from_rgb(0xff, 0xb3, 0x4d),
+                badge: running
+                    .is_some()
+                    .then(|| t!(app.lang, "идёт", "running").into()),
+                badge_color: t.accent,
+                dim: running.is_none(),
+                reveal: 1.0,
+            },
+            Page::Timers,
+            2.5,
+        ));
+    }
     if app.tile_shown("ha") {
         items.push(HomeItem::Page(
             Tile {
@@ -2631,7 +2657,7 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
 // ---------------------------------------------------------------- screen
 
-fn backend_list() -> [MonitorBackend; 8] {
+fn backend_list() -> [MonitorBackend; 9] {
     [
         MonitorBackend::Auto,
         MonitorBackend::NiriVirtual,
@@ -2641,6 +2667,7 @@ fn backend_list() -> [MonitorBackend; 8] {
         MonitorBackend::Mirror,
         MonitorBackend::X11,
         MonitorBackend::Gdigrab,
+        MonitorBackend::Vdd,
     ]
 }
 
@@ -5391,6 +5418,279 @@ fn qr_code(ui: &mut Ui, text: &str, side: f32) {
     }
 }
 
+/// The servers the deck knows: the computer's own connection and every Home
+/// Assistant the deck keeps for itself, plus the form that adds or edits one.
+fn ha_servers(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    let lang = app.lang;
+    let instances: Vec<(String, String, String)> = app
+        .cfg
+        .ha_instances
+        .iter()
+        .map(|i| (i.id.clone(), i.label(), i.url.clone()))
+        .collect();
+    let active = app.cfg.ha_active.clone();
+    let computer = app
+        .status
+        .as_ref()
+        .map(|s| (s.ha.configured, s.ha.url.clone()))
+        .unwrap_or((false, String::new()));
+    let mut select: Option<String> = None;
+    let mut edit: Option<String> = None;
+    let mut remove: Option<String> = None;
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(t!(lang, "серверы", "servers"))
+                    .size(16.0)
+                    .strong()
+                    .color(t.strong),
+            );
+            ui.label(
+                RichText::new(t!(
+                    lang,
+                    "компьютер или свои серверы; выбранный кормит страницу.",
+                    "the computer or your own servers; the chosen one feeds the page."
+                ))
+                .size(12.0)
+                .color(t.muted),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if !app.ha.form_open
+                    && theme::ghost(ui, t!(lang, "добавить сервер", "add a server"), t).clicked()
+                {
+                    app.new_ha_instance();
+                }
+            });
+        });
+        ui.add_space(6.0);
+        // The computer's own connection is a row like the rest, without a
+        // token of its own: the daemon holds it.
+        ui.horizontal(|ui| {
+            let chosen = active.trim().is_empty();
+            theme::dot(ui, if chosen { t.good } else { t.faint }, true);
+            if ui
+                .selectable_label(
+                    chosen,
+                    RichText::new(t!(lang, "компьютер", "the computer")).size(13.5),
+                )
+                .clicked()
+            {
+                select = Some(String::new());
+            }
+            let note = if computer.0 {
+                util::truncate(&computer.1, 46)
+            } else {
+                t!(
+                    lang,
+                    "home assistant на компьютере не настроен",
+                    "no home assistant on the computer"
+                )
+                .to_string()
+            };
+            ui.label(
+                RichText::new(note)
+                    .family(FontFamily::Monospace)
+                    .size(10.5)
+                    .color(t.faint),
+            );
+        });
+        for (id, label, url) in &instances {
+            ui.horizontal(|ui| {
+                let chosen = &active == id;
+                theme::dot(ui, if chosen { t.good } else { t.faint }, true);
+                if ui
+                    .selectable_label(chosen, RichText::new(label).size(13.5))
+                    .clicked()
+                {
+                    select = Some(id.clone());
+                }
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(util::truncate(url, 40))
+                            .family(FontFamily::Monospace)
+                            .size(10.5)
+                            .color(t.faint),
+                    )
+                    .truncate(),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if theme::ghost(ui, t!(lang, "удалить", "delete"), t).clicked() {
+                        remove = Some(id.clone());
+                    }
+                    if theme::ghost(ui, t!(lang, "изменить", "change"), t).clicked() {
+                        edit = Some(id.clone());
+                    }
+                });
+            });
+        }
+        ui.add_space(6.0);
+        theme::separator(ui, t);
+        ui.add_space(4.0);
+        if app.ha.form_open || instances.is_empty() {
+            ha_form(app, ui, t);
+        }
+    });
+    if let Some(id) = select {
+        app.select_ha(&id);
+    }
+    if let Some(id) = edit {
+        app.edit_ha_instance(&id);
+    }
+    if let Some(id) = remove {
+        app.remove_ha_instance(&id);
+    }
+}
+
+/// The form that connects one server: its name, its address and a long-lived
+/// token, or the temporary page that takes them from a phone.
+fn ha_form(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    let lang = app.lang;
+    let editing = app.ha.edit_id.is_some();
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(if editing {
+                t!(lang, "изменить сервер", "edit the server")
+            } else if app.cfg.ha_instances.is_empty() {
+                t!(lang, "подключить home assistant", "connect home assistant")
+            } else {
+                t!(lang, "добавить сервер", "add a server")
+            })
+            .size(18.0)
+            .strong()
+            .color(t.strong),
+        );
+        if app.ha.form_open || editing {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::ghost(ui, t!(lang, "отмена", "cancel"), t).clicked() {
+                    app.cancel_ha_form();
+                }
+            });
+        }
+    });
+    // While the phone page is open the form steps back: the token is being
+    // typed somewhere else, and two ways in at once would only confuse.
+    if app.ha_link.is_some() {
+        ui.label(
+            RichText::new(t!(
+                lang,
+                "откройте страницу на телефоне или компьютере и вставьте токен — дека подхватит его сама.",
+                "open the page on your phone or computer and paste the token — the deck takes it from there."
+            ))
+            .size(13.0)
+            .color(t.muted),
+        );
+        let url = app
+            .ha_link
+            .as_ref()
+            .map(|link| link.url.clone())
+            .unwrap_or_default();
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            qr_code(ui, &url, 168.0);
+            ui.add_space(14.0);
+            ui.vertical(|ui| {
+                ui.label(theme::hud(t!(lang, "адрес", "address"), t.faint));
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(&url)
+                            .family(FontFamily::Monospace)
+                            .size(13.0)
+                            .color(t.strong),
+                    )
+                    .truncate(),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new(t!(lang, "ждём токен", "waiting for the token"))
+                            .size(12.5)
+                            .color(t.muted),
+                    );
+                });
+                ui.add_space(8.0);
+                if theme::ghost(ui, t!(lang, "отмена", "cancel"), t).clicked() {
+                    app.cancel_ha_link();
+                }
+            });
+        });
+        return;
+    }
+    ui.label(
+        RichText::new(t!(
+            lang,
+            "адрес и долгоживущий токен из профиля home assistant.",
+            "the address and a long-lived token from your home assistant profile."
+        ))
+        .size(13.0)
+        .color(t.muted),
+    );
+    ui.horizontal(|ui| {
+        ui.add(
+            TextEdit::singleline(&mut app.ha.instance_name)
+                .hint_text(t!(lang, "имя, например «дом»", "a name, e.g. “home”"))
+                .desired_width(240.0),
+        );
+        ui.label(
+            RichText::new(t!(lang, "необязательно", "optional"))
+                .size(11.0)
+                .color(t.faint),
+        );
+    });
+    if app.ha.url.is_empty() {
+        app.ha.url = "http://homeassistant.local:8123".into();
+    }
+    ui.add(
+        TextEdit::singleline(&mut app.ha.url)
+            .hint_text("http://homeassistant.local:8123")
+            .desired_width(f32::INFINITY),
+    );
+    ui.horizontal(|ui| {
+        ui.add(
+            TextEdit::singleline(&mut app.ha.token)
+                .password(!app.ha.token_show)
+                .hint_text(t!(lang, "токен", "token"))
+                .desired_width(380.0),
+        );
+        if ui
+            .selectable_label(app.ha.token_show, t!(lang, "показать", "show"))
+            .clicked()
+        {
+            app.ha.token_show = !app.ha.token_show;
+        }
+    });
+    if !app.ha.error.is_empty() {
+        ui.label(RichText::new(&app.ha.error).size(12.5).color(t.bad));
+    }
+    let mut connect = false;
+    ui.horizontal(|ui| {
+        if theme::primary(ui, t!(lang, "подключить", "connect"), t).clicked() {
+            connect = true;
+        }
+        if theme::ghost(ui, t!(lang, "ввести с телефона", "enter from a phone"), t).clicked()
+        {
+            app.start_ha_link();
+        }
+    });
+    if connect {
+        let name = app.ha.instance_name.clone();
+        let url = app.ha.url.trim().to_string();
+        let token = app.ha.token.trim().to_string();
+        if url.is_empty() || token.is_empty() {
+            app.ha.error = t!(
+                lang,
+                "нужны адрес и токен",
+                "the address and the token are needed"
+            )
+            .to_string();
+        } else {
+            // The deck keeps the connection itself: no computer needed, and
+            // the token never leaves this device.
+            app.save_ha_instance(&name, &url, &token);
+        }
+    }
+}
+
 pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
     let ha = app.ha_status();
     let favorites = ha.favorites.clone();
@@ -5422,29 +5722,45 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .color(if ha.connected { t.good } else { t.strong }),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if app.ha.servers_open {
+                    // The list has its own "done"; the page header keeps one
+                    // place to leave it.
+                    if theme::ghost(ui, t!(app.lang, "готово", "done"), t).clicked() {
+                        app.ha.servers_open = false;
+                    }
+                } else if theme::ghost(ui, t!(app.lang, "серверы", "servers"), t).clicked() {
+                    app.ha.servers_open = true;
+                }
                 if ha.configured
                     && theme::ghost(ui, t!(app.lang, "обновить", "refresh"), t).clicked()
                 {
                     app.ha.last_fetch =
                         std::time::Instant::now() - std::time::Duration::from_secs(60);
                 }
-                // The deck keeps its own connection; offer a way back to the
-                // form when the address or the token changed.
-                if app.ha_direct().is_some()
-                    && theme::ghost(ui, t!(app.lang, "изменить", "change"), t).clicked()
-                {
-                    app.forget_ha();
-                }
             });
         });
         if ha.configured {
             // The summary gets its own line: squeezing it beside the status
-            // and the refresh button is what made the header overlap.
+            // and the refresh button is what made the header overlap. The name
+            // of the chosen server is there when it is one of the deck's own.
+            let source = app.ha_active_label();
+            let head = match source {
+                Some(name) => format!(
+                    "{} · {}",
+                    util::truncate(&name, 24),
+                    util::truncate(&ha.url, 32)
+                ),
+                None => format!(
+                    "{} · {}",
+                    t!(app.lang, "компьютер", "the computer"),
+                    util::truncate(&ha.url, 40)
+                ),
+            };
             ui.add(
                 egui::Label::new(
                     RichText::new(format!(
                         "{} · {} {} · {} {}",
-                        util::truncate(&ha.url, 40),
+                        head,
                         ha.entities,
                         t!(app.lang, "сущностей", "entities"),
                         ha_rooms_count(app),
@@ -5466,139 +5782,20 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         }
     });
 
+    if app.ha.servers_open {
+        ui.add_space(8.0);
+        ha_servers(app, ui, t);
+    }
+
     if !ha.configured {
+        if app.ha.servers_open {
+            // The server card already carries the form (or the list of
+            // servers); nothing else to connect here.
+            return;
+        }
         ui.add_space(8.0);
         theme::card(ui, t, |ui| {
-            ui.label(
-                RichText::new(t!(
-                    app.lang,
-                    "подключить home assistant",
-                    "connect home assistant"
-                ))
-                .size(18.0)
-                .strong()
-                .color(t.strong),
-            );
-            // While the phone page is open the form steps back: the token is
-            // being typed somewhere else, and two ways in at once would only
-            // confuse.
-            if app.ha_link.is_some() {
-                ui.label(
-                    RichText::new(t!(
-                        app.lang,
-                        "откройте страницу на телефоне или компьютере и вставьте токен — дека подхватит его сама.",
-                        "open the page on your phone or computer and paste the token — the deck takes it from there."
-                    ))
-                    .size(13.0)
-                    .color(t.muted),
-                );
-                let url = app
-                    .ha_link
-                    .as_ref()
-                    .map(|link| link.url.clone())
-                    .unwrap_or_default();
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    qr_code(ui, &url, 168.0);
-                    ui.add_space(14.0);
-                    ui.vertical(|ui| {
-                        ui.label(theme::hud(t!(app.lang, "адрес", "address"), t.faint));
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&url)
-                                    .family(FontFamily::Monospace)
-                                    .size(13.0)
-                                    .color(t.strong),
-                            )
-                            .truncate(),
-                        );
-                        ui.add_space(6.0);
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(
-                                RichText::new(t!(app.lang, "ждём токен", "waiting for the token"))
-                                    .size(12.5)
-                                    .color(t.muted),
-                            );
-                        });
-                        ui.add_space(8.0);
-                        if theme::ghost(ui, t!(app.lang, "отмена", "cancel"), t).clicked() {
-                            app.cancel_ha_link();
-                        }
-                    });
-                });
-                return;
-            }
-            ui.label(
-                RichText::new(t!(
-                    app.lang,
-                    "адрес и долгоживущий токен из профиля home assistant.",
-                    "the address and a long-lived token from your home assistant profile."
-                ))
-                .size(13.0)
-                .color(t.muted),
-            );
-            if app.ha.url.is_empty() {
-                app.ha.url = "http://homeassistant.local:8123".into();
-            }
-            ui.add(
-                TextEdit::singleline(&mut app.ha.url)
-                    .hint_text("http://homeassistant.local:8123")
-                    .desired_width(f32::INFINITY),
-            );
-            ui.horizontal(|ui| {
-                ui.add(
-                    TextEdit::singleline(&mut app.ha.token)
-                        .password(!app.ha.token_show)
-                        .hint_text(t!(app.lang, "токен", "token"))
-                        .desired_width(380.0),
-                );
-                if ui
-                    .selectable_label(app.ha.token_show, t!(app.lang, "показать", "show"))
-                    .clicked()
-                {
-                    app.ha.token_show = !app.ha.token_show;
-                }
-            });
-            if !app.ha.error.is_empty() {
-                ui.label(RichText::new(&app.ha.error).size(12.5).color(t.bad));
-            }
-            ui.horizontal(|ui| {
-                if theme::primary(ui, t!(app.lang, "подключить", "connect"), t).clicked()
-                {
-                    let url = app.ha.url.trim().to_string();
-                    let token = app.ha.token.trim().to_string();
-                    if !url.is_empty() && !token.is_empty() {
-                        // The deck keeps the connection itself: no computer
-                        // needed, and the token never leaves this device.
-                        app.cfg.ha_url = url;
-                        app.cfg.ha_token = token;
-                        app.ha.token.clear();
-                        app.ha.loaded = false;
-                        app.ha.connected = false;
-                        app.ha.last_fetch =
-                            std::time::Instant::now() - std::time::Duration::from_secs(60);
-                        app.save();
-                        app.toast(
-                            t!(
-                                app.lang,
-                                "home assistant подключён",
-                                "home assistant connected"
-                            ),
-                            true,
-                        );
-                    }
-                }
-                if theme::ghost(
-                    ui,
-                    t!(app.lang, "ввести с телефона", "enter from a phone"),
-                    t,
-                )
-                .clicked()
-                {
-                    app.start_ha_link();
-                }
-            });
+            ha_form(app, ui, t);
         });
         return;
     }
@@ -6542,12 +6739,55 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 }
             });
         });
-        ui.label(
-            RichText::new("git.entitybtw.ru · entitybtw/sd-widgets")
-                .family(FontFamily::Monospace)
-                .size(10.5)
-                .color(t.faint),
+        let mut text = app.cfg.update_remote.clone();
+        let response = ui.add(
+            TextEdit::singleline(&mut text)
+                .hint_text("https://github.com/owner/repo")
+                .desired_width(f32::INFINITY),
         );
+        if response.changed() {
+            app.cfg.update_remote = text;
+            // The old answer belongs to the old source.
+            app.update.info = None;
+            app.update.error.clear();
+        }
+        if response.lost_focus() {
+            app.save();
+            if sdw_core::update::Remote::parse(&app.cfg.update_remote).is_ok() {
+                app.check_updates();
+            }
+        }
+        match sdw_core::update::Remote::parse(&app.cfg.update_remote) {
+            Ok(remote) => {
+                ui.label(
+                    RichText::new(remote.label())
+                        .family(FontFamily::Monospace)
+                        .size(10.5)
+                        .color(t.faint),
+                );
+                if app.cfg.update_remote.trim().is_empty() {
+                    ui.label(
+                        RichText::new(t!(
+                            app.lang,
+                            "пусто — встроенный источник",
+                            "empty keeps the built-in source"
+                        ))
+                        .size(11.0)
+                        .color(t.faint),
+                    );
+                }
+            }
+            Err(e) => {
+                ui.label(
+                    RichText::new(format!(
+                        "{}: {e}",
+                        t!(app.lang, "адрес не подходит", "the address does not fit")
+                    ))
+                    .size(11.5)
+                    .color(t.bad),
+                );
+            }
+        }
         if app.update.checking {
             ui.horizontal(|ui| {
                 ui.spinner();
@@ -6677,6 +6917,154 @@ fn updates_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     });
                 }
             }
+        }
+    });
+}
+
+/// The programs the app starts from outside: the sound player, media keys,
+/// typing and screenshots. A missing one is installed here with the
+/// administrator password, because a Steam Deck has no terminal in hand.
+fn components_card(app: &mut App, ui: &mut Ui, t: &Tokens) {
+    let list = app.components.clone();
+    let missing = list.iter().filter(|c| !c.present).count();
+    theme::card(ui, t, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(t!(app.lang, "компоненты деки", "deck components"))
+                    .size(16.0)
+                    .strong()
+                    .color(t.strong),
+            );
+            theme::chip(
+                ui,
+                &format!("{}/{}", list.len() - missing, list.len()),
+                if missing == 0 { t.good } else { t.warn },
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if theme::ghost(
+                    ui,
+                    if app.components_show {
+                        t!(app.lang, "свернуть", "hide")
+                    } else {
+                        t!(app.lang, "подробнее", "details")
+                    },
+                    t,
+                )
+                .clicked()
+                {
+                    app.components_show = !app.components_show;
+                }
+                if theme::ghost(ui, t!(app.lang, "проверить", "check"), t).clicked() {
+                    app.refresh_components();
+                }
+            });
+        });
+        ui.label(
+            RichText::new(t!(
+                app.lang,
+                "программы, которые дека запускает снаружи: звук, медиа, ввод и снимки.",
+                "programs the deck starts from outside: sound, media, typing and screenshots."
+            ))
+            .size(12.0)
+            .color(t.muted),
+        );
+        if !app.components_show {
+            if missing > 0 {
+                ui.label(
+                    RichText::new(t!(
+                        app.lang,
+                        "части не хватает — раскройте список, чтобы поставить.",
+                        "some are missing — open the list to install them."
+                    ))
+                    .size(12.0)
+                    .color(t.warn),
+                );
+            }
+            return;
+        }
+        ui.add_space(4.0);
+        for c in &list {
+            ui.horizontal(|ui| {
+                theme::dot(ui, if c.present { t.good } else { t.warn }, true);
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(crate::components::title(app.lang, c.id))
+                                .size(13.5)
+                                .strong()
+                                .color(t.strong),
+                        );
+                        if c.present && !c.found.is_empty() {
+                            ui.label(
+                                RichText::new(&c.found)
+                                    .family(FontFamily::Monospace)
+                                    .size(10.5)
+                                    .color(t.faint),
+                            );
+                        }
+                    });
+                    ui.label(
+                        RichText::new(crate::components::purpose(app.lang, c.id))
+                            .size(11.5)
+                            .color(t.muted),
+                    );
+                });
+            });
+        }
+        if missing > 0 {
+            ui.add_space(6.0);
+            theme::separator(ui, t);
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut app.components_pass)
+                        .password(true)
+                        .hint_text(t!(
+                            app.lang,
+                            "пароль администратора",
+                            "administrator password"
+                        ))
+                        .desired_width(260.0),
+                );
+                if app.components_busy {
+                    ui.spinner();
+                    ui.label(
+                        RichText::new(t!(app.lang, "ставлю…", "installing…"))
+                            .size(12.0)
+                            .color(t.muted),
+                    );
+                } else if theme::primary(
+                    ui,
+                    t!(
+                        app.lang,
+                        "установить недостающее",
+                        "install the missing ones"
+                    ),
+                    t,
+                )
+                .clicked()
+                {
+                    app.install_components();
+                }
+            });
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "на SteamOS root откроется на время установки и закроется сам.",
+                    "on SteamOS the root is opened for the install and closed again by itself."
+                ))
+                .size(11.0)
+                .color(t.faint),
+            );
+        }
+        if !app.components_message.is_empty() {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(util::truncate(&app.components_message, 420))
+                    .family(FontFamily::Monospace)
+                    .size(10.5)
+                    .color(t.faint),
+            );
         }
     });
 }
@@ -6845,6 +7233,96 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
             .size(11.5)
             .color(t.faint),
         );
+    });
+
+    ui.add_space(8.0);
+    theme::card(ui, t, |ui| {
+        ui.label(theme::hud(
+            t!(app.lang, "языковые пакеты", "language packs"),
+            t.faint,
+        ));
+        let packs = sdw_core::i18n::pack_list();
+        let active = sdw_core::i18n::active_pack();
+        let dir = sdw_core::i18n::pack_dir();
+        ui.horizontal_wrapped(|ui| {
+            if theme::ghost(ui, t!(app.lang, "обновить", "reload"), t).clicked() {
+                app.reload_lang_packs();
+            }
+            if theme::ghost(ui, t!(app.lang, "шаблон", "template"), t).clicked() {
+                let _ = std::fs::create_dir_all(&dir);
+                let path = dir.join("template.toml");
+                match std::fs::write(&path, sdw_core::i18n::pack_template()) {
+                    Ok(()) => app.toast(
+                        format!(
+                            "{} {}",
+                            t!(app.lang, "шаблон записан:", "template written:"),
+                            path.display()
+                        ),
+                        true,
+                    ),
+                    Err(e) => app.toast(
+                        format!(
+                            "{}: {e}",
+                            t!(
+                                app.lang,
+                                "не удалось записать шаблон",
+                                "could not write the template"
+                            )
+                        ),
+                        false,
+                    ),
+                }
+            }
+            ui.label(
+                RichText::new(dir.display().to_string())
+                    .family(FontFamily::Monospace)
+                    .size(10.5)
+                    .color(t.faint),
+            );
+        });
+        if packs.is_empty() {
+            ui.label(
+                RichText::new(t!(
+                    app.lang,
+                    "положите .toml в эту папку и нажмите «обновить» — шаблон уже содержит все строки",
+                    "put a .toml into this folder and press \"reload\" — the template already has every line"
+                ))
+                .size(11.5)
+                .color(t.muted),
+            );
+        } else {
+            ui.horizontal_wrapped(|ui| {
+                for pack in &packs {
+                    let selected = active.as_deref() == Some(pack.code.as_str());
+                    let label = if pack.author.is_empty() {
+                        pack.name.clone()
+                    } else {
+                        format!("{} · {}", pack.name, pack.author)
+                    };
+                    if ui
+                        .selectable_label(selected, label)
+                        .on_hover_text(format!(
+                            "{} — {} {}",
+                            pack.code,
+                            pack.lines,
+                            t!(app.lang, "строк", "lines")
+                        ))
+                        .clicked()
+                    {
+                        app.set_lang_pack(&pack.code);
+                    }
+                }
+            });
+            if active.is_some()
+                && theme::ghost(ui, t!(app.lang, "выключить пакет", "turn the pack off"), t)
+                    .clicked()
+            {
+                app.set_lang(Lang::En);
+            }
+        }
+        for error in sdw_core::i18n::pack_errors() {
+            ui.label(RichText::new(error).size(11.5).color(t.warn));
+        }
     });
 
     ui.add_space(8.0);
@@ -7135,6 +7613,9 @@ pub fn settings(app: &mut App, ui: &mut Ui, t: &Tokens) {
 
     ui.add_space(8.0);
     updates_card(app, ui, t);
+
+    ui.add_space(8.0);
+    components_card(app, ui, t);
 
     ui.add_space(8.0);
     theme::card(ui, t, |ui| {
@@ -7576,6 +8057,7 @@ pub fn appearance(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ("gamepad", "геймпад", "gamepad"),
             ("screen", "экран", "screen"),
             ("notifications", "уведомления", "notifications"),
+            ("timers", "таймеры", "timers"),
             ("ha", "home assistant", "home assistant"),
             ("binds", "бинды", "binds"),
             ("control", "пульт", "control"),

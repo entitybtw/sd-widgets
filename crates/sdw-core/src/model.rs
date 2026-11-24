@@ -304,6 +304,16 @@ impl PadKind {
             Self::SwitchPro => "ns2pro",
         }
     }
+    /// The oldest VIIPER that knows this device type. The two newer pads were
+    /// added later, and an old server answers their creation with "unknown
+    /// device type" instead of an empty gamepad; the page then has to point at
+    /// the update rather than pretend the pad is broken.
+    pub fn min_viiper(self) -> Option<&'static str> {
+        match self {
+            Self::Xbox360 | Self::DualShock4 => None,
+            Self::DualSense | Self::SwitchPro => Some("0.9.0"),
+        }
+    }
     pub fn label(self) -> &'static str {
         match self {
             Self::Xbox360 => "Xbox 360",
@@ -409,6 +419,8 @@ pub enum MonitorBackend {
     Mirror,
     X11,
     Gdigrab,
+    /// A real monitor created by Virtual Display Driver on Windows.
+    Vdd,
 }
 
 impl MonitorBackend {
@@ -423,9 +435,10 @@ impl MonitorBackend {
             Self::NiriVirtual => ("niri виртуальный выход", "niri virtual output"),
             Self::Vkms => ("VKMS (виртуальный DRM)", "VKMS (virtual DRM)"),
             Self::Krfb => ("KDE Krfb", "KDE Krfb"),
-            Self::Mirror => ("Зеркало (grim)", "Mirror (grim)"),
+            Self::Mirror => ("Зеркало", "Mirror"),
             Self::X11 => ("X11 (ffmpeg)", "X11 (ffmpeg)"),
             Self::Gdigrab => ("Windows (gdigrab)", "Windows (gdigrab)"),
+            Self::Vdd => ("Virtual Display Driver", "Virtual Display Driver"),
         };
         crate::i18n::tr(lang, ru, en)
     }
@@ -2166,6 +2179,92 @@ impl Default for VizCfg {
     }
 }
 
+/// Timers, the stopwatch and the pomodoro clock.
+///
+/// Only the lengths and the switches are stored: a running countdown is part
+/// of the session, not of the configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TimerCfg {
+    /// Length of the countdown, in seconds.
+    pub countdown_secs: u32,
+    /// Length of one pomodoro work phase, in seconds.
+    pub work_secs: u32,
+    /// Length of a short break, in seconds.
+    pub short_secs: u32,
+    /// Length of the long break after a full set of work phases, in seconds.
+    pub long_secs: u32,
+    /// Work phases before a long break.
+    pub rounds: u32,
+    /// Start the next pomodoro phase without a press.
+    pub auto_start: bool,
+    /// Play a cue when a countdown or a pomodoro phase ends.
+    pub sound: bool,
+}
+
+impl Default for TimerCfg {
+    fn default() -> Self {
+        Self {
+            countdown_secs: 300,
+            work_secs: 25 * 60,
+            short_secs: 5 * 60,
+            long_secs: 15 * 60,
+            rounds: 4,
+            auto_start: true,
+            sound: true,
+        }
+    }
+}
+
+/// One Home Assistant server kept on the deck itself.
+///
+/// The deck may know several: a home server, a summer house, a friend's one.
+/// The token is a long-lived one from that server's profile, and it stays on
+/// this device — the computer is not involved.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HaInstance {
+    /// Stable id the config points at; never shown.
+    #[serde(default)]
+    pub id: String,
+    /// A name the user gave it ("home", "dacha"); empty falls back to the host.
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub token: String,
+}
+
+impl HaInstance {
+    /// The name to show: the chosen one, otherwise the address without its
+    /// scheme and port.
+    pub fn label(&self) -> String {
+        if !self.name.trim().is_empty() {
+            return self.name.trim().to_string();
+        }
+        let host = self
+            .url
+            .trim()
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .split(':')
+            .next()
+            .unwrap_or("");
+        if host.is_empty() {
+            "home assistant".into()
+        } else {
+            host.to_string()
+        }
+    }
+
+    pub fn ready(&self) -> bool {
+        !self.url.trim().is_empty() && !self.token.trim().is_empty()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DeckConfig {
@@ -2234,18 +2333,33 @@ pub struct DeckConfig {
     /// The screen tab's settings, remembered across restarts.
     #[serde(default)]
     pub stream: StreamCfg,
-    /// Home Assistant reached straight from the deck, without the computer:
-    /// the address and a long-lived token. Empty means "use the daemon".
+    /// Home Assistant reached straight from the deck, without the computer.
+    ///
+    /// `ha_instances` lists every server the deck talks to itself; `ha_active`
+    /// names the chosen one (an empty id means the computer's connection).
+    /// `ha_url` and `ha_token` are the old single-server fields: they are read
+    /// once, turned into the first instance and cleared.
     #[serde(default)]
     pub ha_url: String,
     #[serde(default)]
     pub ha_token: String,
+    #[serde(default)]
+    pub ha_instances: Vec<HaInstance>,
+    #[serde(default)]
+    pub ha_active: String,
     #[serde(default)]
     pub audio: AudioDeckCfg,
     #[serde(default)]
     pub viz: VizCfg,
     #[serde(default)]
     pub addons: crate::addons::AddonsCfg,
+    /// Countdown, pomodoro and stopwatch settings.
+    #[serde(default)]
+    pub timers: TimerCfg,
+    /// Release source: an empty line keeps the built-in repository, otherwise
+    /// a GitHub or Forgejo address (`https://host/owner/repo`).
+    #[serde(default)]
+    pub update_remote: String,
     /// Lamp colours the user saved on the Deck, whole RGB triples. They sit
     /// next to the built-in palette and survive a restart.
     #[serde(default)]
@@ -2308,9 +2422,13 @@ impl Default for DeckConfig {
             stream: StreamCfg::default(),
             ha_url: String::new(),
             ha_token: String::new(),
+            ha_instances: Vec::new(),
+            ha_active: String::new(),
             audio: AudioDeckCfg::default(),
             viz: VizCfg::default(),
             addons: crate::addons::AddonsCfg::default(),
+            timers: TimerCfg::default(),
+            update_remote: String::new(),
             light_colors: Vec::new(),
         }
     }

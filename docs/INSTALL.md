@@ -17,6 +17,11 @@ The installer always downloads the **newest published release** from
 `git.entitybtw.ru`, verifies it against `SHA256SUMS` when that asset exists, and
 installs into `~/.local` (no root, no package manager).
 
+The in-app updater takes its source from the settings page instead: an empty
+field keeps `git.entitybtw.ru`, and a GitHub repository or a Forgejo/Gitea
+instance can be written as its web address. The installer itself stays on the
+built-in source, since it is fetched before any setting exists.
+
 ## What it puts on disk
 
 | Path | What |

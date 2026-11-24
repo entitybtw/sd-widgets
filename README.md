@@ -40,9 +40,19 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
   and brightness in one overlay, over any page, with a small handle at the top.
 - **PC audio on the Deck**: stream the whole computer or picked applications to
   the Deck speakers, with a configurable number of “are you sure?” steps.
-- **Self-updates**: both applications check the newest release on
-  `git.entitybtw.ru`, show the notes and download the matching build.
-- **Three languages**: Russian, Ukrainian and English; dark and light.
+- **Self-updates from any source**: both applications check the newest release,
+  show the notes and download the matching build. The source is a setting: the
+  built-in `git.entitybtw.ru`, a GitHub repository or your own Forgejo/Gitea
+  instance, written as the repository's web address.
+- **Missing tools install themselves**: the Deck lists the external programs it
+  drives (the sound player, media keys, typing, screenshots) and installs the
+  missing ones with the administrator password, opening SteamOS's read-only
+  root only for the length of the install.
+- **Three languages and any pack**: Russian, Ukrainian and English built in;
+  a TOML pack in the config folder adds any other language, and a template
+  with every line the app can translate is one press away.
+- **Timers**: a countdown with presets and ±1 minute, a stopwatch with laps and
+  a pomodoro with automatic phases, saved lengths and a cue at the end.
 
 > The product name is lowercase: `sd-widgets`.
 
@@ -63,9 +73,10 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Home Assistant** | Rooms and areas with lights, curtains, climate and media widgets, not a wall of every entity. |
 | **Binds** | Buttons, chords and swipe gestures mapped to actions or remote commands. |
 | **Clock** | A full-screen clock in four styles, each fully configurable and saved as a preset or an addon. |
+| **Timers** | A countdown, a lap stopwatch and a pomodoro clock with saved lengths, presets and a cue at the end. |
 | **Addons** | Import, enable, configure and remove packages; save the current look or clock as one. |
 | **Look** | Presets, palette, CSS editor, grid, density, dock/arrows, page visibility, sounds. |
-| **Settings** | Device name, language, theme, UI scale, input devices, screen sharing, updates. |
+| **Settings** | Device name, language and language packs, theme, UI scale, input devices, screen sharing, updates and their source, deck components. |
 
 A pull down from the top edge (or a tap on the handle) opens the **control
 center**: the newest notifications, the Deck's own volume and its brightness,
@@ -114,9 +125,12 @@ inset from the arrows, so no card, slider or button ever ends under one.
 - **Bluetooth manager** — scans, pairs, connects, trusts and forgets devices
   through BlueZ; headphone and earbud battery comes from BlueZ, or from UPower
   when the device does not report it.
-- **Home Assistant** — URL + long-lived token, entities proxied through the daemon
-  so the token never lives on the Deck. Lamps get brightness, colour temperature
-  and a colour palette whose shades can be saved on the Deck and reused.
+- **Home Assistant** — URL + long-lived token on the computer, entities proxied
+  through the daemon. The Deck can also keep several servers of its own, each
+  with its own address and token, and switch between them and the computer's
+  connection on the Home Assistant page. Lamps get brightness, colour
+  temperature and a colour palette whose shades can be saved on the Deck and
+  reused.
 - **PC audio** — records the default output or the applications you pick and
   serves raw PCM to the Deck, which plays it with `pw-play`/`paplay`. The daemon
   keeps it off until you allow audio, and the Deck can require any number of

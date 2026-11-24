@@ -29,6 +29,10 @@ pub struct DaemonConfig {
     pub notifications: NotificationsCfg,
     pub audio: AudioCfg,
     pub ha: HaCfg,
+    /// Release source: empty keeps the built-in repository, otherwise a GitHub
+    /// or Forgejo address (`https://host/owner/repo`).
+    #[serde(default)]
+    pub update_remote: String,
     pub clients: Vec<ClientRecord>,
     pub addons: sdw_core::addons::AddonsCfg,
 }
@@ -140,6 +144,7 @@ impl Default for DaemonConfig {
             notifications: NotificationsCfg::default(),
             audio: AudioCfg::default(),
             ha: HaCfg::default(),
+            update_remote: String::new(),
             clients: Vec::new(),
             addons: sdw_core::addons::AddonsCfg::default(),
         }

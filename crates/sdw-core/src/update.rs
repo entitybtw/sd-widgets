@@ -1,8 +1,10 @@
-//! Release checks and downloads for the self-hosted Gitea releases.
+//! Release checks and downloads.
 //!
-//! Both binaries ask `https://git.entitybtw.ru` for the newest release, compare
-//! the tag with their own version and can download the matching asset. Public
-//! releases need no token, so the same code works on the Deck and on the PC.
+//! By default both binaries ask `https://git.entitybtw.ru` for the newest
+//! release, compare the tag with their own version and can download the
+//! matching asset. The source is configurable: a Forgejo/Gitea instance or a
+//! GitHub repository, written as the repository's web address. Public releases
+//! need no token, so the same code works on the Deck and on the PC.
 
 use crate::model::VERSION;
 use serde::{Deserialize, Serialize};
@@ -14,7 +16,152 @@ use std::time::Duration;
 
 pub const HOST: &str = "https://git.entitybtw.ru";
 pub const REPO: &str = "entitybtw/sd-widgets";
-pub const RELEASES_PAGE: &str = "https://git.entitybtw.ru/entitybtw/sd-widgets/releases";
+
+/// Where releases come from. GitHub and Forgejo/Gitea answer the same release
+/// fields, so one parser reads both; only the API path and the page differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteKind {
+    /// Forgejo or Gitea: `{base}/api/v1/repos/{repo}/releases`.
+    Forgejo,
+    /// github.com, or a GitHub Enterprise host with `/api/v3`.
+    GitHub,
+}
+
+/// A release source: the instance's root and the `owner/name` repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Remote {
+    pub kind: RemoteKind,
+    /// `https://host`, no trailing slash.
+    pub base: String,
+    /// `owner/name`.
+    pub repo: String,
+}
+
+impl Default for Remote {
+    fn default() -> Self {
+        Self {
+            kind: RemoteKind::Forgejo,
+            base: HOST.into(),
+            repo: REPO.into(),
+        }
+    }
+}
+
+impl Remote {
+    /// Read the repository's web address.
+    ///
+    /// Accepted: `https://host/owner/name`, `host/owner/name`, a trailing
+    /// `/releases`, `.git` or `/src/branch/main`, a GitHub API address and the
+    /// `git@host:owner/name.git` form a `git remote` prints. An empty line
+    /// means the built-in repository. The host decides the kind: anything with
+    /// `github` in it speaks GitHub, everything else Forgejo. An instance under
+    /// a sub-path (`https://host/git/owner/name`) is not supported: the first
+    /// two path pieces are always owner and repository.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let raw = text.trim();
+        if raw.is_empty() {
+            return Ok(Self::default());
+        }
+        // `git@github.com:owner/name.git` from `git remote -v`.
+        let scp = !raw.contains("://") && raw.split('/').next().is_some_and(|h| h.contains('@'));
+        let raw = if scp {
+            let (user_host, path) = raw
+                .split_once(':')
+                .ok_or_else(|| format!("адрес без пути: {raw}"))?;
+            let host = user_host.rsplit('@').next().unwrap_or(user_host);
+            format!("https://{host}/{path}")
+        } else {
+            raw.to_string()
+        };
+        let (scheme, rest) = if let Some(r) = raw.strip_prefix("https://") {
+            ("https", r)
+        } else if let Some(r) = raw.strip_prefix("http://") {
+            ("http", r)
+        } else if let Some(r) = raw.strip_prefix("ssh://") {
+            ("https", r)
+        } else {
+            ("https", raw.as_str())
+        };
+        // `ssh://git@host/...` keeps the user in the first path element.
+        let rest = rest.trim_start_matches('/');
+        let mut parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
+        if parts.is_empty() {
+            return Err(format!("нет имени хоста: {raw}"));
+        }
+        let host = parts.remove(0).rsplit('@').next().unwrap_or("").to_string();
+        if host.is_empty() {
+            return Err(format!("нет имени хоста: {raw}"));
+        }
+        if host.eq_ignore_ascii_case("api.github.com") && parts.first() == Some(&"repos") {
+            parts.remove(0);
+        }
+        // The API host is not the web host: the release page lives on
+        // github.com either way.
+        let host = if host.eq_ignore_ascii_case("api.github.com") {
+            "github.com".to_string()
+        } else {
+            host
+        };
+        if parts.len() < 2 {
+            return Err(format!(
+                "нужен адрес вида https://хост/владелец/репозиторий: {raw}"
+            ));
+        }
+        let owner = parts[0].trim();
+        let name = parts[1].trim().trim_end_matches(".git").trim();
+        if owner.is_empty() || name.is_empty() {
+            return Err(format!("пустой владелец или репозиторий: {raw}"));
+        }
+        let repo = format!("{owner}/{name}");
+        let host_lc = host.to_ascii_lowercase();
+        let github = host_lc == "github.com" || host_lc.contains("github.");
+        let kind = if github {
+            RemoteKind::GitHub
+        } else {
+            RemoteKind::Forgejo
+        };
+        Ok(Self {
+            kind,
+            base: format!("{scheme}://{host}"),
+            repo,
+        })
+    }
+
+    /// `github.com · owner/name`, for a settings line.
+    pub fn label(&self) -> String {
+        let host = self
+            .base
+            .split("://")
+            .nth(1)
+            .unwrap_or(&self.base)
+            .trim_end_matches('/');
+        format!("{host} · {}", self.repo)
+    }
+
+    /// The release list endpoint of this kind of server.
+    pub fn api_url(&self) -> String {
+        match self.kind {
+            RemoteKind::GitHub if self.base.contains("github.com") => {
+                format!(
+                    "https://api.github.com/repos/{}/releases?per_page=10",
+                    self.repo
+                )
+            }
+            RemoteKind::GitHub => format!(
+                "{}/api/v3/repos/{}/releases?per_page=10",
+                self.base, self.repo
+            ),
+            RemoteKind::Forgejo => {
+                format!("{}/api/v1/repos/{}/releases?limit=10", self.base, self.repo)
+            }
+        }
+    }
+
+    /// The page a person opens in a browser.
+    pub fn releases_page(&self) -> String {
+        format!("{}/{}/releases", self.base, self.repo)
+    }
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateAsset {
@@ -97,19 +244,25 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     false
 }
 
-/// Ask the release API for the newest published release.
+/// Ask the built-in release source for the newest published release.
 pub fn check() -> Result<UpdateInfo, String> {
-    let url = format!("{HOST}/api/v1/repos/{REPO}/releases?limit=10");
+    check_at(&Remote::default())
+}
+
+/// Ask `remote` for the newest published release.
+pub fn check_at(remote: &Remote) -> Result<UpdateInfo, String> {
+    let url = remote.api_url();
+    let label = remote.label();
     let mut r = agent()
         .get(&url)
         .header("Accept", "application/json")
         .call()
-        .map_err(|e| format!("git.entitybtw.ru: {e}"))?;
+        .map_err(|e| format!("{label}: {e}"))?;
     let status = r.status().as_u16();
     let text = r.body_mut().read_to_string().map_err(|e| e.to_string())?;
     if status != 200 {
         return Err(format!(
-            "git.entitybtw.ru: HTTP {status}: {}",
+            "{label}: HTTP {status}: {}",
             crate::util::truncate(&text, 200)
         ));
     }
@@ -118,7 +271,7 @@ pub fn check() -> Result<UpdateInfo, String> {
     let release = list
         .iter()
         .find(|r| !r["draft"].as_bool().unwrap_or(false))
-        .ok_or_else(|| "на git.entitybtw.ru пока нет релизов".to_string())?;
+        .ok_or_else(|| format!("на {label} пока нет релизов"))?;
     let tag = release["tag_name"].as_str().unwrap_or("").to_string();
     let latest = tag.trim_start_matches(['v', 'V']).to_string();
     if latest.is_empty() {
@@ -153,12 +306,21 @@ pub fn check() -> Result<UpdateInfo, String> {
             .or_else(|| release["created_at"].as_str())
             .unwrap_or("")
             .to_string(),
-        page: release["html_url"]
-            .as_str()
-            .unwrap_or(RELEASES_PAGE)
-            .to_string(),
+        page: release["html_url"].as_str().unwrap_or("").to_string(),
         assets,
-    })
+    }
+    .with_page(remote))
+}
+
+impl UpdateInfo {
+    /// Fill in the release page when the server did not send one; a mirrored
+    /// instance may omit `html_url`.
+    fn with_page(mut self, remote: &Remote) -> Self {
+        if self.page.trim().is_empty() {
+            self.page = remote.releases_page();
+        }
+        self
+    }
 }
 
 pub fn updates_dir() -> PathBuf {
@@ -310,5 +472,88 @@ mod tests {
             Some("b")
         );
         assert!(info.asset_for("nothing").is_none());
+    }
+
+    #[test]
+    fn an_empty_remote_is_the_built_in_one() {
+        let r = Remote::parse("  ").unwrap();
+        assert_eq!(r, Remote::default());
+        assert_eq!(r.kind, RemoteKind::Forgejo);
+        assert_eq!(
+            r.api_url(),
+            "https://git.entitybtw.ru/api/v1/repos/entitybtw/sd-widgets/releases?limit=10"
+        );
+        assert_eq!(
+            r.releases_page(),
+            "https://git.entitybtw.ru/entitybtw/sd-widgets/releases"
+        );
+        assert_eq!(r.label(), "git.entitybtw.ru · entitybtw/sd-widgets");
+    }
+
+    #[test]
+    fn a_github_repository_speaks_github() {
+        for text in [
+            "https://github.com/owner/name",
+            "github.com/owner/name",
+            "https://github.com/owner/name/",
+            "https://github.com/owner/name.git",
+            "https://github.com/owner/name/releases",
+            "https://api.github.com/repos/owner/name",
+            "git@github.com:owner/name.git",
+            "ssh://git@github.com/owner/name.git",
+        ] {
+            let r = Remote::parse(text).unwrap_or_else(|e| panic!("{text}: {e}"));
+            assert_eq!(r.kind, RemoteKind::GitHub, "{text}");
+            assert_eq!(r.base, "https://github.com", "{text}");
+            assert_eq!(r.repo, "owner/name", "{text}");
+            assert_eq!(
+                r.api_url(),
+                "https://api.github.com/repos/owner/name/releases?per_page=10",
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_forgejo_instance_keeps_its_scheme_and_port() {
+        let r = Remote::parse("http://git.example.org:3000/team/tool").unwrap();
+        assert_eq!(r.kind, RemoteKind::Forgejo);
+        assert_eq!(r.base, "http://git.example.org:3000");
+        assert_eq!(r.repo, "team/tool");
+        assert_eq!(
+            r.api_url(),
+            "http://git.example.org:3000/api/v1/repos/team/tool/releases?limit=10"
+        );
+        assert_eq!(
+            r.releases_page(),
+            "http://git.example.org:3000/team/tool/releases"
+        );
+    }
+
+    #[test]
+    fn a_github_enterprise_host_uses_api_v3() {
+        let r = Remote::parse("https://github.example.com/o/r").unwrap();
+        assert_eq!(r.kind, RemoteKind::GitHub);
+        assert_eq!(
+            r.api_url(),
+            "https://github.example.com/api/v3/repos/o/r/releases?per_page=10"
+        );
+    }
+
+    #[test]
+    fn a_broken_remote_is_refused() {
+        assert!(Remote::parse("example.org").is_err());
+        assert!(Remote::parse("https://example.org/only-owner").is_err());
+        assert!(Remote::parse("https:///owner/name").is_err());
+    }
+
+    #[test]
+    fn a_missing_page_falls_back_to_the_instance() {
+        let info = UpdateInfo {
+            page: String::new(),
+            ..Default::default()
+        }
+        .with_page(&Remote::parse("https://github.com/o/r").unwrap());
+        assert_eq!(info.page, "https://github.com/o/r/releases");
     }
 }

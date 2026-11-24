@@ -73,6 +73,32 @@ pub fn migrate(mut cfg: DeckConfig) -> DeckConfig {
         }
         viz.rev = 2;
     }
+    // One server used to live in `ha_url`/`ha_token`; it becomes the first
+    // instance and the old pair is cleared, so the two cannot disagree.
+    if cfg.ha_instances.is_empty()
+        && !(cfg.ha_url.trim().is_empty() && cfg.ha_token.trim().is_empty())
+    {
+        let id = crate::model::random_id(4);
+        let instance = crate::model::HaInstance {
+            id: id.clone(),
+            name: String::new(),
+            url: std::mem::take(&mut cfg.ha_url),
+            token: std::mem::take(&mut cfg.ha_token),
+        };
+        cfg.ha_instances.push(instance);
+        if cfg.ha_active.trim().is_empty() {
+            cfg.ha_active = id;
+        }
+    }
+    // A chosen id whose server is gone (removed by hand from the file) falls
+    // back to the first one instead of leaving the page unconfigured.
+    if !cfg.ha_active.is_empty() && !cfg.ha_instances.iter().any(|i| i.id == cfg.ha_active) {
+        cfg.ha_active = cfg
+            .ha_instances
+            .first()
+            .map(|i| i.id.clone())
+            .unwrap_or_default();
+    }
     cfg
 }
 
@@ -181,5 +207,52 @@ mod tests {
         let mut cfg = DeckConfig::default();
         cfg.clock.icon = "not an icon".into();
         assert!(migrate(cfg).clock.icon.is_empty());
+    }
+
+    #[test]
+    fn the_old_single_home_assistant_becomes_the_first_instance() {
+        let mut cfg = DeckConfig::default();
+        cfg.ha_url = "http://homeassistant.local:8123".into();
+        cfg.ha_token = "long-token".into();
+        let cfg = migrate(cfg);
+        assert_eq!(cfg.ha_instances.len(), 1);
+        assert_eq!(cfg.ha_instances[0].url, "http://homeassistant.local:8123");
+        assert_eq!(cfg.ha_instances[0].token, "long-token");
+        assert_eq!(cfg.ha_active, cfg.ha_instances[0].id);
+        assert!(cfg.ha_url.is_empty() && cfg.ha_token.is_empty());
+        assert_eq!(cfg.ha_instances[0].label(), "homeassistant.local");
+    }
+
+    #[test]
+    fn a_chosen_home_assistant_that_is_gone_falls_back_to_the_first() {
+        let mut cfg = DeckConfig::default();
+        cfg.ha_instances = vec![crate::model::HaInstance {
+            id: "aaaa".into(),
+            name: "home".into(),
+            url: "http://ha.local:8123".into(),
+            token: "t".into(),
+        }];
+        cfg.ha_active = "gone".into();
+        let cfg = migrate(cfg);
+        assert_eq!(cfg.ha_active, "aaaa");
+        // No servers at all: the computer's connection is used, and an empty
+        // id is exactly that.
+        let mut cfg = DeckConfig::default();
+        cfg.ha_active = "gone".into();
+        assert!(migrate(cfg).ha_active.is_empty());
+    }
+
+    #[test]
+    fn a_named_home_assistant_keeps_its_name() {
+        let mut cfg = DeckConfig::default();
+        cfg.ha_instances = vec![crate::model::HaInstance {
+            id: "bbbb".into(),
+            name: "  dacha ".into(),
+            url: "https://example.org".into(),
+            token: "t".into(),
+        }];
+        let cfg = migrate(cfg);
+        assert_eq!(cfg.ha_instances[0].label(), "dacha");
+        assert!(cfg.ha_instances[0].ready());
     }
 }

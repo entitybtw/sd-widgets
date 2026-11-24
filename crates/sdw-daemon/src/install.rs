@@ -47,6 +47,31 @@ pub fn component_status() -> Vec<ComponentStatus> {
         hint: "Скачивается с github.com/Alia5/VIIPER".into(),
         needs_root: false,
     });
+    #[cfg(windows)]
+    {
+        out.push(windows_component(
+            "ffmpeg",
+            "ffmpeg",
+            "Трансляция экрана и звука на деку",
+            "winget install --id Gyan.FFmpeg",
+            false,
+        ));
+        let vdd = crate::win::display::vdd_ready();
+        out.push(ComponentStatus {
+            id: "vdd".into(),
+            name: "Virtual Display Driver".into(),
+            installed: vdd,
+            version: if vdd {
+                crate::win::display::vdd_status()
+            } else {
+                String::new()
+            },
+            purpose: "Виртуальный монитор для страницы «Экран»".into(),
+            hint: "winget install --id VirtualDrivers.Virtual-Display-Driver".into(),
+            needs_root: true,
+        });
+    }
+    #[cfg(not(windows))]
     for (id, name, purpose, hint, root) in [
         (
             "usbip",
@@ -301,6 +326,39 @@ fn install_viiper(ctx: &JobCtx, logger: &Logger) -> Result<(), String> {
     Ok(())
 }
 
+/// One tool found through `PATH`, for the Windows list.
+#[cfg(windows)]
+fn windows_component(
+    id: &str,
+    name: &str,
+    purpose: &str,
+    hint: &str,
+    needs_root: bool,
+) -> ComponentStatus {
+    let found = sdw_core::util::which(id);
+    let version = found
+        .as_ref()
+        .and_then(|path| Command::new(path).arg("-version").output().ok())
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default();
+    ComponentStatus {
+        id: id.into(),
+        name: name.into(),
+        installed: found.is_some(),
+        version,
+        purpose: purpose.into(),
+        hint: hint.into(),
+        needs_root,
+    }
+}
+
 /// Install the selected components. Runs inside a [`crate::state::JobManager`] job.
 pub fn install(
     components: &[String],
@@ -318,7 +376,7 @@ pub fn install(
                     return Err(e);
                 }
             }
-            "usbip" | "grim" | "ffmpeg" | "ydotool" | "wtype" | "krfb" => {
+            "usbip" | "grim" | "ffmpeg" | "ydotool" | "wtype" | "krfb" | "vdd" => {
                 need_packages.push(c.clone());
             }
             other => ctx.line(format!("Неизвестный компонент: {other}")),
@@ -326,9 +384,22 @@ pub fn install(
     }
     if !need_packages.is_empty() {
         if cfg!(windows) {
-            ctx.line("На Windows установите usbipd и ffmpeg через winget:");
-            ctx.line("  winget install --id Gyan.FFmpeg");
-            ctx.line("  winget install --id dorssel.usbipd-win");
+            // A driver and a portable tool cannot be unpacked by the daemon
+            // itself: the winget commands are printed, and the person runs
+            // them. The list matches the checkboxes above, so nothing is
+            // installed silently.
+            ctx.line("На Windows компоненты ставятся через winget:");
+            for id in &need_packages {
+                match id.as_str() {
+                    "ffmpeg" => ctx.line("  winget install --id Gyan.FFmpeg"),
+                    "vdd" => {
+                        ctx.line("  winget install --id VirtualDrivers.Virtual-Display-Driver")
+                    }
+                    "usbip" => ctx.line("  winget install --id dorssel.usbipd-win"),
+                    other => ctx.line(format!("  {other}: отдельного пакета нет")),
+                }
+            }
+            ctx.line("После установки закройте и снова откройте это окно.");
         } else if let Err(e) = install_packages(&need_packages, sudo_password, ctx) {
             ctx.error(format!("пакеты: {e}"));
             return Err(e);

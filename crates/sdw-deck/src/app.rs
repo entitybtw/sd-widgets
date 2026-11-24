@@ -70,6 +70,7 @@ fn page_width(ctx: &egui::Context) -> f32 {
 pub enum Page {
     Home,
     Clock,
+    Timers,
     Visualizer,
     Computers,
     Control,
@@ -98,9 +99,10 @@ impl Page {
         Page::Binds,
     ];
     /// Every page, in the order the arrows and the floating dock walk through them.
-    pub const ORDER: [Page; 16] = [
+    pub const ORDER: [Page; 17] = [
         Page::Home,
         Page::Clock,
+        Page::Timers,
         Page::Visualizer,
         Page::Computers,
         Page::Control,
@@ -120,6 +122,7 @@ impl Page {
         match self {
             Page::Home => "home",
             Page::Clock => "clock",
+            Page::Timers => "timers",
             Page::Visualizer => "visualizer",
             Page::Computers => "computers",
             Page::Control => "control",
@@ -139,6 +142,7 @@ impl Page {
     pub fn from_key(key: &str) -> Page {
         match key.trim().to_ascii_lowercase().as_str() {
             "clock" | "watch" | "time" => Page::Clock,
+            "timers" | "timer" | "stopwatch" | "pomodoro" => Page::Timers,
             "visualizer" | "viz" => Page::Visualizer,
             "computers" | "pc" => Page::Computers,
             "control" | "pult" | "power" => Page::Control,
@@ -160,6 +164,7 @@ impl Page {
         match self {
             Page::Home => t!(l, "домой", "home"),
             Page::Clock => t!(l, "часы", "clock"),
+            Page::Timers => t!(l, "таймеры", "timers"),
             Page::Visualizer => t!(l, "визуализатор", "visualizer"),
             Page::Computers => t!(l, "компьютеры", "computers"),
             Page::Control => t!(l, "пульт", "control"),
@@ -180,6 +185,7 @@ impl Page {
         match self {
             Page::Home => theme::icon::HOME,
             Page::Clock => theme::icon::CLOCK,
+            Page::Timers => theme::icon::TIMER,
             Page::Visualizer => theme::icon::EQUALIZER,
             Page::Computers => theme::icon::COMPUTERS,
             Page::Control => theme::icon::POWER,
@@ -279,9 +285,17 @@ pub struct HaState {
     pub age_ms: u64,
     pub stale_error: String,
     pub search: String,
+    /// The form for a new (or edited) deck-side server.
     pub url: String,
     pub token: String,
     pub token_show: bool,
+    /// Name of the server being entered; empty falls back to the host.
+    pub instance_name: String,
+    /// Server being edited, `None` while adding a new one.
+    pub edit_id: Option<String>,
+    /// The server list and its form are open.
+    pub servers_open: bool,
+    pub form_open: bool,
     pub loaded: bool,
     pub pending: bool,
     pub error: String,
@@ -338,6 +352,8 @@ pub struct BindsState {
     /// Search text of the application picker in a Launch action. Kept apart
     /// from `filter` so the bind list keeps its own search.
     pub launch_filter: String,
+    /// Search text of the Home Assistant entity picker in a Ha action.
+    pub ha_filter: String,
     /// Set by a headless check (`SDW_BIND`): a bind id and an action kind to
     /// open in the editor right away.
     pub open: Option<(String, crate::binds::ActionKind)>,
@@ -422,6 +438,8 @@ pub enum Task {
     Update(Result<UpdateInfo, String>),
     Updated(Result<(String, u64), String>),
     Installed(Result<String, String>),
+    /// The missing deck tools were installed (or the reason they were not).
+    Components(Result<String, String>),
     Audio(Result<AudioStatus, String>),
     AudioApps(Result<Vec<AudioApp>, String>),
     /// The computer's own audio bands for the visualizer.
@@ -619,6 +637,7 @@ impl TouchTrack {
 pub struct App {
     pub cfg: DeckConfig,
     pub lang: Lang,
+    pub timers: crate::timers::Timers,
     pub dark: bool,
     pub applied_dark: bool,
     pub page: Page,
@@ -779,6 +798,13 @@ pub struct App {
     pub viz_remote_pending: bool,
     pub binds: BindsState,
     pub update: UpdateState,
+    /// External tools the deck app drives; the settings page lists them and
+    /// installs the missing ones.
+    pub components: Vec<crate::components::Status>,
+    pub components_pass: String,
+    pub components_show: bool,
+    pub components_busy: bool,
+    pub components_message: String,
     pub settings_name: String,
     /// Path typed in the appearance page to import a theme pack.
     pub theme_import: String,
@@ -939,8 +965,21 @@ impl App {
         let (task_tx, task_rx) = channel();
         let input = input::start();
         let deck_view = DeckViewState::new(cfg.deck_view.clone());
+        // Packs must be known before the stored code is turned into a language:
+        // a code that names a pack becomes `Lang::Custom` and its table is
+        // activated here, not on the first frame.
+        sdw_core::i18n::load_packs();
+        let lang = match Lang::from_code(&cfg.lang) {
+            Lang::Custom => {
+                sdw_core::i18n::set_pack(Some(&cfg.lang));
+                Lang::Custom
+            }
+            lang => lang,
+        };
+        let timers = crate::timers::Timers::new(&cfg.timers);
         let app = Self {
-            lang: Lang::from_code(&cfg.lang),
+            lang,
+            timers,
             dark: cfg.dark,
             applied_dark: cfg.dark,
             page,
@@ -1068,6 +1107,10 @@ impl App {
                 url: String::new(),
                 token: String::new(),
                 token_show: false,
+                instance_name: String::new(),
+                edit_id: None,
+                servers_open: false,
+                form_open: false,
                 loaded: false,
                 pending: false,
                 error: String::new(),
@@ -1100,6 +1143,7 @@ impl App {
                 capture_since: None,
                 filter: String::new(),
                 launch_filter: String::new(),
+                ha_filter: String::new(),
                 open: std::env::var("SDW_BIND").ok().map(|v| {
                     let (id, kind) = v.split_once(':').unwrap_or((v.as_str(), "launch"));
                     let kind = match kind {
@@ -1123,6 +1167,11 @@ impl App {
                 sampled: None,
                 installed: false,
             },
+            components: crate::components::status(),
+            components_pass: String::new(),
+            components_show: false,
+            components_busy: false,
+            components_message: String::new(),
             settings_name: cfg.device_name.clone(),
             theme_import: String::new(),
             theme_pack_name: String::new(),
@@ -1956,7 +2005,12 @@ impl App {
 
     pub fn save(&mut self) {
         self.cfg.deck_view = self.deck_view.cfg.clone();
-        self.cfg.lang = self.lang.code().to_string();
+        // `Lang::Custom` is not a stored code: the file keeps the pack's own
+        // code, so the next start can find it again.
+        self.cfg.lang = match self.lang {
+            Lang::Custom => sdw_core::i18n::active_pack().unwrap_or_else(|| "en".into()),
+            lang => lang.code().to_string(),
+        };
         self.cfg.dark = self.dark;
         self.cfg.stream = sdw_core::model::StreamCfg {
             mode: self.stream.mode,
@@ -2134,6 +2188,39 @@ impl App {
 
     pub fn set_lang(&mut self, lang: Lang) {
         self.lang = lang;
+        // A built-in language replaces any pack the user had picked.
+        sdw_core::i18n::set_pack(None);
+        self.save();
+    }
+
+    /// Switch to a language pack from the `lang` folder of the config dir.
+    pub fn set_lang_pack(&mut self, code: &str) {
+        if !sdw_core::i18n::pack_list().iter().any(|p| p.code == code) {
+            return;
+        }
+        sdw_core::i18n::set_pack(Some(code));
+        self.lang = Lang::Custom;
+        self.cfg.lang = code.to_string();
+        self.save();
+    }
+
+    /// Read the pack folder again. The selected pack stays selected when its
+    /// file is still there; a missing one falls back to English.
+    pub fn reload_lang_packs(&mut self) {
+        let active = sdw_core::i18n::active_pack();
+        sdw_core::i18n::load_packs();
+        match active {
+            Some(code) if sdw_core::i18n::is_pack(&code) => {
+                sdw_core::i18n::set_pack(Some(&code));
+                self.lang = Lang::Custom;
+            }
+            Some(_) => {
+                // The pack was removed or broken: show a language that exists.
+                self.lang = Lang::En;
+                sdw_core::i18n::set_pack(None);
+            }
+            None => {}
+        }
         self.save();
     }
 
@@ -2621,17 +2708,173 @@ impl App {
         }
     }
 
-    /// A Home Assistant connection kept by the deck itself. When an address
-    /// and a token are set, the deck talks to Home Assistant directly and does
-    /// not need the computer at all.
-    pub fn ha_direct(&self) -> Option<sdw_core::ha::HaClient> {
-        if self.cfg.ha_url.trim().is_empty() || self.cfg.ha_token.trim().is_empty() {
+    /// The deck-side server the page is using now: the chosen instance, when
+    /// one is chosen and complete.
+    pub fn ha_instance(&self) -> Option<&sdw_core::model::HaInstance> {
+        let id = self.cfg.ha_active.trim();
+        if id.is_empty() {
             return None;
         }
-        Some(sdw_core::ha::HaClient::new(
-            &self.cfg.ha_url,
-            &self.cfg.ha_token,
-        ))
+        self.cfg
+            .ha_instances
+            .iter()
+            .find(|i| i.id == id && i.ready())
+    }
+
+    /// A Home Assistant connection kept by the deck itself. When a server is
+    /// chosen the deck talks to it directly and does not need the computer.
+    pub fn ha_direct(&self) -> Option<sdw_core::ha::HaClient> {
+        if let Some(instance) = self.ha_instance() {
+            return Some(sdw_core::ha::HaClient::new(&instance.url, &instance.token));
+        }
+        // A file written before the server list: one address and token.
+        if self.cfg.ha_instances.is_empty()
+            && !self.cfg.ha_url.trim().is_empty()
+            && !self.cfg.ha_token.trim().is_empty()
+        {
+            return Some(sdw_core::ha::HaClient::new(
+                &self.cfg.ha_url,
+                &self.cfg.ha_token,
+            ));
+        }
+        None
+    }
+
+    /// The chosen server's name, shown next to the page title.
+    pub fn ha_active_label(&self) -> Option<String> {
+        self.ha_instance().map(|i| i.label())
+    }
+
+    /// Choose the source of the page: one of the deck's servers, or empty for
+    /// the computer's own connection. The cached entities belong to the old
+    /// one, so they go.
+    pub fn select_ha(&mut self, id: &str) {
+        if self.cfg.ha_active == id {
+            return;
+        }
+        self.cfg.ha_active = id.to_string();
+        self.save();
+        self.clear_ha_cache();
+        self.toast(
+            t!(
+                self.lang,
+                "источник home assistant переключён",
+                "home assistant source switched"
+            ),
+            true,
+        );
+    }
+
+    fn clear_ha_cache(&mut self) {
+        self.ha.entities.clear();
+        self.ha.areas.clear();
+        self.ha.views.clear();
+        self.ha.connected = false;
+        self.ha.loaded = false;
+        self.ha.error.clear();
+        self.ha.stale_error.clear();
+        self.ha.room = 0;
+        self.ha.page = 0;
+        self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
+    }
+
+    /// Store the server from the form (a new one or the one being edited) and
+    /// use it at once.
+    pub fn save_ha_instance(&mut self, name: &str, url: &str, token: &str) {
+        let url = url.trim().to_string();
+        let token = token.trim().to_string();
+        if url.is_empty() || token.is_empty() {
+            return;
+        }
+        let name = name.trim().to_string();
+        let id = match self.ha.edit_id.take() {
+            Some(id) => {
+                if let Some(instance) = self.cfg.ha_instances.iter_mut().find(|i| i.id == id) {
+                    instance.name = name;
+                    instance.url = url;
+                    instance.token = token;
+                }
+                id
+            }
+            None => {
+                let id = sdw_core::model::random_id(4);
+                self.cfg.ha_instances.push(sdw_core::model::HaInstance {
+                    id: id.clone(),
+                    name,
+                    url,
+                    token,
+                });
+                id
+            }
+        };
+        self.cfg.ha_active = id;
+        // The old single pair is superseded by the list.
+        self.cfg.ha_url.clear();
+        self.cfg.ha_token.clear();
+        self.save();
+        self.clear_ha_cache();
+        self.ha.url.clear();
+        self.ha.token.clear();
+        self.ha.instance_name.clear();
+        self.ha.form_open = false;
+        self.toast(
+            t!(
+                self.lang,
+                "home assistant подключён",
+                "home assistant connected"
+            ),
+            true,
+        );
+    }
+
+    /// Open the form on an existing server.
+    pub fn edit_ha_instance(&mut self, id: &str) {
+        let Some(instance) = self.cfg.ha_instances.iter().find(|i| i.id == id) else {
+            return;
+        };
+        self.ha.edit_id = Some(id.to_string());
+        self.ha.instance_name = instance.name.clone();
+        self.ha.url = instance.url.clone();
+        self.ha.token = instance.token.clone();
+        self.ha.error.clear();
+        self.ha.form_open = true;
+    }
+
+    /// Start the form on a fresh server.
+    pub fn new_ha_instance(&mut self) {
+        self.ha.edit_id = None;
+        self.ha.instance_name.clear();
+        self.ha.url.clear();
+        self.ha.token.clear();
+        self.ha.error.clear();
+        self.ha.form_open = true;
+    }
+
+    pub fn cancel_ha_form(&mut self) {
+        self.ha.edit_id = None;
+        self.ha.instance_name.clear();
+        self.ha.url.clear();
+        self.ha.token.clear();
+        self.ha.form_open = false;
+        self.cancel_ha_link();
+    }
+
+    /// Drop a server from the list; choosing the computer when it was active.
+    pub fn remove_ha_instance(&mut self, id: &str) {
+        self.cfg.ha_instances.retain(|i| i.id != id);
+        if self.cfg.ha_active == id {
+            self.cfg.ha_active = self
+                .cfg
+                .ha_instances
+                .first()
+                .map(|i| i.id.clone())
+                .unwrap_or_default();
+        }
+        if self.ha.edit_id.as_deref() == Some(id) {
+            self.cancel_ha_form();
+        }
+        self.save();
+        self.clear_ha_cache();
     }
 
     /// What the Home Assistant page shows: the deck's own connection when it
@@ -2703,22 +2946,6 @@ impl App {
         }
     }
 
-    /// Forget the deck's own Home Assistant connection, so the form and the
-    /// phone page are reachable again.
-    pub fn forget_ha(&mut self) {
-        self.cfg.ha_url.clear();
-        self.cfg.ha_token.clear();
-        self.save();
-        self.ha.entities.clear();
-        self.ha.areas.clear();
-        self.ha.views.clear();
-        self.ha.connected = false;
-        self.ha.loaded = false;
-        self.ha.error.clear();
-        self.ha.stale_error.clear();
-        self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
-    }
-
     /// Take the answer from the phone page, if it is there.
     pub fn poll_ha_link(&mut self) {
         if self.ha_link.is_none() {
@@ -2744,25 +2971,8 @@ impl App {
         if let Some(mut link) = self.ha_link.take() {
             link.stop();
         }
-        self.cfg.ha_url = url;
-        self.cfg.ha_token = token;
-        self.save();
-        self.ha.entities.clear();
-        self.ha.areas.clear();
-        self.ha.views.clear();
-        self.ha.connected = false;
-        self.ha.loaded = false;
-        self.ha.error.clear();
-        self.ha.stale_error.clear();
-        self.ha.last_fetch = Instant::now() - Duration::from_secs(60);
-        self.toast(
-            t!(
-                self.lang,
-                "home assistant подключён",
-                "home assistant connected"
-            ),
-            true,
-        );
+        let name = self.ha.instance_name.clone();
+        self.save_ha_instance(&name, &url, &token);
     }
 
     /// Read every store catalogue in one worker. Network work never runs on
@@ -3751,13 +3961,53 @@ impl App {
         self.spawn(move || Task::Monitor(c.start_monitor(&req).map_err(|e| e.to_string())));
     }
 
+    /// The release source the settings ask for: the built-in one when the
+    /// field is empty or unusable.
+    pub fn update_remote(&self) -> update::Remote {
+        update::Remote::parse(&self.cfg.update_remote).unwrap_or_default()
+    }
+
+    /// Install the deck tools that are missing, then refresh the list.
+    pub fn install_components(&mut self) {
+        if self.components_busy {
+            return;
+        }
+        let ids: Vec<String> = self
+            .components
+            .iter()
+            .filter(|c| !c.present)
+            .map(|c| c.id.to_string())
+            .collect();
+        if ids.is_empty() {
+            self.toast(
+                t!(
+                    self.lang,
+                    "все компоненты на месте",
+                    "every component is in place"
+                ),
+                true,
+            );
+            return;
+        }
+        self.components_busy = true;
+        self.components_message.clear();
+        let password = self.components_pass.clone();
+        let lang = self.lang;
+        self.spawn(move || Task::Components(crate::components::install(&ids, &password, lang)));
+    }
+
+    pub fn refresh_components(&mut self) {
+        self.components = crate::components::status();
+    }
+
     pub fn check_updates(&mut self) {
         if self.update.checking {
             return;
         }
         self.update.checking = true;
         self.update.error.clear();
-        self.spawn(|| Task::Update(update::check()));
+        let remote = self.update_remote();
+        self.spawn(move || Task::Update(update::check_at(&remote)));
     }
 
     /// Start the freshly installed file and leave. Inside an AppImage the
@@ -4015,6 +4265,12 @@ impl App {
                     binds::capture_gesture(self, &spec);
                     return;
                 }
+                // While the pad is forwarded to a computer the gestures belong
+                // to the game there: firing a desktop bind from a three-finger
+                // swipe would be a surprise mid-session.
+                if self.gamepad_on {
+                    return;
+                }
                 let id = spec.id();
                 let hit = self
                     .cfg
@@ -4061,7 +4317,11 @@ impl App {
                             }
                             return;
                         }
-                        self.run_button_binds(code);
+                        // The forwarded pad is the game's controller: the same
+                        // button must not also launch an app or a macro.
+                        if !self.gamepad_on {
+                            self.run_button_binds(code);
+                        }
                     }
                 } else {
                     self.pressed.remove(&code);
@@ -4522,6 +4782,29 @@ impl App {
                 self.toast(msg, true);
             }
             Task::Installed(Err(e)) => self.toast(e, false),
+            Task::Components(result) => {
+                self.components_busy = false;
+                self.refresh_components();
+                match result {
+                    Ok(log) => {
+                        self.components_message = log;
+                        // The password is not kept after a successful run.
+                        self.components_pass.clear();
+                        self.toast(
+                            t!(
+                                self.lang,
+                                "компоненты установлены",
+                                "the components are installed"
+                            ),
+                            true,
+                        );
+                    }
+                    Err(e) => {
+                        self.components_message = e.clone();
+                        self.toast(e, false);
+                    }
+                }
+            }
             Task::NotifLog(Ok(list)) => {
                 self.notif_log_pending = false;
                 self.notif_log_loaded = true;
@@ -5552,6 +5835,7 @@ impl App {
         match self.page {
             Page::Home => crate::pages::home(self, ui, t),
             Page::Clock => crate::pages::clock(self, ui, t),
+            Page::Timers => crate::timers::page(self, ui, t),
             Page::Visualizer => crate::viz_stage::page(self, ui, t),
             Page::Computers => crate::pages::computers(self, ui, t),
             Page::Control => crate::pages::control(self, ui, t),
@@ -6052,6 +6336,19 @@ impl eframe::App for App {
         self.quick_clicked = false;
         self.maybe_check_updates();
         self.tick(&ctx);
+        // Timers run on wall time, not on clicks: a running clock still has to
+        // reach its end while the user is on another page, and the cue has to
+        // sound right then.
+        if self.timers.tick(&self.cfg.timers) {
+            if self.cfg.timers.sound {
+                crate::sound::play(&self.cfg.sound, crate::sound::Cue::Notify);
+            }
+            self.toast = Some(Toast {
+                text: t!(self.lang, "время вышло", "time is up").to_string(),
+                ok: true,
+                at: Instant::now(),
+            });
+        }
         self.tick_notif_slides(&ctx);
         self.keyboard_tick(&ctx);
         if let Some(at) = self.save_at {
@@ -6100,6 +6397,10 @@ impl eframe::App for App {
         // idle 350 ms beat would turn the bars into a slideshow.
         if self.viz_visible() {
             ms = ms.min(self.viz_interval_ms());
+        }
+        // A running clock should tick smoothly even on another page.
+        if self.timers.running() {
+            ms = ms.min(100);
         }
         ctx.request_repaint_after(Duration::from_millis(ms));
         self.pump_share(&ctx);

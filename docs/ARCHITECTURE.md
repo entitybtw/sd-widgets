@@ -25,7 +25,14 @@
 - `i18n.rs` — `t!(lang, "ru", "en")` plus the Russian → Ukrainian table in
   `i18n/uk.rs`; a missing row falls back to Russian and the
   `every_string_written_in_a_call_has_a_ukrainian_row` test catches it.
+  `i18n/packs.rs` loads user packs from `<config>/sd-widgets/lang`, keeps the
+  active table as leaked `&'static str` pairs so `tr` never allocates, and
+  produces the template from the Ukrainian keys (every translatable line).
 - `ha.rs` — Home Assistant helpers.
+- `update.rs` — release checks and downloads. `Remote` is the source: a
+  Forgejo/Gitea instance (`/api/v1/repos/...`) or GitHub (`/api.github.com` or
+  an enterprise host's `/api/v3`), read from a repository web address; both
+  kinds answer the same release fields, so one parser serves them.
 - `addons.rs` — declarative addon manifests, install/remove, settings values,
   `AddonInfo` for the status payload.
 - `util.rs` — paths, process helpers, addresses, platform detection.
@@ -48,6 +55,8 @@
   up between the dim layer and the panel and swallow a button press.
 - `pages.rs` — home grid and every page, including the Look page.
 - `clock.rs` — the four clock renderers and their controls.
+- `timers.rs` — the countdown, the lap stopwatch and the pomodoro clock; their
+  lengths live in `TimerCfg`, a running clock only in the page state.
 - `addons_ui.rs` — the Addons page: import, enable, settings, themes, clocks and
   daemon action buttons.
 - `theme.rs` — Grid tokens, CSS variable parser, presets, backdrop, tiles,
@@ -64,6 +73,12 @@
   the clock face.
 - `sys.rs` — the Deck's own output volume and panel brightness (`wpctl`/`pactl`,
   sysfs/`brightnessctl`), used by the pull-down panel.
+- `components.rs` — the external programs the app drives (`pw-play`/`paplay`,
+  `parec`, `playerctl`, `wtype`, `xdotool`, `grim`), their declared package
+  names per package manager, and an install job that runs `sudo -S` with the
+  password from the settings page. On SteamOS `steamos-readonly` is turned off
+  for the install and back on afterwards, even on failure. Only the ids in the
+  module's table can be installed; the page never passes a command.
 - `main.rs` — CLI and eframe entry.
 
 ### `sdw-daemon` (the computer)
@@ -91,11 +106,20 @@
   bounded PCM ring buffer and the blocking `Read` used by the HTTP stream.
 - `server.rs` also routes `addon:<id>:<action>` through the declared action
   runner; disabled addons and undeclared actions are rejected.
-- `install.rs` — dependency detection and install jobs.
+- `install.rs` — dependency detection and install jobs. On Windows the list is
+  `ffmpeg` and the Virtual Display Driver, and the job prints the matching
+  `winget` lines instead of unpacking a driver itself.
+- `win/` — the Windows layer, chosen with `#[cfg(windows)]` at the crate root:
+  `display.rs` (Virtual Display Driver, monitor placement), `audio.rs` (WASAPI
+  loopback, per-process capture), `media.rs` (system media transport controls),
+  `bluetooth.rs`, `notify.rs` (toast mirroring through
+  `UserNotificationListener`) and `tray.rs` (a hidden window plus
+  `Shell_NotifyIconW`). The rest of the daemon — API, model, window — is shared.
 - `gui/` — hoplite-style hard-edge egui setup wizard and control panel; the
   **steam deck** page holds the mirror's `watching` window open only while its
   watch switch is on.
-- `config.rs` — daemon config in TOML.
+- `config.rs` — daemon config in TOML; `update_remote` is the release source the
+  window and `--check-updates` use.
 
 ### `vendor/viiper-client`
 
@@ -111,6 +135,29 @@ its own config. The Deck applies a theme as the preset `addon:<id>`, adds tiles
 to Home and clock presets to the Clock page. The daemon lists the packages in
 `DaemonStatus.addons` and runs an action only when the package is enabled. The
 format is documented in [`ADDONS.md`](ADDONS.md).
+
+## Release source
+
+Both binaries store the source as one string, `update_remote` in their own
+config (empty means the built-in `git.entitybtw.ru`). A repository web address
+is enough: the host decides the kind — anything with `github` in it is GitHub,
+the rest is Forgejo/Gitea — and the API path and release page follow from it.
+`sdw_core::update::Remote::parse` also accepts a `.git` suffix, a trailing
+`/releases`, an API address and the `git@host:owner/name` form a `git remote`
+prints. The check, the notes, the asset pick and the download are unchanged;
+only the address moves. The daemon's `--check-updates` and `--update` read the
+same field.
+
+## Home Assistant servers on the Deck
+
+`DeckConfig.ha_instances` is a list of `HaInstance` (`id`, `name`, `url`,
+`token`); `ha_active` names the chosen one and an empty id means the computer's
+connection. The old single `ha_url`/`ha_token` pair is migrated into the first
+instance on load and cleared, so the two can never disagree. Switching a source
+clears the cached entities, areas and views, because they belong to the server
+that was asked. A chosen id whose server was removed falls back to the first
+one. The token never leaves the Deck; the computer's own connection still needs
+no token here.
 
 ## Threads
 

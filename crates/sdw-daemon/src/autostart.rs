@@ -1,9 +1,10 @@
 //! Start the daemon together with the desktop session.
 //!
-//! Two mechanisms, because no single one covers Linux: an XDG autostart entry
-//! (GNOME, KDE, Xfce and anything that honours it) and a line in the
-//! compositor's own config, since niri and Hyprland ignore XDG autostart.
-//! Turning the switch off removes both.
+//! On Linux two mechanisms, because no single one covers it: an XDG autostart
+//! entry (GNOME, KDE, Xfce and anything that honours it) and a line in the
+//! compositor's own config, since niri and Hyprland ignore XDG autostart. On
+//! Windows it is the per-user `Run` key, which every desktop session reads.
+//! Turning the switch off removes whatever was written.
 //!
 //! The command always carries `--hidden`: at login the daemon should serve the
 //! Deck and the tray, not open a window over the desktop. The tray, `--show`
@@ -12,7 +13,9 @@
 use crate::state::Logger;
 use std::path::{Path, PathBuf};
 
+#[cfg(not(windows))]
 const NIRI_MARK: &str = "// sd-widgets: daemon autostart";
+#[cfg(not(windows))]
 const HYPR_MARK: &str = "# sd-widgets: daemon autostart";
 
 /// What [`apply`] did, so the window can say it instead of guessing.
@@ -29,20 +32,9 @@ pub enum Outcome {
 /// KDL/Hyprland configs. A `target/debug` binary is a development build and
 /// must never write itself into the maintainer's session config; a release
 /// build is what `make release` produces, and it is fine to autostart.
+#[cfg(not(windows))]
 fn command() -> Option<(String, String, String)> {
-    let exe = if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()) {
-        PathBuf::from(appimage)
-    } else {
-        let exe = std::env::current_exe().ok()?;
-        let debug = exe
-            .components()
-            .zip(exe.components().skip(1))
-            .any(|(a, b)| a.as_os_str() == "target" && b.as_os_str() == "debug");
-        if debug {
-            return None;
-        }
-        exe
-    };
+    let exe = release_exe()?;
     let path = exe.display().to_string();
     let sh = shell_quote(&path);
     let kdl = kdl_quote(&path);
@@ -53,6 +45,38 @@ fn command() -> Option<(String, String, String)> {
     ))
 }
 
+/// The binary a session should start: the AppImage when this runs from one,
+/// otherwise the release executable. A `target/debug` build is a development
+/// build and must never write itself into the user's session config.
+fn release_exe() -> Option<PathBuf> {
+    if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(appimage));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let debug = exe
+        .components()
+        .zip(exe.components().skip(1))
+        .any(|(a, b)| a.as_os_str() == "target" && b.as_os_str() == "debug");
+    if debug {
+        return None;
+    }
+    Some(exe)
+}
+
+/// The `Run` value on Windows. `CreateProcess` splits the command line itself,
+/// so only a path with spaces needs quotes and no backslash is escaped.
+#[cfg(windows)]
+fn windows_command() -> Option<String> {
+    let path = release_exe()?.display().to_string();
+    let quoted = if path.contains(' ') {
+        format!("\"{path}\"")
+    } else {
+        path
+    };
+    Some(format!("{quoted} --hidden"))
+}
+
+#[cfg(not(windows))]
 fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "\"\"".into();
@@ -65,12 +89,14 @@ fn shell_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+#[cfg(not(windows))]
 fn kdl_quote(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// True when this line is one of ours: a spawn/exec for this daemon, including
 /// entries written by an older version or the installer.
+#[cfg(not(windows))]
 fn ours(line: &str) -> bool {
     let t = line.trim_start();
     let spawn = t.starts_with("spawn-at-startup") || t.starts_with("exec-once");
@@ -81,6 +107,7 @@ fn ours(line: &str) -> bool {
             || t.contains("sdw_deck"))
 }
 
+#[cfg(not(windows))]
 fn without_ours(text: &str) -> String {
     let mut out: Vec<&str> = Vec::with_capacity(text.lines().count());
     let mut skip_pending = false;
@@ -120,6 +147,7 @@ fn without_ours(text: &str) -> String {
     text
 }
 
+#[cfg(not(windows))]
 fn write_if_changed(path: &Path, text: &str, logger: &Logger) -> bool {
     match std::fs::read_to_string(path) {
         Ok(old) if old == text => return false,
@@ -143,6 +171,7 @@ fn write_if_changed(path: &Path, text: &str, logger: &Logger) -> bool {
     }
 }
 
+#[cfg(not(windows))]
 fn remove_if_present(path: &Path, logger: &Logger) {
     if path.exists() {
         match std::fs::remove_file(path) {
@@ -160,6 +189,7 @@ fn remove_if_present(path: &Path, logger: &Logger) {
 /// there), so it is bound to `graphical-session.target`. The command already
 /// carries `--hidden`: systemd starts it in the tray, and `sdw-daemon --show`
 /// brings the window back.
+#[cfg(not(windows))]
 fn systemd_unit(cmd: &str) -> String {
     format!(
         "[Unit]\n\
@@ -183,11 +213,13 @@ fn systemd_unit(cmd: &str) -> String {
 /// `systemctl --user` works only on a real user systemd. A machine without it
 /// (a session started by hand, a container, OpenRC) reports failure here, and
 /// the caller then says so plainly instead of claiming the service is on.
+#[cfg(not(windows))]
 fn user_systemd() -> bool {
     sdw_core::util::has("systemctl")
         && sdw_core::util::run("systemctl", &["--user", "show-environment"]).is_ok()
 }
 
+#[cfg(not(windows))]
 fn xdg_entry(cmd: &str) -> String {
     format!(
         "[Desktop Entry]\n\
@@ -202,8 +234,71 @@ fn xdg_entry(cmd: &str) -> String {
 }
 
 /// Put the session in the requested state. Safe to call on every start: it
-/// only writes a file when the content actually changes.
+/// only writes when the content actually changes.
 pub fn apply(enabled: bool, logger: &Logger) -> Outcome {
+    #[cfg(windows)]
+    return apply_windows(enabled, logger);
+    #[cfg(not(windows))]
+    return apply_unix(enabled, logger);
+}
+
+/// Windows: the per-user `Run` key, which every interactive session reads.
+/// No service and no window: `--hidden` keeps the daemon in the tray.
+#[cfg(windows)]
+fn apply_windows(enabled: bool, logger: &Logger) -> Outcome {
+    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    const NAME: &str = "sd-widgets";
+    if !enabled {
+        match reg(&["delete", KEY, "/v", NAME, "/f"]) {
+            Ok(_) => logger.info("автозапуск выключен"),
+            Err(e) => logger.warn(format!("автозапуск: {e}")),
+        }
+        return Outcome::Removed;
+    }
+    let Some(command) = windows_command() else {
+        logger.info(
+            "автозапуск: пропущен для отладочной сборки (запустите установленный \
+             демон или AppImage, чтобы включить его)",
+        );
+        return Outcome::Skipped;
+    };
+    match reg(&["add", KEY, "/v", NAME, "/t", "REG_SZ", "/d", &command, "/f"]) {
+        Ok(_) => {
+            logger.info(format!("автозапуск: {command}"));
+            Outcome::Written
+        }
+        Err(e) => {
+            logger.warn(format!("автозапуск: {e}"));
+            Outcome::Removed
+        }
+    }
+}
+
+/// Run `reg.exe` without flashing a console window.
+#[cfg(windows)]
+fn reg(args: &[&str]) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    /// `CREATE_NO_WINDOW`
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let output = std::process::Command::new("reg")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| format!("reg: {e}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    } else {
+        let text = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        Err(if text.is_empty() {
+            format!("reg завершился с {}", output.status)
+        } else {
+            text
+        })
+    }
+}
+
+#[cfg(not(windows))]
+fn apply_unix(enabled: bool, logger: &Logger) -> Outcome {
     // `$XDG_CONFIG_HOME` when the session sets it, `~/.config` otherwise, so
     // the entry and the compositor lines land where the desktop looks.
     let entry = crate::config::session_config_dir().join("autostart/sdw-daemon.desktop");
@@ -260,6 +355,7 @@ pub fn apply(enabled: bool, logger: &Logger) -> Outcome {
 }
 
 /// Where the user unit lives: the path `systemctl --user` reads.
+#[cfg(not(windows))]
 fn unit_path() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -269,6 +365,7 @@ fn unit_path() -> PathBuf {
 /// Write and enable the user unit. The XDG entry stays as the fallback for a
 /// machine with no user systemd at all; with both, systemd starts the daemon
 /// and the desktop entry finds it already running and exits.
+#[cfg(not(windows))]
 fn systemd_on(cmd: &str, logger: &Logger) {
     let unit = unit_path();
     if !user_systemd() {
@@ -301,6 +398,7 @@ fn systemd_on(cmd: &str, logger: &Logger) {
     }
 }
 
+#[cfg(not(windows))]
 fn systemd_off(logger: &Logger) {
     let unit = unit_path();
     if !unit.exists() {
@@ -314,7 +412,7 @@ fn systemd_off(logger: &Logger) {
     let _ = sdw_core::util::run("systemctl", &["--user", "daemon-reload"]);
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
 
@@ -373,6 +471,7 @@ mod tests {
     }
 }
 
+#[cfg(not(windows))]
 fn compositor_configs() -> Vec<(PathBuf, &'static str)> {
     vec![
         (crate::config::niri_config_path(), NIRI_MARK),

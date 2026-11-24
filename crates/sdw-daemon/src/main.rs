@@ -1,14 +1,29 @@
 //! sd-widgets daemon: virtual gamepads, extra screen, notifications and Home Assistant.
 
 mod apps;
+#[cfg(not(windows))]
+mod audio;
+#[cfg(windows)]
+#[path = "win/audio.rs"]
 mod audio;
 mod autostart;
+#[cfg(not(windows))]
+mod bluetooth;
+#[cfg(windows)]
+#[path = "win/bluetooth.rs"]
 mod bluetooth;
 mod config;
 mod deck_audio;
+// Sample conversion for the Windows audio capture; tested on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod dsp;
 #[cfg(feature = "gui")]
 mod gui;
 mod install;
+#[cfg(not(windows))]
+mod media;
+#[cfg(windows)]
+#[path = "win/media.rs"]
 mod media;
 mod mirror;
 mod monitor;
@@ -19,6 +34,12 @@ mod spectrum;
 mod state;
 mod tray;
 mod viiper;
+// The Virtual Display Driver settings editor is pure text handling; on Linux
+// it is only compiled for its tests and to keep `cargo check` honest.
+#[cfg_attr(not(windows), allow(dead_code))]
+mod vdd;
+#[cfg(windows)]
+mod win;
 
 use clap::Parser;
 use sdw_core::model::VERSION;
@@ -99,11 +120,14 @@ fn main() {
         println!("пароль сброшен; при следующем запуске откроется настройка");
     }
     if cli.check_updates || cli.download_update {
-        match sdw_core::update::check() {
+        let remote = sdw_core::update::Remote::parse(&cfg.update_remote).unwrap_or_default();
+        match sdw_core::update::check_at(&remote) {
             Ok(info) => {
                 println!(
-                    "сейчас {} · на git.entitybtw.ru {}",
-                    info.current, info.latest
+                    "сейчас {} · на {} {}",
+                    info.current,
+                    remote.label(),
+                    info.latest
                 );
                 if info.newer {
                     println!("доступно обновление: {}", info.name);

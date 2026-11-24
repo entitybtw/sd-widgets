@@ -9,7 +9,9 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, FontFamily, Layout, Margin, RichText, Stroke, TextEdit, Ui,
     Vec2,
 };
-use sdw_core::model::{random_id, Action, Bind, GestureKind, GestureSpec, SwipeDir, Trigger};
+use sdw_core::model::{
+    random_id, Action, Bind, GestureKind, GestureSpec, HaEntity, SwipeDir, Trigger,
+};
 use sdw_core::{t, Lang};
 
 /// What kind of action a bind carries. Kept next to the editor because it is
@@ -1091,23 +1093,7 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     entity,
                     ..
                 } => {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            TextEdit::singleline(domain)
-                                .hint_text("light")
-                                .desired_width(90.0),
-                        );
-                        ui.add(
-                            TextEdit::singleline(service)
-                                .hint_text("toggle")
-                                .desired_width(90.0),
-                        );
-                    });
-                    ui.add(
-                        TextEdit::singleline(entity)
-                            .hint_text("light.kitchen")
-                            .desired_width(f32::INFINITY),
-                    );
+                    ha_action(app, ui, t, lang, host, domain, service, entity);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t!(lang, "компьютер", "computer")).size(12.5).color(t.muted));
                         let current = host.clone().unwrap_or_default();
@@ -1313,6 +1299,284 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
             app.toast(t!(lang, "бинд удалён", "bind deleted"), true);
         }
     }
+}
+
+/// Services a bind is likely to call, per Home Assistant domain. A service the
+/// list does not know can still be typed under "type by hand".
+fn ha_services(domain: &str) -> &'static [&'static str] {
+    match domain {
+        "light" | "switch" | "input_boolean" | "fan" | "automation" | "siren" => {
+            &["toggle", "turn_on", "turn_off"]
+        }
+        "scene" => &["turn_on", "apply"],
+        "script" => &["turn_on", "turn_off", "reload"],
+        "media_player" => &[
+            "media_play_pause",
+            "media_play",
+            "media_pause",
+            "media_next_track",
+            "media_previous_track",
+            "volume_up",
+            "volume_down",
+            "volume_set",
+            "volume_mute",
+            "turn_on",
+            "turn_off",
+        ],
+        "climate" => &[
+            "turn_on",
+            "turn_off",
+            "set_temperature",
+            "set_hvac_mode",
+            "set_fan_mode",
+        ],
+        "cover" => &[
+            "open_cover",
+            "close_cover",
+            "stop_cover",
+            "toggle",
+            "set_position",
+        ],
+        "lock" => &["lock", "unlock", "open"],
+        "vacuum" => &["start", "stop", "pause", "return_to_base", "locate"],
+        "button" => &["press"],
+        "number" | "input_number" => &["set_value"],
+        "select" | "input_select" => &["select_option", "select_next", "select_previous"],
+        "humidifier" | "water_heater" | "valve" => &["turn_on", "turn_off", "toggle"],
+        "notify" => &["send_message"],
+        _ => &["toggle", "turn_on", "turn_off"],
+    }
+}
+
+/// Domains worth showing in the picker: everything the cached state holds, the
+/// usual ones even before a first load, and the value an older bind carries.
+fn ha_domains(entities: &[HaEntity], current: &str, lang: Lang) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |domain: &str| {
+        if !domain.is_empty() && !out.iter().any(|d| d == domain) {
+            out.push(domain.to_string());
+        }
+    };
+    for entity in entities {
+        push(entity.domain());
+    }
+    for domain in [
+        "light",
+        "switch",
+        "scene",
+        "script",
+        "media_player",
+        "climate",
+        "cover",
+        "fan",
+        "lock",
+        "button",
+        "vacuum",
+        "number",
+        "select",
+    ] {
+        push(domain);
+    }
+    push(current);
+    out.sort_by(|a, b| {
+        sdw_core::ha::domain_label(a, lang)
+            .cmp(sdw_core::ha::domain_label(b, lang))
+            .then_with(|| a.cmp(b))
+    });
+    out
+}
+
+/// The Home Assistant part of the action editor: pick a domain, a service of
+/// that domain and an entity by name. The raw fields are still there under
+/// "type by hand", so an older bind or an entity the daemon has not seen yet
+/// keeps working.
+fn ha_action(
+    app: &mut App,
+    ui: &mut Ui,
+    t: &Tokens,
+    lang: Lang,
+    _host: &mut Option<String>,
+    domain: &mut String,
+    service: &mut String,
+    entity: &mut String,
+) {
+    let pending = app.ha.pending;
+    let loaded = app.ha.loaded;
+    let lang_ = lang;
+    theme::row_ends(
+        ui,
+        |ui| {
+            ui.label(theme::hud(
+                t!(lang_, "home assistant", "home assistant"),
+                t.faint,
+            ));
+            if pending {
+                ui.spinner();
+            }
+        },
+        |ui| {
+            if theme::ghost(
+                ui,
+                t!(
+                    lang_,
+                    "загрузить из home assistant",
+                    "load from home assistant"
+                ),
+                t,
+            )
+            .clicked()
+            {
+                app.load_ha();
+            }
+        },
+    );
+
+    ui.horizontal_wrapped(|ui| {
+        let domains = ha_domains(&app.ha.entities, domain, lang);
+        let domain_text = if domain.is_empty() {
+            t!(lang, "домен", "domain").to_string()
+        } else {
+            format!("{}  {domain}", sdw_core::ha::domain_label(domain, lang))
+        };
+        egui::ComboBox::from_id_salt("bind-ha-domain")
+            .selected_text(RichText::new(domain_text).size(12.5))
+            .width(170.0)
+            .show_ui(ui, |ui| {
+                for name in &domains {
+                    let text = format!("{}  {name}", sdw_core::ha::domain_label(name, lang));
+                    if ui
+                        .selectable_label(domain == name, RichText::new(text).size(12.5))
+                        .clicked()
+                    {
+                        *domain = name.clone();
+                        // A service belongs to its domain: keep the choice valid.
+                        if !ha_services(name).contains(&service.as_str()) {
+                            *service = ha_services(name).first().copied().unwrap_or("").to_string();
+                        }
+                    }
+                }
+            });
+
+        let services = ha_services(domain);
+        egui::ComboBox::from_id_salt("bind-ha-service")
+            .selected_text(if service.is_empty() {
+                t!(lang, "сервис", "service").to_string()
+            } else {
+                service.clone()
+            })
+            .width(170.0)
+            .show_ui(ui, |ui| {
+                for name in services {
+                    let label = RichText::new(*name)
+                        .family(FontFamily::Monospace)
+                        .size(12.5);
+                    if ui.selectable_label(service == name, label).clicked() {
+                        *service = (*name).to_string();
+                    }
+                }
+            });
+    });
+
+    ui.add_space(4.0);
+    ui.add(
+        TextEdit::singleline(&mut app.binds.ha_filter)
+            .hint_text(t!(
+                lang,
+                "поиск устройства или комнаты",
+                "search a device or a room"
+            ))
+            .desired_width(f32::INFINITY),
+    );
+    let needle = app.binds.ha_filter.trim().to_lowercase();
+    let mut shown = 0usize;
+    egui::ScrollArea::vertical()
+        .id_salt("bind-ha-entities")
+        .max_height(180.0)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            if !loaded {
+                ui.label(
+                    RichText::new(t!(
+                        lang,
+                        "устройства ещё не загружены — нажмите «загрузить»",
+                        "devices are not loaded yet — press \"load\""
+                    ))
+                    .size(12.0)
+                    .color(t.muted),
+                );
+                return;
+            }
+            for e in &app.ha.entities {
+                if !domain.is_empty() && e.domain() != domain {
+                    continue;
+                }
+                let name = e.name();
+                let id = &e.entity_id;
+                if !needle.is_empty() {
+                    let hay = format!(
+                        "{} {} {}",
+                        name.to_lowercase(),
+                        e.area.to_lowercase(),
+                        id.to_lowercase()
+                    );
+                    if !hay.contains(&needle) {
+                        continue;
+                    }
+                }
+                shown += 1;
+                let text = if e.area.is_empty() {
+                    format!("{name}  ·  {id}")
+                } else {
+                    format!("{name}  ·  {}  ·  {id}", e.area)
+                };
+                if ui
+                    .selectable_label(entity == id, RichText::new(text).size(12.5))
+                    .clicked()
+                {
+                    *entity = id.clone();
+                    if domain != e.domain() {
+                        *domain = e.domain().to_string();
+                    }
+                }
+            }
+            if shown == 0 {
+                ui.label(
+                    RichText::new(t!(
+                        lang,
+                        "ничего не найдено — измените домен или поиск",
+                        "nothing found — change the domain or the search"
+                    ))
+                    .size(12.0)
+                    .color(t.muted),
+                );
+            }
+        });
+
+    egui::CollapsingHeader::new(
+        RichText::new(t!(lang, "ввести вручную", "type by hand"))
+            .size(12.0)
+            .color(t.muted),
+    )
+    .id_salt("bind-ha-manual")
+    .show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.add(
+                TextEdit::singleline(domain)
+                    .hint_text("light")
+                    .desired_width(110.0),
+            );
+            ui.add(
+                TextEdit::singleline(service)
+                    .hint_text("toggle")
+                    .desired_width(130.0),
+            );
+        });
+        ui.add(
+            TextEdit::singleline(entity)
+                .hint_text("light.kitchen")
+                .desired_width(f32::INFINITY),
+        );
+    });
 }
 
 /// Pick the application a Launch action starts.

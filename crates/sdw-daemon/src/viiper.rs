@@ -401,6 +401,16 @@ impl ViiperManager {
         if Self::ping(cfg).is_err() {
             self.start(cfg)?;
         }
+        let running = Self::ping(cfg).unwrap_or_default();
+        if let Some(needed) = kind.min_viiper() {
+            if !running.trim().is_empty() && sdw_core::update::is_newer(needed, &running) {
+                return Err(format!(
+                    "{}: нужен VIIPER {needed} или новее, запущен {running}. \
+                     Обновите VIIPER на странице «Установка».",
+                    kind.label()
+                ));
+            }
+        }
         let client = Self::client(cfg)?;
         let bus = client
             .bus_create(None)
@@ -416,7 +426,23 @@ impl ViiperManager {
             Ok(d) => d,
             Err(e) => {
                 let _ = client.bus_remove(Some(bus));
-                return Err(format!("создание устройства: {e}"));
+                // A server that does not know the type says so; say what to
+                // do instead of showing only the raw status.
+                let refused = e.to_string();
+                if refused.to_ascii_lowercase().contains("unknown device") {
+                    let version = if running.trim().is_empty() {
+                        "неизвестной версии".to_string()
+                    } else {
+                        running.clone()
+                    };
+                    return Err(format!(
+                        "{}: VIIPER {version} не знает этот тип устройства. \
+                         Нужен VIIPER {} или новее — обновите его на странице «Установка».",
+                        kind.label(),
+                        kind.min_viiper().unwrap_or("0.9.0")
+                    ));
+                }
+                return Err(format!("создание устройства: {refused}"));
             }
         };
         let stream = match client.connect_device(bus, &dev.dev_id) {

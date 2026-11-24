@@ -304,6 +304,10 @@ impl MonitorManager {
         let mut rfb = false;
 
         let mut note = String::new();
+        // A virtual monitor that the driver already prepared is not laid out
+        // by the compositor path below: Windows has no config file to patch,
+        // and `prepare_virtual` has already applied the exact rectangle.
+        let mut vdd_prepared = false;
         let setup: Result<(), String> = (|| {
             match backend {
                 MonitorBackend::Hyprland => {
@@ -445,13 +449,47 @@ impl MonitorManager {
                         rect = (0, 0, width, height);
                     }
                 }
+                MonitorBackend::Vdd => {
+                    #[cfg(windows)]
+                    {
+                        let (x, y) = layout_xy(&outputs, "", width, height, position);
+                        let refresh = fps.max(30);
+                        let (name, _aw, _ah, how) = crate::win::display::prepare_virtual(
+                            width,
+                            height,
+                            refresh,
+                            x,
+                            y,
+                            &self.logger,
+                        )?;
+                        output = name;
+                        if !how.is_empty() {
+                            note = how;
+                        }
+                        vdd_prepared = true;
+                        if let Ok(mut inner) = self.inner.lock() {
+                            inner.layout_output = Some(output.clone());
+                        }
+                        std::thread::sleep(Duration::from_millis(600));
+                        self.refresh();
+                        rect = output_rect(&self.outputs(), &output);
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        return Err("Virtual Display Driver доступен только на Windows".into());
+                    }
+                }
                 _ => {}
             }
 
             // Put the new output where the user asked: right, left, above or below
             // the primary display. This is applied live *and* written into the
             // compositor config, so the layout survives a restart.
-            if !rfb && mode == MonitorMode::Extend && !output.is_empty() && output != "весь экран"
+            if !vdd_prepared
+                && !rfb
+                && mode == MonitorMode::Extend
+                && !output.is_empty()
+                && output != "весь экран"
             {
                 let ephemeral = created.is_some()
                     || self
@@ -547,7 +585,10 @@ impl MonitorManager {
                 return Err("Для X11 нужен ffmpeg. Установите его и повторите.".into());
             }
             Capture::FfmpegX11
-        } else if backend == MonitorBackend::Gdigrab || compositor == "windows" {
+        } else if backend == MonitorBackend::Gdigrab
+            || backend == MonitorBackend::Vdd
+            || compositor == "windows"
+        {
             if !sdw_core::util::has("ffmpeg") {
                 return Err("Для Windows-трансляции нужен ffmpeg в PATH.".into());
             }
@@ -757,7 +798,22 @@ fn default_backend(compositor: &str, mode: MonitorMode) -> MonitorBackend {
         // drive, but VKMS still adds a real connector the compositor picks up.
         "gnome" if cfg!(target_os = "linux") && vkms_available() => MonitorBackend::Vkms,
         "x11" => MonitorBackend::X11,
-        "windows" => MonitorBackend::Gdigrab,
+        // A real virtual monitor needs the Virtual Display Driver; without it
+        // the request falls back to mirroring the main screen.
+        "windows" => {
+            #[cfg(windows)]
+            {
+                if crate::win::display::vdd_ready() {
+                    MonitorBackend::Vdd
+                } else {
+                    MonitorBackend::Gdigrab
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                MonitorBackend::Gdigrab
+            }
+        }
         _ if cfg!(target_os = "linux") && vkms_available() => MonitorBackend::Vkms,
         _ => MonitorBackend::Mirror,
     }
@@ -1049,6 +1105,10 @@ fn disable_output(compositor: &str, name: &str) {
         }
         "x11" => {
             let _ = sdw_core::util::run("xrandr", &["--output", name, "--off"]);
+        }
+        "windows" => {
+            #[cfg(windows)]
+            crate::win::display::disable_virtual(name);
         }
         _ => {}
     }
@@ -1508,34 +1568,14 @@ fn xrandr_outputs() -> Result<Vec<DisplayOutput>, String> {
     Ok(out)
 }
 
+#[cfg(windows)]
 fn windows_outputs() -> Result<Vec<DisplayOutput>, String> {
-    let script = "Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Screen]::AllScreens | ForEach-Object { \"$($_.DeviceName)|$($_.Bounds.X)|$($_.Bounds.Y)|$($_.Bounds.Width)|$($_.Bounds.Height)|$($_.Primary)\" }";
-    let text = sdw_core::util::run("powershell", &["-NoProfile", "-Command", script])?;
-    let mut out = Vec::new();
-    for line in text.lines() {
-        let p: Vec<&str> = line.split('|').collect();
-        if p.len() < 6 {
-            continue;
-        }
-        out.push(DisplayOutput {
-            name: p[0].to_string(),
-            description: if p[5].eq_ignore_ascii_case("true") {
-                "Основной".into()
-            } else {
-                String::new()
-            },
-            x: p[1].parse().unwrap_or(0),
-            y: p[2].parse().unwrap_or(0),
-            width: p[3].parse().unwrap_or(1280),
-            height: p[4].parse().unwrap_or(800),
-            refresh: 60.0,
-            scale: 1.0,
-            primary: p[5].eq_ignore_ascii_case("true"),
-            virtual_output: false,
-            enabled: true,
-        });
-    }
-    Ok(out)
+    crate::win::display::outputs()
+}
+
+#[cfg(not(windows))]
+fn windows_outputs() -> Result<Vec<DisplayOutput>, String> {
+    Ok(Vec::new())
 }
 
 fn parse_resolution(s: &str) -> Option<(u32, u32)> {

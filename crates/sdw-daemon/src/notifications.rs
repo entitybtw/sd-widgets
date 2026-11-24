@@ -96,11 +96,7 @@ impl NotificationStore {
                     count,
                     unread,
                     backend: backend.into(),
-                    error: if cfg!(target_os = "linux") {
-                        String::new()
-                    } else {
-                        "Зеркалирование уведомлений пока доступно на Linux".into()
-                    },
+                    error: String::new(),
                     recent,
                 },
                 enabled,
@@ -147,6 +143,18 @@ impl NotificationStore {
 
     pub fn enabled(&self) -> bool {
         self.inner.lock().map(|i| i.enabled).unwrap_or(false)
+    }
+
+    /// What the platform listener says about itself: whether it is attached
+    /// and why not, shown in the notifications page next to the backend name.
+    pub fn set_listening(&self, listening: bool, error: Option<String>) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.status.listening = listening;
+            match error {
+                Some(text) => inner.status.error = text,
+                None => inner.status.error.clear(),
+            }
+        }
     }
 
     pub fn set_enabled(&self, on: bool) {
@@ -364,6 +372,8 @@ impl NotificationStore {
             self.persist(&inner.items);
             id
         };
+        #[cfg(windows)]
+        crate::win::notify::dismiss(id);
         #[cfg(target_os = "linux")]
         if !self.owns_service.load(Ordering::Relaxed) {
             let _ = Command::new("gdbus")
@@ -417,25 +427,28 @@ impl NotificationStore {
     }
 
     pub fn start(self: Arc<Self>, stop: Arc<AtomicBool>, own_service: bool) {
-        if !cfg!(target_os = "linux") {
-            return;
+        #[cfg(windows)]
+        {
+            let _ = own_service;
+            crate::win::notify::start(self, stop);
         }
 
         #[cfg(target_os = "linux")]
-        if own_service {
-            let service = self.clone();
-            let stop2 = stop.clone();
-            std::thread::spawn(move || {
-                if service.run_service(&stop2) {
-                    return;
-                }
-                // A real desktop daemon owns the name; observe its calls instead.
-                service.observe(stop2);
-            });
-            return;
+        {
+            if own_service {
+                let service = self.clone();
+                let stop2 = stop.clone();
+                std::thread::spawn(move || {
+                    if service.run_service(&stop2) {
+                        return;
+                    }
+                    // A real desktop daemon owns the name; observe its calls instead.
+                    service.observe(stop2);
+                });
+                return;
+            }
+            self.observe(stop);
         }
-
-        self.observe(stop);
     }
 
     /// The old passive mode: watch `Notify` calls made to some other daemon.

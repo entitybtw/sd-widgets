@@ -87,8 +87,23 @@ layout is applied with `xrandr`.
 
 ### Windows (virtual/mirror)
 
-Desktop capture with `ffmpeg -f gdigrab`. The extra monitor is presented as a
-window on the chosen side; true virtual displays depend on the display driver.
+Capture uses `ffmpeg -f gdigrab`; the extra monitor is either a real virtual
+display or the mirror of the primary one.
+
+A real monitor needs the
+[Virtual Display Driver](https://github.com/VirtualDrivers/Virtual-Display-Driver):
+
+- install it with `winget install --id VirtualDrivers.Virtual-Display-Driver`
+  (the installer needs administrator rights);
+- the driver reads `C:\VirtualDisplayDriver\vdd_settings.xml` when its adapter
+  starts; `SDW_VDD_SETTINGS` points the daemon at another file;
+- a requested resolution is written into that XML and the adapter is reloaded
+  through the driver's control pipe, so a new mode appears without a reboot;
+- `MonitorStatus` reports `vdd` readiness and the settings path, and the
+  daemon's setup wizard lists the driver next to `ffmpeg`.
+
+Without the driver the screen page still works in mirror mode, and the daemon
+says which one it chose instead of pretending the virtual monitor exists.
 
 ## Virtual machines
 
@@ -156,7 +171,7 @@ xrandr --output VIRTUAL1 --mode 1280x800_60 --right-of eDP-1
 | niri | `niri`, `vkms` module (one-button prepare), write access to the niri config |
 | KDE | `krfb-virtualmonitor`, RFB support |
 | X11 | `ffmpeg`, `xrandr` |
-| Windows | `ffmpeg` |
+| Windows | `ffmpeg`; Virtual Display Driver for a real virtual monitor |
 | mirror | `grim` (Wayland) or `spectacle` (KDE) |
 
 The daemon reports which backend it selected and why in its log and in the

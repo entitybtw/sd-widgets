@@ -1654,7 +1654,7 @@ fn weekday_name(lang: Lang, weekday: u32) -> &'static str {
     match lang {
         Lang::Ru => ru[idx],
         Lang::Uk => uk[idx],
-        Lang::En => en[idx],
+        Lang::En | Lang::Custom => en[idx],
     }
 }
 

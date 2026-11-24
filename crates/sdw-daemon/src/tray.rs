@@ -17,6 +17,9 @@ use std::time::Duration;
 
 pub struct TrayHandle {
     stop: Arc<AtomicBool>,
+    /// The Win32 icon owns a message loop; dropping it posts WM_QUIT there.
+    #[cfg(windows)]
+    win: Option<crate::win::tray::Tray>,
 }
 
 impl TrayHandle {
@@ -37,7 +40,15 @@ pub fn start(state: Arc<AppState>) -> Option<TrayHandle> {
     {
         start_linux(state)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        let win = crate::win::tray::start(state)?;
+        Some(TrayHandle {
+            stop: Arc::new(AtomicBool::new(false)),
+            win: Some(win),
+        })
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = state;
         None

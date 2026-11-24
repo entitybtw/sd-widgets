@@ -9,6 +9,7 @@ mod app;
 mod audio_ui;
 mod binds;
 mod clock;
+mod components;
 mod deck_view;
 mod ha_link;
 mod input;
@@ -17,6 +18,7 @@ mod share_audio;
 mod sound;
 mod sys;
 mod theme;
+mod timers;
 mod viz;
 mod viz_stage;
 
