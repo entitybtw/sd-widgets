@@ -1556,11 +1556,23 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                 theme::small(ui, t!(lang, "уведомлений нет", "no notifications"), t.muted);
                 return;
             }
+            // The drawer is the unread shade, not a second copy of the page:
+            // once something is read it leaves this list. "Read all" therefore
+            // empties the drawer for real instead of leaving the same cards
+            // behind, only dimmer, which is what made it look like a trick.
+            if app.notif_unread == 0 {
+                theme::small(
+                    ui,
+                    t!(lang, "все уведомления прочитаны", "all notifications read"),
+                    t.muted,
+                );
+                return;
+            }
             ui.label(theme::hud(
                 &format!(
                     "{} · {}",
                     t!(lang, "уведомления", "notifications"),
-                    app.notifications.len()
+                    app.notif_unread
                 ),
                 t.faint,
             ));
@@ -1578,8 +1590,14 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
             let room = (rect.bottom() - 20.0 - list_top).max(0.0);
             let card_h = app.quick_card_h.clamp(48.0, 240.0);
             let rows = ((room / card_h).floor() as usize).clamp(1, 4);
-            let newest: Vec<Notification> =
-                app.notifications.iter().rev().take(rows).cloned().collect();
+            let newest: Vec<Notification> = app
+                .notifications
+                .iter()
+                .rev()
+                .filter(|n| !app.notif_seen(n.id))
+                .take(rows)
+                .cloned()
+                .collect();
             let mut drawn = 0usize;
             let mut span_top = list_top;
             let mut span_bottom = list_top;
@@ -1587,11 +1605,6 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                 let color = notification_color(t, &n);
                 let (off, alpha) = app.notif_slide(n.id);
                 let leaving = app.notif_leaving(n.id);
-                let unread = !app.notif_seen(n.id);
-                // A read card steps back instead of looking untouched:
-                // the dot alone was too small a difference to see, so
-                // "read all" looked like it had done nothing.
-                let alpha = alpha * if unread { 1.0 } else { 0.6 };
                 let mut close_rect: Option<Rect> = None;
                 let card = notification_slot(ui, n.id, "deck-quick-slot", off, alpha, |ui| {
                     egui::Frame::new()
@@ -1618,9 +1631,7 @@ pub fn quick_panel(app: &mut App, ctx: &egui::Context, t: &Tokens) {
                                             .strong()
                                             .color(color),
                                         );
-                                        if unread {
-                                            unread_marker(ui, t);
-                                        }
+                                        unread_marker(ui, t);
                                         ui.with_layout(
                                             Layout::right_to_left(Align::Center),
                                             |ui| {

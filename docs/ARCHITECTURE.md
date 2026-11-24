@@ -40,6 +40,9 @@
   is unread until it is tapped, swiped away or covered by "read all"; the badge
   is recomputed from those cards, so the two never disagree. That state lives
   only on the Deck, the daemon keeps the actual notifications.
+  The control centre lists unread notifications only: reading one (or pressing
+  "read all") takes it out of the drawer for good, while the notifications page
+  keeps the whole list and dims what has been read.
   The control centre is an `egui::Modal`: its dim layer lives inside the same
   egui layer as the panel, so a tap outside closes it and no area can ever end
   up between the dim layer and the panel and swallow a button press.

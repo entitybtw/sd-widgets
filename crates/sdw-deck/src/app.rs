@@ -1669,7 +1669,14 @@ impl App {
                         // scroll. A slider or a tile drag is a different id
                         // and must keep the page swipe away. The monitor
                         // preview is not: a swipe over it still turns.
-                        if self.drag_blocks_page(id) {
+                        //
+                        // Only the page has that rule. The open control centre
+                        // is a modal, and its own content claims the drag it
+                        // contains; reading that as "a widget owns this
+                        // gesture" refused the push-up that closes the panel,
+                        // which is how the drawer became hard to put away.
+                        // A card still blocks through `notif_own` above.
+                        if !self.quick_open && self.drag_blocks_page(id) {
                             self.swipe_blocked = true;
                         }
                     }
