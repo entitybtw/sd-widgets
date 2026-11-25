@@ -47,6 +47,11 @@ pub struct ViiperCfg {
     pub usb_addr: String,
     pub password: String,
     pub default_pad: PadKind,
+    /// Where VIIPER releases come from for one-click installs and updates:
+    /// empty keeps the GitHub `Alia5/VIIPER` repository, otherwise a GitHub or
+    /// Forgejo address (`https://host/owner/repo`) a mirror can supply.
+    #[serde(default)]
+    pub source: String,
 }
 
 /// Streaming the computer's sound to the Deck. Off by default on the daemon;
@@ -161,6 +166,7 @@ impl Default for ViiperCfg {
             usb_addr: "127.0.0.1:3241".into(),
             password: String::new(),
             default_pad: PadKind::Xbox360,
+            source: String::new(),
         }
     }
 }

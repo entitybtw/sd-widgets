@@ -31,6 +31,119 @@ pub fn capture_light_preset(entities: &[HaEntity]) -> Vec<HaPresetAction> {
     actions
 }
 
+/// Which Home Assistant service a plain action means for a domain.
+///
+/// The deck and the daemon speak plain words — on, off, open, close, run — so a
+/// scenario or a bind never has to know that a cover opens with `open_cover`
+/// while a lock unlocks with `unlock`. `None` means the domain has no such
+/// action.
+pub fn service_for(domain: &str, action: &str) -> Option<&'static str> {
+    match (domain, action) {
+        ("light" | "switch" | "input_boolean" | "siren" | "humidifier" | "fan", "on") => {
+            Some("turn_on")
+        }
+        ("light" | "switch" | "input_boolean" | "siren" | "humidifier" | "fan", "off") => {
+            Some("turn_off")
+        }
+        ("light" | "switch" | "input_boolean" | "siren" | "humidifier" | "fan", "toggle") => {
+            Some("toggle")
+        }
+        ("scene", "run") | ("scene", "on") => Some("turn_on"),
+        ("script", "run") | ("script", "on") => Some("turn_on"),
+        ("script", "off") => Some("turn_off"),
+        ("script", "toggle") => Some("toggle"),
+        ("automation", "run") => Some("trigger"),
+        ("automation", "on") => Some("turn_on"),
+        ("automation", "off") => Some("turn_off"),
+        ("automation", "toggle") => Some("toggle"),
+        ("button", "run") | ("button", "press") => Some("press"),
+        ("cover", "open") => Some("open_cover"),
+        ("cover", "close") => Some("close_cover"),
+        ("cover", "stop") => Some("stop_cover"),
+        ("cover", "toggle") => Some("toggle"),
+        ("valve", "open") => Some("open_valve"),
+        ("valve", "close") => Some("close_valve"),
+        ("valve", "stop") => Some("stop_valve"),
+        ("lock", "unlock") | ("lock", "open") | ("lock", "on") => Some("unlock"),
+        ("lock", "lock") | ("lock", "close") | ("lock", "off") => Some("lock"),
+        ("media_player", "play") => Some("media_play"),
+        ("media_player", "pause") => Some("media_pause"),
+        ("media_player", "play_pause") => Some("media_play_pause"),
+        ("media_player", "next") => Some("media_next_track"),
+        ("media_player", "previous") => Some("media_previous_track"),
+        ("media_player", "stop") => Some("media_stop"),
+        ("vacuum", "start") => Some("start"),
+        ("vacuum", "stop") => Some("stop"),
+        ("vacuum", "dock") => Some("return_to_base"),
+        ("vacuum", "pause") => Some("pause"),
+        ("update", "install") => Some("install"),
+        ("homeassistant", "on") => Some("turn_on"),
+        ("homeassistant", "off") => Some("turn_off"),
+        ("homeassistant", "toggle") => Some("toggle"),
+        _ => None,
+    }
+}
+
+/// True when `service` is a real service for `domain`.
+///
+/// A scenario arrives from another deck over the network, so the daemon keeps a
+/// tight list of the services its UI can produce instead of forwarding any
+/// string into `/api/services/{domain}/{service}`.
+pub fn known_service(domain: &str, service: &str) -> bool {
+    let list: &[&str] = match domain {
+        "light" | "switch" | "input_boolean" | "siren" | "humidifier" => {
+            &["turn_on", "turn_off", "toggle"]
+        }
+        "fan" => &[
+            "turn_on",
+            "turn_off",
+            "toggle",
+            "set_percentage",
+            "increase_speed",
+            "decrease_speed",
+        ],
+        "cover" => &[
+            "open_cover",
+            "close_cover",
+            "stop_cover",
+            "toggle",
+            "set_cover_position",
+        ],
+        "valve" => &["open_valve", "close_valve", "stop_valve"],
+        "lock" => &["lock", "unlock", "open"],
+        "scene" => &["turn_on"],
+        "script" => &["turn_on", "turn_off", "toggle"],
+        "automation" => &["trigger", "turn_on", "turn_off", "toggle"],
+        "button" => &["press"],
+        "media_player" => &[
+            "media_play",
+            "media_pause",
+            "media_play_pause",
+            "media_next_track",
+            "media_previous_track",
+            "media_stop",
+            "volume_set",
+            "volume_up",
+            "volume_down",
+        ],
+        "climate" => &[
+            "set_temperature",
+            "set_hvac_mode",
+            "set_fan_mode",
+            "turn_on",
+            "turn_off",
+        ],
+        "input_number" | "number" => &["set_value"],
+        "input_select" | "select" => &["select_option"],
+        "water_heater" => &["turn_on", "turn_off", "set_temperature"],
+        "vacuum" => &["start", "stop", "return_to_base", "pause"],
+        "update" => &["install"],
+        "homeassistant" => &["turn_on", "turn_off", "toggle"],
+        _ => &[],
+    };
+    list.contains(&service)
+}
+
 #[derive(Clone)]
 pub struct HaClient {
     base: String,
@@ -424,6 +537,7 @@ pub fn is_controllable(e: &HaEntity) -> bool {
             | "scene"
             | "script"
             | "button"
+            | "automation"
     )
 }
 
@@ -442,6 +556,8 @@ pub fn domain_label(domain: &str, lang: crate::i18n::Lang) -> &'static str {
         "media_player" => ("Медиа", "Media"),
         "scene" => ("Сцены", "Scenes"),
         "script" => ("Скрипты", "Scripts"),
+        "automation" => ("Автоматизации", "Automations"),
+        "button" => ("Кнопки", "Buttons"),
         "cover" => ("Шторы", "Covers"),
         "fan" => ("Вентиляторы", "Fans"),
         "sensor" | "binary_sensor" => ("Датчики", "Sensors"),
@@ -701,5 +817,54 @@ mod tests {
         assert_eq!(state_with_unit(&temp, Lang::Ru), "21.75 °C");
         let uptime = entity("sensor", "15453340", json!({"unit_of_measurement": "s"}));
         assert_eq!(state_with_unit(&uptime, Lang::Ru), "178 д 20 ч");
+    }
+
+    #[test]
+    fn actions_map_to_real_services() {
+        assert_eq!(service_for("scene", "run"), Some("turn_on"));
+        assert_eq!(service_for("automation", "run"), Some("trigger"));
+        assert_eq!(service_for("cover", "open"), Some("open_cover"));
+        assert_eq!(service_for("lock", "on"), Some("unlock"));
+        assert_eq!(service_for("lock", "off"), Some("lock"));
+        assert_eq!(service_for("button", "run"), Some("press"));
+        assert_eq!(service_for("light", "on"), Some("turn_on"));
+        assert_eq!(service_for("sensor", "on"), None);
+    }
+
+    #[test]
+    fn only_known_services_pass() {
+        assert!(known_service("light", "turn_on"));
+        assert!(known_service("automation", "trigger"));
+        assert!(known_service("cover", "open_cover"));
+        assert!(!known_service("light", "open_cover"));
+        assert!(!known_service("automation", "press"));
+        assert!(!known_service("sensor", "turn_on"));
+        // Every service `service_for` can produce must pass the whitelist, so a
+        // scenario built in the UI is never rejected by the daemon.
+        for (domain, action) in [
+            ("light", "on"),
+            ("light", "off"),
+            ("light", "toggle"),
+            ("scene", "run"),
+            ("script", "run"),
+            ("automation", "run"),
+            ("automation", "on"),
+            ("automation", "off"),
+            ("automation", "toggle"),
+            ("button", "run"),
+            ("cover", "open"),
+            ("cover", "close"),
+            ("cover", "stop"),
+            ("lock", "on"),
+            ("lock", "off"),
+            ("valve", "open"),
+            ("media_player", "play"),
+            ("vacuum", "start"),
+            ("update", "install"),
+            ("homeassistant", "on"),
+        ] {
+            let svc = service_for(domain, action).unwrap_or_else(|| panic!("{domain}.{action}"));
+            assert!(known_service(domain, svc), "{domain}.{svc} should be known");
+        }
     }
 }

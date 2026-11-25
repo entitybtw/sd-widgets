@@ -3678,8 +3678,8 @@ impl App {
             self.toast(
                 t!(
                     self.lang,
-                    "нет включённых ламп — пресет пустой",
-                    "no lights are on — the preset would be empty"
+                    "нет включённых ламп — сценарий пустой",
+                    "no lights are on — the scenario would be empty"
                 ),
                 false,
             );
@@ -3691,21 +3691,32 @@ impl App {
         self.ha.preset_name.clear();
         self.save_ha_presets();
         self.toast(
-            t!(self.lang, "пресет сохранён", "preset saved").to_string(),
+            t!(self.lang, "сценарий сохранён", "scenario saved").to_string(),
             true,
         );
     }
 
-    /// Apply every action of a preset and show the guessed state right away.
+    /// Apply every action of a scenario and show the guessed state right away.
     pub fn apply_preset(&mut self, preset: &HaPreset) {
         for a in &preset.actions {
+            // The domain lives in the entity id, not in the preset: a scenario
+            // may mix lamps, switches and covers, and each one needs its own
+            // service (`light.turn_on`, `cover.open_cover`, …).
+            let domain = a.entity_id.split('.').next().unwrap_or("light").to_string();
+            let service = if sdw_core::ha::known_service(&domain, &a.service) {
+                a.service.clone()
+            } else {
+                sdw_core::ha::service_for(&domain, "on")
+                    .unwrap_or("turn_on")
+                    .to_string()
+            };
             let call = HaCall {
-                domain: "light".into(),
-                service: a.service.clone(),
+                domain: domain.clone(),
+                service: service.clone(),
                 target: serde_json::json!({ "entity_id": a.entity_id }),
                 data: a.data.clone(),
             };
-            let state = match a.service.as_str() {
+            let state = match service.as_str() {
                 "turn_off" => Some("off".into()),
                 "turn_on" => Some("on".into()),
                 _ => None,
@@ -3721,7 +3732,7 @@ impl App {
         self.toast(
             format!(
                 "{} · {}",
-                t!(self.lang, "пресет", "preset"),
+                t!(self.lang, "сценарий", "scenario"),
                 sdw_core::util::truncate(&preset.name, 30)
             ),
             true,

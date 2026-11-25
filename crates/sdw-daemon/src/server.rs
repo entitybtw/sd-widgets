@@ -1405,9 +1405,10 @@ fn install_start(state: Arc<AppState>, mut req: Request) {
         .unwrap_or("")
         .to_string();
     let state2 = state.clone();
+    let viiper_source = state.cfg().viiper.source.clone();
     let id = match state.jobs.start("Установка компонентов", move |ctx| {
         let logger = state2.logger.clone();
-        let _ = install::install(&components, &sudo, &ctx, &logger);
+        let _ = install::install(&components, &sudo, &viiper_source, &ctx, &logger);
     }) {
         Ok(id) => id,
         Err(e) => return error(req, 409, &e),

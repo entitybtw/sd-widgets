@@ -28,7 +28,10 @@
   `i18n/packs.rs` loads user packs from `<config>/sd-widgets/lang`, keeps the
   active table as leaked `&'static str` pairs so `tr` never allocates, and
   produces the template from the Ukrainian keys (every translatable line).
-- `ha.rs` — Home Assistant helpers.
+- `ha.rs` — Home Assistant helpers. `service_for(domain, action)` turns a plain
+  word (on, off, open, run) into the real service a domain expects, and
+  `known_service(domain, service)` is the whitelist the daemon applies to a
+  scenario before it forwards it to `/api/services/...`.
 - `update.rs` — release checks and downloads. `Remote` is the source: a
   Forgejo/Gitea instance (`/api/v1/repos/...`) or GitHub (`/api.github.com` or
   an enterprise host's `/api/v3`), read from a repository web address; both
@@ -112,9 +115,12 @@
   bounded PCM ring buffer and the blocking `Read` used by the HTTP stream.
 - `server.rs` also routes `addon:<id>:<action>` through the declared action
   runner; disabled addons and undeclared actions are rejected.
-- `install.rs` — dependency detection and install jobs. On Windows the list is
-  `ffmpeg` and the Virtual Display Driver, and the job prints the matching
-  `winget` lines instead of unpacking a driver itself.
+- `install.rs` — dependency detection and install jobs. VIIPER is downloaded
+  from `viiper.source` (empty means GitHub `Alia5/VIIPER`, otherwise a GitHub or
+  Forgejo mirror) through `update::check_at`, picking the asset for this OS and
+  CPU and verifying its `SHA256SUMS`. On Windows `ffmpeg` is downloaded as a
+  portable zip and unpacked into `<data>/bin` (put first on `PATH` at startup),
+  while the Virtual Display Driver and usbipd go through `winget`.
 - `win/` — the Windows layer, chosen with `#[cfg(windows)]` at the crate root:
   `display.rs` (Virtual Display Driver, monitor placement), `audio.rs` (WASAPI
   loopback, per-process capture), `media.rs` (system media transport controls),
@@ -164,6 +170,24 @@ clears the cached entities, areas and views, because they belong to the server
 that was asked. A chosen id whose server was removed falls back to the first
 one. The token never leaves the Deck; the computer's own connection still needs
 no token here.
+
+## Home Assistant scenarios and automations
+
+A scenario is a `HaPreset` (`id`, `name`, `icon`, `actions`) stored by the daemon
+and shared with every deck through `/api/v1/ha/presets`. Each `HaPresetAction`
+carries an `entity_id` and a raw service; the domain is read from the entity id,
+so one scenario may mix lamps, switches, covers and locks. "Capture current
+lights" builds the actions from the lit lamps; `service_for`/`known_service`
+keep the service names honest and `set_presets` drops anything outside the
+whitelist before it is saved. Applying a scenario sends one `/api/services`
+call per action and sets an optimistic state so a tile flips at once.
+
+Home Assistant's own scenes, scripts and automations are not copied or stored:
+they arrive in the entity list like any other entity. A scene or script runs
+with `turn_on`, an automation with `automation.trigger`, a button with
+`press`; the deck shows them under their own rooms and search, and the run
+button on the tile is enough. This keeps the two sides in sync — a scene made
+in Home Assistant shows up here without an import step.
 
 ## Threads
 

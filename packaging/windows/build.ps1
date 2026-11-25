@@ -32,3 +32,15 @@ $Zip = Join-Path $Dist "sdw-daemon-$Version-windows-x86_64.zip"
 if (Test-Path $Zip) { Remove-Item $Zip }
 Compress-Archive -Path (Join-Path $Stage "*") -DestinationPath $Zip
 Write-Host "==> $Zip"
+
+# Optional: a real installer, only when Inno Setup 6 is on this machine. The
+# portable zip above is the release format; the installer is a convenience.
+$Iscc = Get-Command iscc -ErrorAction SilentlyContinue
+if ($Iscc) {
+    Write-Host "==> building the Inno Setup installer"
+    & $Iscc.Source "/DAppVersion=$Version" (Join-Path $PSScriptRoot "installer.iss")
+    if ($LASTEXITCODE -ne 0) { throw "iscc failed" }
+    Write-Host "==> $Dist\sdw-daemon-$Version-windows-x86_64-setup.exe"
+} else {
+    Write-Host "==> iscc not found; skipped the optional installer"
+}

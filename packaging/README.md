@@ -54,3 +54,13 @@ install -Dm644 packaging/linux/sdw-daemon-autostart.desktop ~/.config/autostart/
 ```powershell
 pwsh -File packaging/windows/build.ps1
 ```
+
+The release format is a **portable zip** (`dist/sdw-daemon-<version>-windows-x86_64.zip`):
+unpack it anywhere and run `sdw-daemon.exe`. There is no MSI and no service;
+the wizard handles setup, and "start with Windows" is a checkbox in the GUI.
+
+`build.ps1` also builds a graphical installer when Inno Setup 6 (`iscc`) is on
+the machine, from `packaging/windows/installer.iss`; without `iscc` that step is
+skipped. The daemon itself needs no Administrator rights — the Virtual Display
+Driver and usbipd ask for elevation only when installed. Both the driver and
+`ffmpeg` can be installed in one click from the daemon's own install page.

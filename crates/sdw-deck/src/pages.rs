@@ -4090,7 +4090,7 @@ fn ha_glyph(domain: &str) -> &'static str {
         "cover" | "valve" => theme::icon::BLINDS,
         "lock" => theme::icon::LOCK,
         "scene" => theme::icon::SCENE,
-        "script" | "event" => theme::icon::CODE,
+        "script" | "event" | "automation" => theme::icon::CODE,
         "camera" | "image" => theme::icon::CAMERA,
         "person" | "device_tracker" => theme::icon::PERSON,
         "number" | "input_number" | "select" | "input_select" => theme::icon::TUNE,
@@ -4149,6 +4149,10 @@ fn ha_text_button(ui: &mut Ui, t: &Tokens, text: &str) -> bool {
 fn ha_toggle(e: &HaEntity, on: bool) -> HaCall {
     let (domain, service) = match e.domain() {
         "scene" | "script" => (e.domain().to_string(), "turn_on".to_string()),
+        "automation" => (
+            "automation".to_string(),
+            if on { "trigger" } else { "turn_off" }.to_string(),
+        ),
         "button" => ("button".to_string(), "press".to_string()),
         _ => (
             "homeassistant".to_string(),
@@ -5072,7 +5076,7 @@ fn ha_card(
                         );
                     });
                 }
-                "scene" | "script" | "button" => {
+                "scene" | "script" | "button" | "automation" => {
                     if ui
                         .add_sized(
                             [width.min(180.0).max(120.0), 38.0],
@@ -5951,7 +5955,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         theme::card(ui, t, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(t!(app.lang, "пресеты", "presets"))
+                    RichText::new(t!(app.lang, "сценарии", "scenarios"))
                         .size(16.0)
                         .strong()
                         .color(t.strong),
@@ -5959,8 +5963,8 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 ui.label(
                     RichText::new(t!(
                         app.lang,
-                        "яркость, температура и цвет всех включённых ламп одним нажатием.",
-                        "brightness, temperature and colour of every lit lamp in one tap."
+                        "свет, шторы и сцены Home Assistant одним нажатием.",
+                        "lights, covers and Home Assistant scenes in one tap."
                     ))
                     .size(12.0)
                     .color(t.muted),
@@ -5975,7 +5979,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
             ui.horizontal(|ui| {
                 ui.add(
                     TextEdit::singleline(&mut name)
-                        .hint_text(t!(app.lang, "имя нового пресета", "new preset name"))
+                        .hint_text(t!(app.lang, "имя нового сценария", "new scenario name"))
                         .desired_width(260.0),
                 );
                 if theme::ghost(
@@ -5997,8 +6001,8 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 ui.label(
                     RichText::new(t!(
                         app.lang,
-                        "пока нет пресетов. включите лампы, введите имя и нажмите «сохранить текущий свет».",
-                        "no presets yet. turn lamps on, type a name and hit “capture current lights”."
+                        "пока нет сценариев. включите лампы, введите имя и нажмите «сохранить текущий свет».",
+                        "no scenarios yet. turn lamps on, type a name and hit “capture current lights”."
                     ))
                     .size(12.0)
                     .color(t.muted),
@@ -6016,7 +6020,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             .min_size(Vec2::new(0.0, 42.0)),
                     );
                     if resp
-                        .on_hover_text(t!(app.lang, "применить пресет", "apply preset"))
+                        .on_hover_text(t!(app.lang, "запустить сценарий", "run scenario"))
                         .clicked()
                     {
                         apply = Some(i);
@@ -6067,7 +6071,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                     .corner_radius(CornerRadius::ZERO)
                                     .min_size(Vec2::splat(30.0)),
                             )
-                            .on_hover_text(t!(app.lang, "удалить пресет", "delete preset"))
+                            .on_hover_text(t!(app.lang, "удалить сценарий", "delete scenario"))
                             .clicked()
                         {
                             remove = Some(i);
@@ -6259,9 +6263,9 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         if theme::ghost(
             ui,
             if app.ha.presets_open {
-                t!(app.lang, "скрыть пресеты", "hide presets")
+                t!(app.lang, "скрыть сценарии", "hide scenarios")
             } else {
-                t!(app.lang, "пресеты", "presets")
+                t!(app.lang, "сценарии", "scenarios")
             },
             t,
         )
@@ -6454,7 +6458,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
         "lock" => 4,
         "switch" | "input_boolean" => 5,
         "fan" => 6,
-        "scene" | "script" | "button" => 7,
+        "scene" | "script" | "button" | "automation" => 7,
         "sensor" | "binary_sensor" | "weather" | "person" | "device_tracker" => 20,
         _ => 10,
     };

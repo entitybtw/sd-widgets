@@ -39,6 +39,7 @@ libc.workspace = true
 zbus = "5.19"
 
 [target.'cfg(windows)'.dependencies]
+zip.workspace = true
 windows = { version = "0.62", features = [
     "ApplicationModel",
     "Foundation",

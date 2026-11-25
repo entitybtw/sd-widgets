@@ -256,20 +256,28 @@ impl HaRuntime {
         list
     }
 
-    /// Clean up and store the presets. Returns what was actually kept.
+    /// Clean up and store the scenarios. Returns what was actually kept.
     pub fn set_presets(&mut self, mut list: Vec<HaPreset>) -> Vec<HaPreset> {
         list.truncate(60);
         for (i, p) in list.iter_mut().enumerate() {
             p.name = p.name.trim().to_string();
             if p.name.is_empty() {
-                p.name = format!("Пресет {}", i + 1);
+                p.name = format!("Сценарий {}", i + 1);
             }
             if p.id.trim().is_empty() {
                 p.id = random_id(8);
             }
-            p.actions.retain(|a| {
-                !a.entity_id.trim().is_empty()
-                    && matches!(a.service.as_str(), "turn_on" | "turn_off" | "toggle")
+            p.actions.retain_mut(|a| {
+                let id = a.entity_id.trim().to_string();
+                if id.is_empty() || !id.contains('.') {
+                    return false;
+                }
+                a.entity_id = id;
+                let domain = a.entity_id.split('.').next().unwrap_or("");
+                if a.service.trim().is_empty() {
+                    a.service = "turn_on".into();
+                }
+                sdw_core::ha::known_service(domain, &a.service)
             });
             p.actions.truncate(200);
         }

@@ -92,6 +92,10 @@ struct Cli {
 fn main() {
     let cli = Cli::parse();
     sdw_core::util::ensure_dir(&sdw_core::util::config_dir()).ok();
+    // On Windows, tools downloaded into <data>/bin (ffmpeg) must be found by
+    // the capture code, which just runs `ffmpeg` from PATH.
+    #[cfg(windows)]
+    install::prepend_bin_to_path();
 
     // Two small signals instead of a control socket: a second launch, the tray
     // and the CLI all talk to the running daemon through one-shot files.

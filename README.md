@@ -70,7 +70,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality; view-only on the Deck. |
 | **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. A cava-style visualizer reads the computer's own mix and is fully adjustable. |
 | **Notifications** | Mirrored desktop notifications, newest first, unread counters; each card slides away with a sideways swipe, and "read all" clears the counters in one press. |
-| **Home Assistant** | Rooms and areas with lights, curtains, climate and media widgets, not a wall of every entity. |
+| **Home Assistant** | Rooms and areas with lights, curtains, climate and media widgets, not a wall of every entity. Local scenarios set several devices in one tap, and Home Assistant's own scenes, scripts and automations run from here too. |
 | **Binds** | Buttons, chords and swipe gestures mapped to actions or remote commands. |
 | **Clock** | A full-screen clock in four styles, each fully configurable and saved as a preset or an addon. |
 | **Timers** | A countdown, a lap stopwatch and a pomodoro clock with saved lengths, presets and a cue at the end. |
@@ -96,7 +96,9 @@ inset from the arrows, so no card, slider or button ever ends under one.
 ### On the computer (`sdw-daemon`)
 
 - **Virtual gamepads via VIIPER** — Xbox 360, DualShock 4, DualSense and generic
-  pads, hot-plugged over USBIP. VIIPER can be installed from the GUI.
+  pads, hot-plugged over USBIP. VIIPER can be installed from the GUI; its
+  releases come from GitHub `Alia5/VIIPER` by default, or from any GitHub or
+  Forgejo mirror set in the VIIPER card.
 - **Extra monitor** — creates a real additional monitor and streams it to the Deck:
   - Hyprland: headless output (`hyprctl output create headless`).
   - niri: a native virtual output through **biri** (a niri fork with
@@ -198,7 +200,9 @@ adding a second one. Details: [`docs/INSTALL.md`](docs/INSTALL.md).
 Grab the artifacts from the releases page:
 
 - `sdw-deck-<version>-x86_64.AppImage` — Steam Deck / Linux.
-- `sdw-daemon-<version>-windows-x86_64.zip` — Windows.
+- `sdw-daemon-<version>-windows-x86_64.zip` — Windows, portable: unpack and run.
+- `sdw-daemon-<version>-windows-x86_64-setup.exe` — Windows, optional installer
+  (built when Inno Setup is available; the portable zip is the primary format).
 
 ### From source
 

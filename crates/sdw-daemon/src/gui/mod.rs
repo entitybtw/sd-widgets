@@ -180,6 +180,8 @@ pub struct App {
     show_pad_secret: bool,
     viiper_pass: String,
     viiper_show: bool,
+    /// Where VIIPER releases come from; empty keeps GitHub `Alia5/VIIPER`.
+    viiper_source: String,
 
     // screen
     screen: ScreenForm,
@@ -453,6 +455,7 @@ impl App {
             show_pad_secret: false,
             viiper_pass: cfg.viiper.password.clone(),
             viiper_show: false,
+            viiper_source: cfg.viiper.source.clone(),
             screen: ScreenForm::default(),
             screen_loaded: false,
             frame_tex: None,
@@ -2354,6 +2357,59 @@ impl App {
                     t.faint,
                 );
             });
+            ui.add_space(8.0);
+            ui.label(hud(
+                t!(
+                    self.lang,
+                    "источник обновлений viiper",
+                    "viiper update source"
+                ),
+                t.faint,
+            ));
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(&mut self.viiper_source)
+                        .hint_text("github.com/Alia5/VIIPER")
+                        .desired_width(280.0),
+                );
+                if ui
+                    .add(egui::Button::new(hud(
+                        t!(self.lang, "сохранить", "save"),
+                        t.muted,
+                    )))
+                    .clicked()
+                {
+                    let src = self.viiper_source.trim().to_string();
+                    let probe = if src.is_empty() {
+                        "https://github.com/Alia5/VIIPER"
+                    } else {
+                        src.as_str()
+                    };
+                    match sdw_core::update::Remote::parse(probe) {
+                        Ok(remote) => {
+                            self.save(|c| c.viiper.source = src);
+                            self.toast(
+                                format!(
+                                    "{} · {}",
+                                    t!(self.lang, "источник", "source"),
+                                    remote.label()
+                                ),
+                                true,
+                            );
+                        }
+                        Err(e) => self.toast(e, false),
+                    }
+                }
+                small(
+                    ui,
+                    t!(
+                        self.lang,
+                        "пусто = github.com/Alia5/VIIPER",
+                        "empty = github.com/Alia5/VIIPER"
+                    ),
+                    t.faint,
+                );
+            });
         });
         ui.add_space(10.0);
 
@@ -4161,8 +4217,9 @@ impl App {
                     let logger = self.state.logger.clone();
                     let jobs = self.state.jobs.clone();
                     let lang = self.lang;
+                    let viiper_source = self.state.cfg().viiper.source.clone();
                     let _ = jobs.start(t!(lang, "установка", "installation"), move |ctx| {
-                        let _ = install::install(&components, &sudo, &ctx, &logger);
+                        let _ = install::install(&components, &sudo, &viiper_source, &ctx, &logger);
                     });
                 }
                 if ui
