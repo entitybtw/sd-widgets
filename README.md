@@ -6,7 +6,7 @@
 
 **A Steam Deck control surface and a PC companion daemon**
 
-[Русская версия](./README.ru.md)
+**English** · [Русский](./README.ru.md) · [Українська](./README.uk.md)
 
 <br>
 

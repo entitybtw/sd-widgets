@@ -42,7 +42,7 @@ of work each, rather than being improvised inside another task.
   Public docs never link to `NEXT.md` (it is not in the repository).
 - **They are public.** Never write credentials, tokens, private host names, IPs,
   e-mail addresses or home paths. Write `$HOME`, `<deck>`, `<computer>`.
-- Keep English and Russian READMEs in step. The product name is lowercase:
+- Keep the English, Russian and Ukrainian READMEs in step. The product name is lowercase:
   `sd-widgets`.
 
 ## Rules
@@ -53,7 +53,7 @@ of work each, rather than being improvised inside another task.
 | R2 | Commit or push only when the maintainer asks. Releases are tagged and published deliberately. |
 | R3 | Long-running work and scratch files live in `work/` (git-ignored), not in `/tmp`. |
 | R4 | The visual language is hard-edged Grid: no corner radius, hairline borders, 32 px rhythm, Material Symbols only. New UI follows it. |
-| R5 | Preserve the Quadra attribution and link in both READMEs and `docs/THEMES.md`. Quadra is the Roblox client for Linux (https://quadrahq.org), praised for its hard-edged design; it is not a Steam Deck theme. The clock is drawn in the Grid language: big time, hairline grid, hard edges; do not copy any reference screen literally. |
+| R5 | Preserve the Quadra attribution and link in every README and `docs/THEMES.md`. Quadra is the Roblox client for Linux (https://quadrahq.org), praised for its hard-edged design; it is not a Steam Deck theme. The clock is drawn in the Grid language: big time, hairline grid, hard edges; do not copy any reference screen literally. |
 | R6 | One repo, two binaries. Shared types go to `sdw-core`; never duplicate a serialized type on one side. |
 | R7 | Every config field needs a `serde(default)` and a sensible default, so old configs keep loading. |
 | R8 | `cargo check --workspace` before saying a change compiles; `cargo fmt` on touched crates. |
