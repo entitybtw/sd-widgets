@@ -1,15 +1,18 @@
 # Installing sd-widgets
 
-Two one-line commands: one for the Steam Deck app, one for the computer daemon.
-Both are plain shell scripts from this repository; read
+One command installs either side. The script looks at the machine itself: on a
+Steam Deck it installs the Deck app, everywhere else the daemon. It is a plain
+shell script from this repository; read
 [`packaging/install.sh`](../packaging/install.sh) before piping it into `bash`
 if you prefer.
 
 ```bash
-# Steam Deck (Desktop Mode → Konsole)
-curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- deck
+curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash
+```
 
-# computer
+To choose the role yourself, pass `deck` or `daemon` after `bash -s --`:
+
+```bash
 curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- daemon
 ```
 
@@ -69,6 +72,13 @@ next to it, and copies the artwork into `config/grid/` (`<appid>.png`,
 `_hero.png`, `_logo.png`, `_icon.png`). The entry launches the wrapper above, so
 Game Mode starts the same build as the desktop menu.
 
+Every write keeps the previous file as `shortcuts.vdf.bak-<stamp>` and checks
+that each existing shortcut survives the rewrite before it replaces anything;
+the helper also reads its own output back, so a bad parse can no longer shorten
+the library. If the list ever comes back short, close Steam completely and run
+`python3 steam_shortcut.py restore`: it puts the backup with the most shortcuts
+back and keeps the current file as `shortcuts.vdf.before-restore-<stamp>`.
+
 Steam keeps `shortcuts.vdf` in memory and rewrites it when it exits. The script
 therefore checks for a running Steam:
 
@@ -82,6 +92,30 @@ therefore checks for a running Steam:
 Icons, artwork and the helper come from the same release tag, so a pinned
 `--version` installs matching files.
 
+### The Steam Input layout
+
+A non-Steam game gets a default Steam Input layout ("Gamepad With Joystick
+Trackpad"), and that layout turns both Deck touchpads into mouse/joystick
+sources. sd-widgets reads the touchpads from the kernel itself, so the default
+layout only interferes: a cursor moves while a gesture is drawn on a pad, and a
+pad click arrives as a mouse click on top of the real one.
+
+The installer also writes a Neptune (Steam Deck) layout named **sd-widgets** into
+`<steam root>/steamapps/common/Steam Controller Configs/<account>/config/sd-widgets/`,
+selects it for the shortcut in `configset_controller_neptune.vdf`, and backs up
+both files once as `*.sdw-backup`. The layout has one action set, **Main**:
+buttons, sticks, triggers and the d-pad stay on xinput, while **both touchpads
+are left unbound** because they are the app's own input. With no pad bound,
+Steam has nothing to turn into a mouse, so a pad touch reaches only the app and
+pad binds and pad gestures see one source.
+
+Steam must be closed while its controller files are written, so the installer
+uses the same shutdown window as the shortcut. If the profile has no Steam
+Controller Configs folder yet, the script says so: launch Steam once, then rerun
+`... | bash -s -- deck --steam-only`. `--no-layout` skips this step. To go back,
+restore `controller_neptune.vdf` from its `*.sdw-backup` or choose another layout
+in **Steam → sd-widgets → Properties → Controller**.
+
 ## Options
 
 | Option | Meaning |
@@ -91,6 +125,7 @@ Icons, artwork and the helper come from the same release tag, so a pinned
 | `--dir DIR` | prefix instead of `~/.local` |
 | `--no-service` | do not install or start the daemon service |
 | `--no-steam` | do not touch the Steam library |
+| `--no-layout` | do not write the Steam Input layout (deck) |
 | `--steam-only` | only add the already installed app to Steam |
 | `--no-steam-restart` | never restart Steam automatically |
 | `--force` | write the Steam shortcut even while Steam runs |
@@ -139,6 +174,8 @@ non-Steam game**. Configuration and addons stay in
 | `AppImage` does not start, `libfuse` error | The wrapper falls back to extraction; if that also fails, install `libfuse2` (Debian/Ubuntu) or `fuse2` (Arch). |
 | The library entry is missing | Steam was running or restarted too late. Close Steam, then `... | bash -s -- deck --steam-only`. |
 | Wrong cover in the library | Steam names artwork by app id. Rerun the installer with `--steam-only`; the artwork is copied for both id variants. |
+| Non-Steam games disappeared from the library | Close Steam completely, then run `python3 steam_shortcut.py restore` (from the installer folder, with the same `HOME`): it restores the `shortcuts.vdf.bak-*` copy with the most shortcuts. Start Steam afterwards. |
+| Touchpads move a cursor in Game Mode | The `sd-widgets` layout is not selected. Rerun with `--steam-only` and check **Steam → sd-widgets → Properties → Controller**; the action set is **Main** and both pads are unbound on purpose. |
 | `systemctl --user` not available | The installer used the XDG autostart entry. Start it now with `~/.local/bin/sdw-daemon --headless &`. |
 | The daemon says `pactl`/`parec` missing | Install `pipewire-pulse` or `pulseaudio-utils`; audio is documented in [`AUDIO.md`](AUDIO.md). |
 | No `python3` on the Deck | SteamOS ships it. Without it the app is installed but the Steam entry must be added via **Steam → Add a Non-Steam Game**. |

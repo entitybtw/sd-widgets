@@ -168,32 +168,36 @@ inset from the arrows, so no card, slider or button ever ends under one.
 
 ## Install
 
-### Steam Deck — one command
+### One command
 
-Open **Desktop Mode → Konsole** and run:
+```bash
+curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash
+```
+
+It works out the machine itself. On a Steam Deck it installs
+`~/.local/bin/sdw-deck`, adds the menu entry and puts **sd-widgets** into the
+Steam library with artwork, so it starts from Game Mode. On a computer it
+installs `~/.local/bin/sdw-daemon`, enables a systemd user service and starts it;
+open `http://<computer>:47830` once to finish the setup, then pair the Deck.
+
+The Deck install also writes the **sd-widgets** Steam Input layout for that
+shortcut and makes it current: buttons, sticks, triggers and the d-pad stay on
+xinput while both touchpads are left unbound, because sd-widgets reads them
+itself. Steam keeps the library in memory, so the script restarts it once to
+save the new shortcut and layout.
+
+To choose a role yourself, pass `deck` or `daemon` after `bash -s --`:
 
 ```bash
 curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- deck
 ```
 
-It installs `~/.local/bin/sdw-deck`, adds the menu entry and puts **sd-widgets**
-into the Steam library with artwork, so it starts from Game Mode. Steam keeps the
-library in memory, so the script restarts it once to save the new shortcut.
-
-### Computer — one command
-
-```bash
-curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- daemon
-```
-
-It installs `~/.local/bin/sdw-daemon`, enables a systemd user service and starts
-it. Open `http://<computer>:47830` once to finish the setup, then pair the Deck.
-
-Both installers take `--version V` to pin a release, `--local FILE` for an
+The installer takes `--version V` to pin a release, `--local FILE` for an
 AppImage you already downloaded, `--dir DIR` to change the prefix, plus
-`--no-service`, `--no-steam`, `--no-steam-restart` and `--steam-only`. They are
-idempotent: rerunning updates the files and the existing Steam entry instead of
-adding a second one. Details: [`docs/INSTALL.md`](docs/INSTALL.md).
+`--no-service`, `--no-steam`, `--no-layout`, `--no-steam-restart` and
+`--steam-only`. It is idempotent: rerunning updates the files and the existing
+Steam entry instead of adding a second one. Details:
+[`docs/INSTALL.md`](docs/INSTALL.md).
 
 ### Prebuilt
 

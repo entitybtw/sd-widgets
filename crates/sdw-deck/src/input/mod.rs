@@ -61,6 +61,10 @@ const ABS_HAT1X: u16 = 18;
 const ABS_HAT1Y: u16 = 19;
 const ABS_HAT2X: u16 = 20;
 const ABS_HAT2Y: u16 = 21;
+
+/// Valve's USB vendor id; Steam Input's emulated Xbox pad uses product 0x11ff.
+const STEAM_VENDOR: u16 = 0x28de;
+const STEAM_VIRTUAL_PAD: u16 = 0x11ff;
 const ABS_MT_SLOT: u16 = 0x2f;
 const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
@@ -243,14 +247,47 @@ struct ScanState {
     motion_taken: bool,
 }
 
+/// Steam Input's emulated pad repeats the Deck's buttons and sticks on a
+/// uinput device. It has no touchpad axes, so when the real Deck node is
+/// present it is pure duplication: ignore it.
+fn is_steam_virtual_pad(vendor: u16, product: u16) -> bool {
+    vendor == STEAM_VENDOR && product == STEAM_VIRTUAL_PAD
+}
+
 #[cfg(target_os = "linux")]
 fn scan_into(raw_tx: &Sender<Raw>, st: &mut ScanState) -> (Vec<String>, bool, Vec<String>) {
     let mut devices = Vec::new();
     let mut errors = Vec::new();
     let mut has_gamepad = false;
     let mut current = HashSet::new();
+
+    // The Deck node is the one with HAT1 (its pads). If Steam Input's virtual
+    // pad showed up before it, decide once per scan and skip the virtual pad.
+    let deck_present = evdev::enumerate().any(|(_, dev)| {
+        let gamepad = dev
+            .supported_keys()
+            .map(|keys| {
+                keys.contains(evdev::KeyCode(BTN_SOUTH))
+                    || keys.contains(evdev::KeyCode(BTN_EAST))
+                    || keys.contains(evdev::KeyCode(BTN_MODE))
+            })
+            .unwrap_or(false);
+        let pads = dev
+            .supported_absolute_axes()
+            .map(|axes| axes.contains(evdev::AbsoluteAxisCode(ABS_HAT1X)))
+            .unwrap_or(false);
+        gamepad && pads
+    });
+
     for (path, dev) in evdev::enumerate() {
+        let id = dev.input_id();
+        let skip = deck_present && is_steam_virtual_pad(id.vendor(), id.product());
+        // Keep the path in `current` even when skipping, so a reader that was
+        // already spawned before the Deck node appeared is not spawned twice.
         current.insert(path.clone());
+        if skip {
+            continue;
+        }
         let name = dev.name().unwrap_or("input").to_string();
         let keys = dev.supported_keys();
         let axes = dev.supported_absolute_axes();
@@ -1157,6 +1194,14 @@ mod tests {
         assert_eq!(key_name(BTN_WEST), "Y");
         assert_eq!(gamepad_bit(BTN_NORTH), Some(udp::BTN_X));
         assert_eq!(gamepad_bit(BTN_WEST), Some(udp::BTN_Y));
+    }
+
+    #[test]
+    fn steam_virtual_pad_is_recognised() {
+        assert!(is_steam_virtual_pad(0x28de, 0x11ff));
+        // The Deck node itself and a plain Xbox pad are real controllers.
+        assert!(!is_steam_virtual_pad(0x28de, 0x1205));
+        assert!(!is_steam_virtual_pad(0x045e, 0x028e));
     }
 
     #[test]

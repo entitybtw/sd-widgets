@@ -165,34 +165,37 @@
 
 ## Встановлення
 
-### Steam Deck — одна команда
+### Одна команда
 
-Відкрийте **режим робочого столу → Konsole** і виконайте:
+```bash
+curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash
+```
+
+Скрипт сам визначає, де запущений. На Steam Deck він ставить
+`~/.local/bin/sdw-deck`, додає пункт меню й кладе **sd-widgets** у бібліотеку
+Steam з обкладинкою, щоб застосунок запускався з Game Mode. На комп'ютері —
+ставить `~/.local/bin/sdw-daemon`, вмикає й запускає користувацьку службу
+systemd; відкрийте `http://<комп'ютер>:47830`, завершіть налаштування й
+підключіть деку.
+
+Встановлення на деку заразом кладе для ярлика розкладку Steam Input
+**sd-widgets** і робить її поточною: кнопки, стіки, тригери й d-pad лишаються на
+xinput, а обидва тачпади навмисно не призначені, бо sd-widgets читає їх сам.
+Steam тримає бібліотеку в пам'яті, тому скрипт один раз перезапускає його, щоб
+зберегти ярлик і розкладку.
+
+Вибрати роль вручну можна, передавши `deck` або `daemon` після `bash -s --`:
 
 ```bash
 curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- deck
 ```
 
-Він ставить `~/.local/bin/sdw-deck`, додає пункт меню й кладе **sd-widgets** у
-бібліотеку Steam з обкладинкою, щоб застосунок запускався з Game Mode. Steam
-тримає бібліотеку в пам'яті, тому скрипт один раз перезапускає його, щоб
-зберегти ярлик.
-
-### Комп'ютер — одна команда
-
-```bash
-curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- daemon
-```
-
-Ставить `~/.local/bin/sdw-daemon`, вмикає й запускає користувацьку службу
-systemd. Відкрийте `http://<комп'ютер>:47830`, завершіть налаштування й
-підключіть деку.
-
-Обидва інсталятори приймають `--version V` для конкретного релізу, `--local FILE`
-для вже завантаженого AppImage, `--dir DIR` для іншого префікса, а також
-`--no-service`, `--no-steam`, `--no-steam-restart` і `--steam-only`. Їх можна
-запускати повторно: файли й наявний ярлик Steam оновляться, другого запису не
-з'явиться. Подробиці — [`docs/INSTALL.md`](docs/INSTALL.md).
+Інсталятор приймає `--version V` для конкретного релізу, `--local FILE` для
+вже завантаженого AppImage, `--dir DIR` для іншого префікса, а також
+`--no-service`, `--no-steam`, `--no-layout`, `--no-steam-restart` і
+`--steam-only`. Його можна запускати повторно: файли й наявний ярлик Steam
+оновляться, другого запису не з'явиться. Подробиці —
+[`docs/INSTALL.md`](docs/INSTALL.md).
 
 ### Готові збірки
 

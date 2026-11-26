@@ -88,6 +88,11 @@
   drag. The window is what actually works when the compositor turns the
   touchscreen into a mouse or the touch device is grabbed, and a single gesture
   is recorded once (a short guard swallows the duplicate from the other source).
+  While the Deck node exists, Steam Input's emulated Xbox pad
+  (`28de:11ff`) is skipped: it repeats buttons and sticks but has no pads, so
+  listening to both would fire a bind twice. The installer gives the shortcut a
+  Steam Input layout with the pads unbound, so the emulated pad has nothing to
+  add in the first place.
   The page's horizontal-only rule does not apply while recording, so a tap, a
   long press and a vertical swipe are bindable too.
 - `sound.rs` — synthesized WAV packs and playback.

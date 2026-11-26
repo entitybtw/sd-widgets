@@ -166,34 +166,36 @@
 
 ## Установка
 
-### Steam Deck — одна команда
+### Одна команда
 
-Откройте **режим рабочего стола → Konsole** и выполните:
+```bash
+curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash
+```
+
+Скрипт сам понимает, где запущен. На Steam Deck он ставит
+`~/.local/bin/sdw-deck`, добавляет пункт меню и кладёт **sd-widgets** в
+библиотеку Steam с обложкой, чтобы приложение запускалось из Game Mode. На
+компьютере — ставит `~/.local/bin/sdw-daemon`, включает и запускает
+пользовательскую службу systemd; откройте `http://<компьютер>:47830`,
+завершите настройку и подключите деку.
+
+Установка на деку заодно кладёт для ярлыка раскладку Steam Input
+**sd-widgets** и делает её текущей: кнопки, стики, триггеры и d-pad остаются на
+xinput, а оба тачпада намеренно не назначены, потому что sd-widgets читает их
+сам. Steam держит библиотеку в памяти, поэтому скрипт один раз перезапускает
+его, чтобы сохранить ярлык и раскладку.
+
+Выбрать роль вручную можно, передав `deck` или `daemon` после `bash -s --`:
 
 ```bash
 curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- deck
 ```
 
-Скрипт ставит `~/.local/bin/sdw-deck`, добавляет пункт меню и кладёт
-**sd-widgets** в библиотеку Steam с обложкой, чтобы приложение запускалось из
-Game Mode. Steam держит библиотеку в памяти, поэтому скрипт один раз
-перезапускает его, чтобы сохранить ярлык.
-
-### Компьютер — одна команда
-
-```bash
-curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh | bash -s -- daemon
-```
-
-Ставит `~/.local/bin/sdw-daemon`, включает и запускает пользовательскую службу
-systemd. Откройте `http://<компьютер>:47830`, завершите настройку и подключите
-деку.
-
-Оба установщика принимают `--version V` для конкретного релиза, `--local FILE`
+Установщик принимает `--version V` для конкретного релиза, `--local FILE`
 для уже скачанного AppImage, `--dir DIR` для другого префикса, а также
-`--no-service`, `--no-steam`, `--no-steam-restart` и `--steam-only`. Их можно
-запускать повторно: файлы и ярлык Steam обновятся, второй записи не появится.
-Подробности — [`docs/INSTALL.md`](docs/INSTALL.md).
+`--no-service`, `--no-steam`, `--no-layout`, `--no-steam-restart` и
+`--steam-only`. Его можно запускать повторно: файлы и ярлык Steam обновятся,
+второй записи не появится. Подробности — [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ### Готовые сборки
 

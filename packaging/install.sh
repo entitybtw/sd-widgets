@@ -2,19 +2,21 @@
 # sd-widgets installer — one command for the computer and one for the Deck.
 #
 #   curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh \
-#     | bash -s -- daemon
-#   curl -fsSL https://git.entitybtw.ru/entitybtw/sd-widgets/raw/branch/main/packaging/install.sh \
-#     | bash -s -- deck
+#     | bash
+#
+# The script picks the role itself: the Deck app on a Steam Deck, the daemon
+# everywhere else. Pass `deck` or `daemon` after `bash -s --` to choose.
 #
 # The script downloads the newest AppImage from the release, installs a small
 # launcher into ~/.local/bin, adds a desktop entry, and:
 #   * daemon — installs and starts a systemd user service (or an XDG autostart
 #     entry when systemd is not available);
 #   * deck   — adds sd-widgets to the Steam library as a non-Steam shortcut with
-#     library artwork, so it runs from Game Mode without extra steps.
+#     library artwork and a Steam Input layout whose touchpads are left to the
+#     app, so it runs from Game Mode without extra steps.
 #
 # Options: --version V, --local FILE, --dir DIR, --no-steam, --steam-only,
-#          --no-steam-restart, --no-service, --force, -h.
+#          --no-layout, --no-steam-restart, --no-service, --force, -h.
 set -euo pipefail
 
 BASE="${SDW_BASE:-https://git.entitybtw.ru/entitybtw/sd-widgets}"
@@ -25,6 +27,7 @@ LOCAL_FILE=""
 PREFIX="${HOME}/.local"
 NO_STEAM=0
 STEAM_ONLY=0
+NO_LAYOUT=0
 NO_SERVICE=0
 RESTART_STEAM=1
 FORCE=0
@@ -38,19 +41,25 @@ die() {
 
 usage() {
   cat <<'TXT'
-usage: install.sh <deck|daemon> [options]
+usage: install.sh [deck|daemon] [options]
+
+  With no role the script picks deck on a Steam Deck and daemon everywhere
+  else. Options:
 
   --version V         install a specific release (default: the newest)
   --local FILE        use a local AppImage instead of downloading
   --dir DIR           install prefix (default: ~/.local)
   --no-steam          do not touch the Steam library (deck)
   --steam-only        only add the installed app to the Steam library
+  --no-layout         do not install the Steam Input layout (deck)
   --no-steam-restart  never restart Steam; print what to do instead
   --no-service        do not enable the daemon service (daemon)
   --force             write the Steam shortcut even if Steam is running
   -h, --help          this text
 
-Environment: SDW_BASE overrides the release host.
+Environment:
+  SDW_BASE  overrides the release host
+  SDW_ROLE  deck or daemon; skips the autodetection
 TXT
 }
 
@@ -74,6 +83,7 @@ while [ $# -gt 0 ]; do
     ;;
   --no-steam) NO_STEAM=1 ;;
   --steam-only) STEAM_ONLY=1 ;;
+  --no-layout) NO_LAYOUT=1 ;;
   --no-steam-restart) RESTART_STEAM=0 ;;
   --no-service) NO_SERVICE=1 ;;
   --force) FORCE=1 ;;
@@ -90,10 +100,46 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-[ -n "$APP" ] || {
-  usage >&2
-  exit 2
+# The Deck reports Jupiter (LCD) or Galileo (OLED) in DMI; SteamOS itself is
+# the fallback for an image that hides the model. A role passed on the command
+# line, or SDW_ROLE, always wins.
+detect_role() {
+  if [ -n "${SDW_ROLE:-}" ]; then
+    printf '%s\n' "$SDW_ROLE"
+    return 0
+  fi
+  local product=""
+  if [ -r /sys/devices/virtual/dmi/id/product_name ]; then
+    product="$(cat /sys/devices/virtual/dmi/id/product_name 2>/dev/null)"
+  fi
+  case "$product" in
+  Jupiter | Galileo)
+    printf 'deck\n'
+    return 0
+    ;;
+  esac
+  if grep -qi '^ID=steamos' /etc/os-release 2>/dev/null; then
+    printf 'deck\n'
+    return 0
+  fi
+  printf 'daemon\n'
 }
+
+if [ -z "$APP" ]; then
+  APP="$(detect_role)"
+  case "$APP" in
+  deck) say "installing the Deck app" ;;
+  daemon) say "installing the daemon" ;;
+  *)
+    die "SDW_ROLE must be deck or daemon, not \"$APP\""
+    ;;
+  esac
+else
+  case "$APP" in
+  deck | daemon) ;;
+  *) die "unknown role: $APP" ;;
+  esac
+fi
 command -v curl >/dev/null 2>&1 || die "curl is required"
 
 PREFIX="${PREFIX%/}"
@@ -234,11 +280,81 @@ steam_helper() {
     return
   fi
   mkdir -p "$SHARE"
-  if [ ! -f "$SHARE/steam_shortcut.py" ]; then
-    fetch "$BASE/raw/tag/v$VERSION/packaging/linux/steam_shortcut.py" \
-      >"$SHARE/steam_shortcut.py" || return 1
+  # The helper edits the one file that holds the whole non-Steam library, so a
+  # pinned release must not bring back an old, unsafe copy: main comes first,
+  # the tag is only a fallback for an offline mirror. Always refresh it; a
+  # cached copy is used offline only if it carries the safety check.
+  if fetch_file "$SHARE/steam_shortcut.py" steam_shortcut.py; then
+    printf '%s\n' "$SHARE/steam_shortcut.py"
+    return
   fi
-  printf '%s\n' "$SHARE/steam_shortcut.py"
+  if [ -s "$SHARE/steam_shortcut.py" ] &&
+    grep -q "def check_rewrite" "$SHARE/steam_shortcut.py"; then
+    warn "using the cached Steam helper; could not download the current one"
+    printf '%s\n' "$SHARE/steam_shortcut.py"
+    return
+  fi
+  return 1
+}
+
+# Download a small file from the pinned tag, falling back to `main` for files
+# that a release older than the installer does not carry. A failed or empty
+# download never leaves a broken file behind.
+fetch_file() {
+  local target="$1" name="$2" tmp="$1.tmp.$$"
+  # `main` first: the helper edits the file that holds the whole non-Steam
+  # library, so an old pinned tag must not bring back an unsafe copy. The tag
+  # is the fallback for a mirror that does not carry `main`.
+  if fetch "$BASE/raw/branch/main/packaging/linux/$name" >"$tmp" 2>/dev/null &&
+    [ -s "$tmp" ]; then
+    mv "$tmp" "$target"
+    return 0
+  fi
+  if fetch "$BASE/raw/tag/v$VERSION/packaging/linux/$name" >"$tmp" 2>/dev/null &&
+    [ -s "$tmp" ]; then
+    mv "$tmp" "$target"
+    return 0
+  fi
+  rm -f "$tmp"
+  return 1
+}
+
+steam_layout_helper() {
+  if [ -n "$REPO" ] && [ -f "$REPO/packaging/linux/steam_layout.py" ]; then
+    printf '%s\n' "$REPO/packaging/linux/steam_layout.py"
+    return
+  fi
+  mkdir -p "$SHARE"
+  if fetch_file "$SHARE/steam_layout.py" steam_layout.py; then
+    printf '%s\n' "$SHARE/steam_layout.py"
+    return
+  fi
+  if [ -s "$SHARE/steam_layout.py" ] &&
+    grep -q "def check_layout" "$SHARE/steam_layout.py"; then
+    warn "using the cached Steam layout helper; could not download the current one"
+    printf '%s\n' "$SHARE/steam_layout.py"
+    return
+  fi
+  return 1
+}
+
+steam_layout_file() {
+  local file="$SHARE/controller_neptune_sdw.vdf"
+  if [ -n "$REPO" ] && [ -f "$REPO/packaging/linux/controller_neptune_sdw.vdf" ]; then
+    printf '%s\n' "$REPO/packaging/linux/controller_neptune_sdw.vdf"
+    return
+  fi
+  mkdir -p "$SHARE"
+  if fetch_file "$file" controller_neptune_sdw.vdf; then
+    printf '%s\n' "$file"
+    return
+  fi
+  if [ -s "$file" ]; then
+    warn "using the cached Steam Input layout; could not download the current one"
+    printf '%s\n' "$file"
+    return
+  fi
+  return 1
 }
 
 steam_art() {
@@ -275,6 +391,20 @@ add_to_steam() {
   local icon="$ICONS/sdw-widgets.png"
   [ -f "$icon" ] || icon=""
 
+  local layout_helper="" layout_file=""
+  if [ "$NO_LAYOUT" = 0 ]; then
+    layout_helper="$(steam_layout_helper)" || {
+      warn "cannot fetch the Steam Input layout helper"
+      layout_helper=""
+    }
+    if [ -n "$layout_helper" ]; then
+      layout_file="$(steam_layout_file)" || {
+        warn "cannot fetch the Steam Input layout"
+        layout_helper=""
+      }
+    fi
+  fi
+
   local restarted=0
   local force_arg=()
   if [ "$FORCE" = 1 ]; then
@@ -286,6 +416,9 @@ add_to_steam() {
     if [ "$RESTART_STEAM" = 0 ] || ! command -v steam >/dev/null 2>&1; then
       warn "Steam is running: close it completely, then run"
       warn "  curl -fsSL $BASE/raw/branch/main/packaging/install.sh | bash -s -- $APP --steam-only"
+      if [ -n "$layout_helper" ]; then
+        warn "  python3 $layout_helper install --name sd-widgets --file $layout_file"
+      fi
       return 0
     fi
     say "Steam is running — restarting it so the library edit is not overwritten"
@@ -298,6 +431,9 @@ add_to_steam() {
     if steam_running; then
       warn "Steam did not close; add the shortcut later with:"
       warn "  $helper add --exe $BIN/sdw-deck --name sd-widgets --art $art"
+      if [ -n "$layout_helper" ]; then
+        warn "  python3 $layout_helper install --name sd-widgets --file $layout_file"
+      fi
       return 0
     fi
     restarted=1
@@ -311,6 +447,18 @@ add_to_steam() {
     --icon "$icon" \
     --icon-png "$icon" \
     --art "$art" "${force_arg[@]}" || rc=$?
+
+  if [ -n "$layout_helper" ]; then
+    local layout_rc=0
+    python3 "$layout_helper" install --name "sd-widgets" --file "$layout_file" \
+      "${force_arg[@]}" || layout_rc=$?
+    case "$layout_rc" in
+    0) say "Steam Input layout sd-widgets: both touchpads are left to the app" ;;
+    3) warn "Steam Input layout skipped: Steam was still running" ;;
+    4) warn "no Steam Controller Configs folder yet; launch Steam once, then rerun with --steam-only" ;;
+    *) warn "could not write the Steam Input layout (code $layout_rc)" ;;
+    esac
+  fi
 
   if [ "$restarted" = 1 ]; then
     say "starting Steam again"
@@ -417,7 +565,11 @@ daemon)
     "Virtual gamepads, extra monitor, notifications and audio for the Steam Deck" \
     "steam;deck;gamepad;viiper;monitor;audio;"
   install_service
-  ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  ip="$(hostname -I 2>/dev/null | awk '{print $1}')" || ip=""
+  if [ -z "$ip" ] && command -v ip >/dev/null 2>&1; then
+    ip="$(ip -4 route get 1.1.1.1 2>/dev/null |
+      awk '{for (i = 1; i <= NF; i++) if ($i == "src") print $(i + 1)}')" || ip=""
+  fi
   [ -n "$ip" ] || ip="127.0.0.1"
   printf '\nReady. Open http://%s:47830 to finish the setup, then pair the Deck.\n' "$ip"
   printf 'Logs: journalctl --user -u sdw-daemon -f\n'

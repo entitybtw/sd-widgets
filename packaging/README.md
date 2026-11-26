@@ -36,6 +36,21 @@ packaging/linux/build-appimage.sh deck
 shortcut and copies that artwork into Steam's `config/grid/`; `install.sh`
 calls it and handles closing/restarting Steam.
 
+`shortcuts.vdf` is binary VDF and holds the whole non-Steam library, so
+`steam_shortcut.py` reads it recursively (an entry nests a `tags` map, which a
+flat reader would stop at) and refuses to write unless every other entry comes
+back unchanged from its own output. Each write leaves
+`shortcuts.vdf.bak-<stamp>`; `steam_shortcut.py restore` puts the backup with
+the most shortcuts back and keeps the current file as
+`shortcuts.vdf.before-restore-<stamp>`.
+
+`packaging/linux/steam_layout.py` installs
+`packaging/linux/controller_neptune_sdw.vdf` as the Deck layout of that shortcut
+and selects it in `configset_controller_neptune.vdf`. The layout keeps a normal
+xinput pad but leaves both touchpads unbound: sd-widgets reads them itself.
+Existing files are backed up once as `*.sdw-backup`; `--no-layout` skips the
+step.
+
 Install the user unit:
 
 ```bash
