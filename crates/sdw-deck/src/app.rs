@@ -571,19 +571,28 @@ impl TouchTrack {
         (nx - anchor.0) * rect.width() / secs
     }
 
-    /// Returns a finished gesture once the last finger lifts.
-    fn end(&mut self, id: u64, pos: egui::Pos2, rect: Rect, now: Instant) -> Option<GestureSpec> {
+    /// Returns a finished gesture once the last finger lifts. `capture` is the
+    /// bind recorder: it wants every gesture, including the ones the page
+    /// handler leaves to egui.
+    fn end(
+        &mut self,
+        id: u64,
+        pos: egui::Pos2,
+        rect: Rect,
+        now: Instant,
+        capture: bool,
+    ) -> Option<GestureSpec> {
         self.last.insert(id, pos);
         self.points.remove(&id);
         if !self.points.is_empty() {
             return None;
         }
-        let spec = self.finish(rect, now);
+        let spec = self.finish(rect, now, capture);
         self.reset();
         spec
     }
 
-    fn finish(&mut self, rect: Rect, now: Instant) -> Option<GestureSpec> {
+    fn finish(&mut self, rect: Rect, now: Instant, capture: bool) -> Option<GestureSpec> {
         let started = self.start?;
         let start = self.anchor?;
         let end = self.centroid(&self.last, rect);
@@ -592,6 +601,18 @@ impl TouchTrack {
             // and a vertical scroll stay with egui.
             let dx = end.0 - start.0;
             let dy = end.1 - start.1;
+            if capture {
+                // A tap, a long press and an upward swipe are perfectly good
+                // binds, so the recorder takes the same rule the kernel path
+                // uses instead of the page's horizontal-only shortcut.
+                return crate::input::gesture_from(
+                    1,
+                    now.saturating_duration_since(started),
+                    start,
+                    end,
+                    None,
+                );
+            }
             if now.saturating_duration_since(started) < Duration::from_millis(700)
                 && dx.abs() > 0.10
                 && dx.abs() > dy.abs() * 1.6
@@ -632,6 +653,17 @@ impl TouchTrack {
         self.max = 0;
         self.pinch = None;
     }
+}
+
+/// A plain pointer drag while a gesture is being recorded.
+///
+/// When the compositor hands the touchscreen to the window as a mouse there
+/// are no `Event::Touch` events and no finger count, but a drag past the
+/// gesture threshold is still a one-finger swipe.
+#[derive(Default)]
+pub struct CaptureDrag {
+    start: Option<(egui::Pos2, Instant)>,
+    last: Option<egui::Pos2>,
 }
 
 pub struct App {
@@ -748,6 +780,12 @@ pub struct App {
     pub pressed: HashSet<u16>,
     pub last_button: Option<(u16, String, Instant)>,
     pub last_gesture: Option<(GestureSpec, Instant)>,
+    /// When a gesture was just recorded. The same physical touch can reach the
+    /// app twice — as window input and from the kernel — and the second copy
+    /// must not turn a page, open the panel or fire a bind.
+    pub capture_guard: Option<Instant>,
+    /// The pointer drag being watched while a bind is being recorded.
+    pub capture_drag: CaptureDrag,
 
     /// Virtual pointer used when the deck's own gamepad drives the interface.
     pub pad_cursor: Option<egui::Pos2>,
@@ -1048,6 +1086,8 @@ impl App {
             pressed: HashSet::new(),
             last_button: None,
             last_gesture: None,
+            capture_guard: None,
+            capture_drag: CaptureDrag::default(),
             pad_cursor: None,
             pad_cursor_at: Instant::now() - Duration::from_secs(10),
             pad_buttons: 0,
@@ -1525,10 +1565,11 @@ impl App {
     /// swipes, pinches). When the compositor instead reports the touchscreen as
     /// a plain mouse, [`Self::swipe_raw`] covers the single-finger case.
     fn touch_gesture_tick(&mut self, ctx: &egui::Context, raw: &egui::RawInput) {
-        if self.gamepad_on || self.binds.capture {
+        if self.gamepad_on {
             self.touch.reset();
             return;
         }
+        let capture = self.binds.capture;
         // A gesture that began on a notification card belongs to that card:
         // its release dismisses the card, never turns the page.
         let own = self.notif_own || self.notif_own_release;
@@ -1548,7 +1589,7 @@ impl App {
                     egui::TouchPhase::Move => self.touch.moved(id.0, *pos),
                     egui::TouchPhase::End | egui::TouchPhase::Cancel => {
                         let vel = self.touch.speed_px(rect, now, *pos);
-                        if let Some(spec) = self.touch.end(id.0, *pos, rect, now) {
+                        if let Some(spec) = self.touch.end(id.0, *pos, rect, now, capture) {
                             finished = Some((spec, vel));
                         }
                     }
@@ -1593,6 +1634,23 @@ impl App {
             }
         }
         if let Some((spec, vel)) = finished {
+            if capture {
+                // A single tap is also how the editor's own buttons are
+                // pressed, so the window source records everything that a
+                // click cannot be: swipes, long presses and pinches. Taps and
+                // the finger count still come from the kernel tracker.
+                if spec.kind == GestureKind::Tap && spec.fingers <= 1 {
+                    return;
+                }
+                // The recorder is listening: hand the gesture over before the
+                // page or the panel can claim it. `on_input` records it and
+                // guards the copy the kernel may deliver for the same finger.
+                self.on_input(DeckEvent::Gesture(spec));
+                self.page_anchor = None;
+                self.page_slide = 0.0;
+                self.touch_blocked = true;
+                return;
+            }
             if self.quick_open {
                 // The control centre covers the screen: a finger on it belongs
                 // to the panel, never to the page behind it. An upward swipe
@@ -1659,6 +1717,68 @@ impl App {
     /// clicks and vertical drags reach the computer.
     fn drag_blocks_page(&self, id: egui::Id) -> bool {
         Some(id) != self.page_scroll_id && Some(id) != self.stream_drag_id
+    }
+
+    /// Record a one-finger swipe from a plain pointer drag while a bind is
+    /// being captured. A tap is how the editor's own buttons are pressed, so
+    /// only a drag past the gesture threshold counts; the page may still
+    /// scroll under the finger.
+    fn capture_drag_tick(&mut self, ctx: &egui::Context, raw: &egui::RawInput) {
+        if !self.binds.capture || self.gamepad_on {
+            self.capture_drag = CaptureDrag::default();
+            return;
+        }
+        if raw
+            .events
+            .iter()
+            .any(|e| matches!(e, egui::Event::Touch { .. }))
+        {
+            // Native touch carries the finger count; TouchTrack owns it.
+            self.capture_drag = CaptureDrag::default();
+            return;
+        }
+        let rect = raw.screen_rect.unwrap_or_else(|| ctx.content_rect());
+        for event in &raw.events {
+            match event {
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    ..
+                } => {
+                    self.capture_drag.start = Some((*pos, Instant::now()));
+                    self.capture_drag.last = Some(*pos);
+                }
+                egui::Event::PointerMoved(pos) => {
+                    if self.capture_drag.start.is_some() {
+                        self.capture_drag.last = Some(*pos);
+                    }
+                }
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                } => {
+                    let Some((start, at)) = self.capture_drag.start.take() else {
+                        continue;
+                    };
+                    self.capture_drag.last = None;
+                    let spec = crate::input::gesture_from(
+                        1,
+                        at.elapsed(),
+                        TouchTrack::norm(start, rect),
+                        TouchTrack::norm(*pos, rect),
+                        None,
+                    );
+                    if let Some(spec) = spec.filter(|s| s.kind == GestureKind::Swipe) {
+                        self.on_input(DeckEvent::Gesture(spec));
+                    }
+                }
+                egui::Event::PointerGone => self.capture_drag = CaptureDrag::default(),
+                _ => {}
+            }
+        }
     }
 
     /// A plain mouse drag (the Deck's touchscreen often arrives this way).
@@ -4124,6 +4244,13 @@ impl App {
     pub fn set_bind_capture(&mut self, on: bool) {
         self.binds.capture = on;
         self.binds.capture_since = on.then(Instant::now);
+        // Start from the next finger, never from the one that pressed the
+        // button that switched the recorder on.
+        self.touch.reset();
+        self.capture_drag = CaptureDrag::default();
+        if on {
+            self.capture_guard = None;
+        }
     }
 
     pub fn execute_bind(&mut self, bind: &Bind) {
@@ -4272,7 +4399,14 @@ impl App {
             }
             DeckEvent::Gesture(spec) => {
                 self.last_gesture = Some((spec.clone(), Instant::now()));
+                if self
+                    .capture_guard
+                    .is_some_and(|at| at.elapsed() < Duration::from_millis(900))
+                {
+                    return;
+                }
                 if self.binds.capture {
+                    self.capture_guard = Some(Instant::now());
                     binds::capture_gesture(self, &spec);
                     return;
                 }
@@ -4566,8 +4700,8 @@ impl App {
             self.toast(
                 t!(
                     self.lang,
-                    "запись отменена: кнопка не нажата",
-                    "capture cancelled: no button pressed"
+                    "запись отменена: ничего не распознано",
+                    "capture cancelled: nothing recognised"
                 ),
                 false,
             );
@@ -6336,6 +6470,7 @@ impl eframe::App for App {
         self.notif_drag_tick(raw);
         self.pad_ui(ctx, raw);
         self.touch_gesture_tick(ctx, raw);
+        self.capture_drag_tick(ctx, raw);
         self.swipe_raw(ctx, raw);
     }
 
@@ -6779,6 +6914,7 @@ mod touch_tests {
                 egui::pos2(300.0, 260.0),
                 r,
                 now + Duration::from_millis(200),
+                false,
             )
             .expect("a flick across the screen is a swipe");
         assert_eq!(spec.kind, GestureKind::Swipe);
@@ -6798,7 +6934,8 @@ mod touch_tests {
                 1,
                 egui::pos2(430.0, 100.0),
                 r,
-                now + Duration::from_millis(300)
+                now + Duration::from_millis(300),
+                false
             )
             .is_none());
     }
@@ -6814,7 +6951,8 @@ mod touch_tests {
                 1,
                 egui::pos2(402.0, 201.0),
                 r,
-                now + Duration::from_millis(80)
+                now + Duration::from_millis(80),
+                false
             )
             .is_none());
     }
@@ -6834,6 +6972,7 @@ mod touch_tests {
                 egui::pos2(312.0, 254.0),
                 r,
                 now + Duration::from_millis(220),
+                false,
             )
             .expect("a short horizontal drag is a swipe");
         assert_eq!(spec.kind, GestureKind::Swipe);
@@ -6852,9 +6991,76 @@ mod touch_tests {
                 1,
                 egui::pos2(340.0, 254.0),
                 r,
-                now + Duration::from_millis(200)
+                now + Duration::from_millis(200),
+                false
             )
             .is_none());
+    }
+
+    #[test]
+    fn recording_takes_a_tap_and_a_vertical_swipe() {
+        let now = Instant::now();
+        let r = rect();
+        let mut tap = TouchTrack::default();
+        tap.begin(1, egui::pos2(400.0, 200.0), r, now);
+        let spec = tap
+            .end(
+                1,
+                egui::pos2(402.0, 201.0),
+                r,
+                now + Duration::from_millis(80),
+                true,
+            )
+            .expect("a tap is a gesture while recording");
+        assert_eq!(spec.kind, GestureKind::Tap);
+        assert_eq!(spec.fingers, 1);
+
+        let mut up = TouchTrack::default();
+        up.begin(1, egui::pos2(400.0, 400.0), r, now);
+        up.moved(1, egui::pos2(410.0, 100.0));
+        let spec = up
+            .end(
+                1,
+                egui::pos2(410.0, 100.0),
+                r,
+                now + Duration::from_millis(300),
+                true,
+            )
+            .expect("an upward drag is a gesture while recording");
+        assert_eq!(spec.kind, GestureKind::Swipe);
+        assert_eq!(spec.dir, Some(SwipeDir::Up));
+    }
+
+    #[test]
+    fn recording_keeps_the_finger_count() {
+        let now = Instant::now();
+        let r = rect();
+        let mut track = TouchTrack::default();
+        track.begin(1, egui::pos2(400.0, 250.0), r, now);
+        track.begin(2, egui::pos2(500.0, 250.0), r, now);
+        track.moved(1, egui::pos2(200.0, 250.0));
+        track.moved(2, egui::pos2(300.0, 250.0));
+        assert!(track
+            .end(
+                1,
+                egui::pos2(200.0, 250.0),
+                r,
+                now + Duration::from_millis(400),
+                true
+            )
+            .is_none());
+        let spec = track
+            .end(
+                2,
+                egui::pos2(300.0, 250.0),
+                r,
+                now + Duration::from_millis(400),
+                true,
+            )
+            .expect("two fingers stay a gesture");
+        assert_eq!(spec.fingers, 2);
+        assert_eq!(spec.kind, GestureKind::Swipe);
+        assert_eq!(spec.dir, Some(SwipeDir::Left));
     }
 
     #[test]
