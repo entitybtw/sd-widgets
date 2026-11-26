@@ -117,10 +117,14 @@
   runner; disabled addons and undeclared actions are rejected.
 - `install.rs` — dependency detection and install jobs. VIIPER is downloaded
   from `viiper.source` (empty means GitHub `Alia5/VIIPER`, otherwise a GitHub or
-  Forgejo mirror) through `update::check_at`, picking the asset for this OS and
-  CPU and verifying its `SHA256SUMS`. On Windows `ffmpeg` is downloaded as a
-  portable zip and unpacked into `<data>/bin` (put first on `PATH` at startup),
-  while the Virtual Display Driver and usbipd go through `winget`.
+  Forgejo mirror) through `update::check_at`, which skips drafts and
+  prereleases (GitHub's `dev-snapshot`) and takes the highest stable tag. It
+  picks the asset for this OS and CPU, verifies its `SHA256SUMS` and runs
+  `viiper --help` before calling the download installed: VIIPER has no
+  `version` command, and a file that cannot print its banner is removed. On
+  Windows `ffmpeg` is downloaded as a portable zip and unpacked into
+  `<data>/bin` (put first on `PATH` at startup), while the Virtual Display
+  Driver and usbipd go through `winget`.
 - `win/` — the Windows layer, chosen with `#[cfg(windows)]` at the crate root:
   `display.rs` (Virtual Display Driver, monitor placement), `audio.rs` (WASAPI
   loopback, per-process capture), `media.rs` (system media transport controls),

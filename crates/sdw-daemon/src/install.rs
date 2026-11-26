@@ -23,26 +23,84 @@ pub struct ComponentStatus {
     pub needs_root: bool,
 }
 
+/// How a command ended, for an error line.
+fn exit_text(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("код {code}"),
+        None => "остановлен сигналом".into(),
+    }
+}
+
+/// First non-empty line of a program's output, short enough for a log.
+fn first_line(text: &str) -> String {
+    let line = text
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim();
+    sdw_core::util::truncate(line, 160)
+}
+
+/// Check that a downloaded VIIPER really runs and read its version.
+///
+/// VIIPER has no `version` command: an unknown argument prints the banner to
+/// stdout and exits non-zero, while `--help` prints the same banner and exits
+/// 0. The banner is where the version lives, so `--help` is both the check and
+/// the source of the number. Anything else — a truncated file, an HTML error
+/// page saved as a binary, a wrong architecture — is reported with the exit
+/// code and the first line it printed.
+fn probe_viiper(path: &Path) -> Result<String, String> {
+    let out = Command::new(path)
+        .arg("--help")
+        .output()
+        .map_err(|e| format!("запуск: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        let detail = first_line(&stderr);
+        let detail = if detail.is_empty() {
+            first_line(&stdout)
+        } else {
+            detail
+        };
+        return Err(format!(
+            "справка не открылась ({}): {detail}",
+            exit_text(&out.status)
+        ));
+    }
+    if !stdout.to_ascii_lowercase().contains("viiper") {
+        return Err(format!("это не VIIPER: {}", first_line(&stdout)));
+    }
+    Ok(stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Version:"))
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default())
+}
+
 pub fn component_status() -> Vec<ComponentStatus> {
     let mut out = Vec::new();
     let bin = crate::config::viiper_bin_path();
-    let viiper_path = sdw_core::util::which("viiper").or_else(|| bin.is_file().then_some(bin));
+    let mut viiper_path =
+        sdw_core::util::which("viiper").or_else(|| bin.is_file().then(|| bin.clone()));
+    let mut version = String::new();
+    if let Some(path) = &viiper_path {
+        match probe_viiper(path) {
+            Ok(found) => version = found,
+            Err(_) if *path == bin => {
+                // A download left by an older version that cannot run is not an
+                // installation: drop it so the page offers to install again.
+                let _ = std::fs::remove_file(path);
+                viiper_path = None;
+            }
+            Err(_) => {}
+        }
+    }
     out.push(ComponentStatus {
         id: "viiper".into(),
         name: "VIIPER".into(),
         installed: viiper_path.is_some(),
-        version: viiper_path
-            .as_ref()
-            .and_then(|p| Command::new(p).arg("version").output().ok())
-            .map(|o| {
-                String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .find(|l| l.to_ascii_lowercase().contains("version"))
-                    .unwrap_or("")
-                    .trim()
-                    .to_string()
-            })
-            .unwrap_or_default(),
+        version,
         purpose: "Виртуальные USB-геймпады и клавиатура/мышь для ПК".into(),
         hint: "Скачивается с github.com/Alia5/VIIPER".into(),
         needs_root: false,
@@ -429,7 +487,20 @@ fn install_viiper(ctx: &JobCtx, logger: &Logger, source: &str) -> Result<(), Str
         .iter()
         .find(|a| a.name == asset_name)
         .cloned()
-        .ok_or_else(|| format!("в релизе {} нет файла {asset_name}", info.latest))?;
+        .ok_or_else(|| {
+            let names: Vec<&str> = info
+                .assets
+                .iter()
+                .map(|a| a.name.as_str())
+                .filter(|n| n.to_ascii_lowercase().contains("viiper"))
+                .take(8)
+                .collect();
+            format!(
+                "в релизе {} нет файла {asset_name} (есть: {})",
+                info.latest,
+                names.join(", ")
+            )
+        })?;
     let sums = info
         .assets
         .iter()
@@ -467,17 +538,20 @@ fn install_viiper(ctx: &JobCtx, logger: &Logger, source: &str) -> Result<(), Str
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
     }
-    let out = Command::new(&dest)
-        .arg("version")
-        .output()
-        .map_err(|e| format!("проверка VIIPER: {e}"))?;
-    if !out.status.success() {
-        return Err("скачанный VIIPER не запускается".into());
-    }
-    ctx.line(format!(
-        "VIIPER установлен: {}",
-        String::from_utf8_lossy(&out.stdout).trim()
-    ));
+    let version = match probe_viiper(&dest) {
+        Ok(version) => version,
+        Err(e) => {
+            // A binary that cannot even print its help must not stay behind as
+            // "installed": the status list would keep calling it that.
+            let _ = std::fs::remove_file(&dest);
+            return Err(format!("скачанный VIIPER не запускается: {e}"));
+        }
+    };
+    ctx.line(if version.is_empty() {
+        "VIIPER установлен".to_string()
+    } else {
+        format!("VIIPER установлен: {version}")
+    });
     logger.info(format!("VIIPER установлен в {}", dest.display()));
     Ok(())
 }
@@ -567,4 +641,36 @@ pub fn install_status() -> serde_json::Value {
         "platform": platform(),
         "arch": std::env::consts::ARCH,
     })
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::probe_viiper;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_banner_is_read_and_a_failure_says_why() {
+        let dir = std::env::temp_dir().join(format!("sdw-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = script(
+            &dir,
+            "good",
+            "#!/bin/sh\nprintf 'Usage: VIIPER\\n    Version: v1.2.3 (abc)\\n'\n",
+        );
+        assert_eq!(probe_viiper(&good).unwrap(), "v1.2.3 (abc)");
+        let bad = script(&dir, "bad", "#!/bin/sh\necho boom >&2\nexit 80\n");
+        let err = probe_viiper(&bad)
+            .err()
+            .expect("a failing help is an error");
+        assert!(err.contains("80"), "{err}");
+        assert!(err.contains("boom"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

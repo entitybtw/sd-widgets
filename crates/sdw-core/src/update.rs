@@ -1,10 +1,12 @@
 //! Release checks and downloads.
 //!
 //! By default both binaries ask `https://git.entitybtw.ru` for the newest
-//! release, compare the tag with their own version and can download the
-//! matching asset. The source is configurable: a Forgejo/Gitea instance or a
-//! GitHub repository, written as the repository's web address. Public releases
-//! need no token, so the same code works on the Deck and on the PC.
+//! stable release, compare the tag with their own version and can download the
+//! matching asset. A draft or a nightly such as GitHub's `dev-snapshot` is
+//! skipped while a tagged release exists. The source is configurable: a
+//! Forgejo/Gitea instance or a GitHub repository, written as the repository's
+//! web address. Public releases need no token, so the same code works on the
+//! Deck and on the PC.
 
 use crate::model::VERSION;
 use serde::{Deserialize, Serialize};
@@ -244,12 +246,39 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     false
 }
 
-/// Ask the built-in release source for the newest published release.
+/// The release an update should install.
+///
+/// Both GitHub and Forgejo list releases newest first, and GitHub keeps
+/// nightlies such as `dev-snapshot` in the same list as tagged releases. A
+/// prerelease is never what a one-click update wants while a stable release
+/// exists, so stable ones win; the highest tag wins among them even when a
+/// nightly is newer. A repository that publishes only prereleases still gets
+/// its newest one, because that is all it has.
+fn pick_release(list: &[serde_json::Value]) -> Option<&serde_json::Value> {
+    let published = || {
+        list.iter()
+            .filter(|r| !r["draft"].as_bool().unwrap_or(false))
+    };
+    fn tag(r: &serde_json::Value) -> &str {
+        r["tag_name"].as_str().unwrap_or("")
+    }
+    let mut best: Option<&serde_json::Value> = None;
+    for release in published().filter(|r| !r["prerelease"].as_bool().unwrap_or(false)) {
+        let better = best.is_none_or(|b| rank(tag(release)) > rank(tag(b)));
+        if better {
+            best = Some(release);
+        }
+    }
+    best.or_else(|| published().next())
+}
+
+/// Ask the built-in release source for the newest stable release.
 pub fn check() -> Result<UpdateInfo, String> {
     check_at(&Remote::default())
 }
 
-/// Ask `remote` for the newest published release.
+/// Ask `remote` for the newest stable release. A repository that publishes
+/// only prereleases gets its newest one.
 pub fn check_at(remote: &Remote) -> Result<UpdateInfo, String> {
     let url = remote.api_url();
     let label = remote.label();
@@ -268,10 +297,7 @@ pub fn check_at(remote: &Remote) -> Result<UpdateInfo, String> {
     }
     let list: Vec<serde_json::Value> =
         serde_json::from_str(&text).map_err(|e| format!("релизы: {e}"))?;
-    let release = list
-        .iter()
-        .find(|r| !r["draft"].as_bool().unwrap_or(false))
-        .ok_or_else(|| format!("на {label} пока нет релизов"))?;
+    let release = pick_release(&list).ok_or_else(|| format!("на {label} пока нет релизов"))?;
     let tag = release["tag_name"].as_str().unwrap_or("").to_string();
     let latest = tag.trim_start_matches(['v', 'V']).to_string();
     if latest.is_empty() {
@@ -545,6 +571,61 @@ mod tests {
         assert!(Remote::parse("example.org").is_err());
         assert!(Remote::parse("https://example.org/only-owner").is_err());
         assert!(Remote::parse("https:///owner/name").is_err());
+    }
+
+    #[test]
+    fn a_stable_release_beats_a_newer_nightly() {
+        let list = test_releases(
+            r#"[
+                {"tag_name": "dev-snapshot", "prerelease": true},
+                {"tag_name": "v0.9.0"},
+                {"tag_name": "v0.8.2"}
+            ]"#,
+        );
+        assert_eq!(picked(&list), Some("v0.9.0"));
+    }
+
+    #[test]
+    fn the_highest_stable_release_wins_wherever_it_is_listed() {
+        let list = test_releases(
+            r#"[
+                {"tag_name": "v0.8.9"},
+                {"tag_name": "v0.10.0"},
+                {"tag_name": "v0.9.12"}
+            ]"#,
+        );
+        assert_eq!(picked(&list), Some("v0.10.0"));
+    }
+
+    #[test]
+    fn drafts_are_never_installed() {
+        let list = test_releases(
+            r#"[
+                {"tag_name": "v1.0.0", "draft": true},
+                {"tag_name": "v0.9.0"}
+            ]"#,
+        );
+        assert_eq!(picked(&list), Some("v0.9.0"));
+    }
+
+    #[test]
+    fn a_prerelease_only_repository_still_offers_its_newest() {
+        let list = test_releases(
+            r#"[
+                {"tag_name": "nightly-2", "prerelease": true},
+                {"tag_name": "nightly-1", "prerelease": true}
+            ]"#,
+        );
+        assert_eq!(picked(&list), Some("nightly-2"));
+        assert!(pick_release(&[]).is_none());
+    }
+
+    fn test_releases(json: &str) -> Vec<serde_json::Value> {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn picked(list: &[serde_json::Value]) -> Option<&str> {
+        pick_release(list).and_then(|r| r["tag_name"].as_str())
     }
 
     #[test]
