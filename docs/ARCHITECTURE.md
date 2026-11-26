@@ -74,11 +74,11 @@
   goes up or down does not change the number either.
 - `deck_view.rs` — the drawn Steam Deck and live control highlighting.
 - `binds.rs` — bind list, editor and capture.
-- `input.rs` — evdev reader, gestures and button codes. A Deck pad node is
-  recognised by `ABS_HAT1X` (`Role::SteamDeck`): its two touchpads are `HAT0`
-  (left) and `HAT1` (right), and `HAT2` carries the analog triggers, while the
-  sticks stay on `ABS_X/Y` and `ABS_RX/RY`. A generic pad keeps `HAT0` as its
-  d-pad. hid-steam does not expose a pad's touch flag, only zeroed axes, so a
+- `input.rs` — evdev and Deck hidraw reader, gestures and button codes. A Deck
+  pad node is recognised by `ABS_HAT1X` (`Role::SteamDeck`): its two touchpads
+  are `HAT0` (left) and `HAT1` (right), and `HAT2` carries the analog triggers,
+  while the sticks stay on `ABS_X/Y` and `ABS_RX/RY`. A generic pad keeps `HAT0`
+  as its d-pad. hid-steam does not expose a pad's touch flag, only zeroed axes, so a
   pad touch is sampled at every `SYN_REPORT` and ends when both axes are zero;
   the finished `GestureSpec` carries `pad: Some(PadSide)` so the same swipe can
   drive a different bind on the left pad, the right pad and the glass (a pad
@@ -88,11 +88,20 @@
   drag. The window is what actually works when the compositor turns the
   touchscreen into a mouse or the touch device is grabbed, and a single gesture
   is recorded once (a short guard swallows the duplicate from the other source).
-  While the Deck node exists, Steam Input's emulated Xbox pad
-  (`28de:11ff`) is skipped: it repeats buttons and sticks but has no pads, so
-  listening to both would fire a bind twice. The installer gives the shortcut a
-  Steam Input layout with the pads unbound, so the emulated pad has nothing to
-  add in the first place.
+  In Game Mode Steam Input opens the Deck's layered hidraw node, and hid-steam
+  then removes its evdev device: while a client holds that node the kernel stops
+  processing input and unregisters the pad, so evdev has no touchpads at all.
+  When Steam Input's emulated Xbox pad (`28de:11ff`) is present, the app reads
+  report 9 directly from the `28de:1205` hidraw node that has no input device of
+  its own (the emulated mouse and keyboard interfaces do). The reader parses the
+  same 64-byte report hid-steam would have parsed and emits the same `Raw`
+  events, so gestures and binds work unchanged. It opens the node only while the
+  virtual pad says Steam Input is active, and closes it when Steam quits so the
+  kernel can bring evdev back. When there is no virtual pad the evdev Deck node
+  is used as before. The virtual pad itself is skipped: it repeats buttons and
+  sticks but has no pads, so listening to both would fire a bind twice. The
+  installer also gives the shortcut a layout with the pads unbound, so Steam has
+  nothing to turn into mouse/joystick input.
   The page's horizontal-only rule does not apply while recording, so a tap, a
   long press and a vertical swipe are bindable too.
 - `sound.rs` — synthesized WAV packs and playback.

@@ -9,8 +9,18 @@ use sdw_core::model::{GestureKind, PadSide, SwipeDir};
 use sdw_core::udp::{self, GamepadState};
 use sdw_core::{t, Lang};
 use std::collections::HashSet;
+#[cfg(target_os = "linux")]
+use std::io::Read;
 use std::net::{SocketAddr, UdpSocket};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::OpenOptionsExt;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub const EV_KEY: u16 = 1;
@@ -39,11 +49,15 @@ pub const BTN_DPAD_UP: u16 = 0x220;
 pub const BTN_DPAD_DOWN: u16 = 0x221;
 pub const BTN_DPAD_LEFT: u16 = 0x222;
 pub const BTN_DPAD_RIGHT: u16 = 0x223;
-/// Steam Deck back buttons (hid-steam reports them as trigger-happy keys).
+/// Steam Deck back buttons. hid-steam reports them as `BTN_TRIGGER_HAPPY1..4`
+/// in the order left top, right top, left bottom, right bottom; the Deck calls
+/// the upper pair L4/R4 and the lower pair L5/R5.
 pub const BTN_L4: u16 = 0x2c0;
-pub const BTN_L5: u16 = 0x2c1;
-pub const BTN_R4: u16 = 0x2c2;
+pub const BTN_R4: u16 = 0x2c1;
+pub const BTN_L5: u16 = 0x2c2;
 pub const BTN_R5: u16 = 0x2c3;
+/// The quick access button, `BTN_BASE` in the kernel.
+pub const BTN_QAM: u16 = 0x126;
 pub const BTN_LEFT_CLICK: u16 = 0x110;
 pub const BTN_RIGHT_CLICK: u16 = 0x111;
 
@@ -65,6 +79,53 @@ const ABS_HAT2Y: u16 = 21;
 /// Valve's USB vendor id; Steam Input's emulated Xbox pad uses product 0x11ff.
 const STEAM_VENDOR: u16 = 0x28de;
 const STEAM_VIRTUAL_PAD: u16 = 0x11ff;
+const STEAM_DECK_PRODUCT: u16 = 0x1205;
+
+/// The Deck sends its whole state as report 9 of the raw HID stream. Steam
+/// Input's userspace driver takes the hidraw node, and the kernel hid-steam
+/// driver then removes its evdev device, so in Game Mode these reports are the
+/// only place where the touchpads exist.
+#[cfg(target_os = "linux")]
+const DECK_REPORT_ID: u8 = 9;
+#[cfg(target_os = "linux")]
+const DECK_REPORT_SIZE: usize = 64;
+#[cfg(target_os = "linux")]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(target_os = "linux")]
+const DECK_BUTTON_COUNT: usize = 24;
+
+/// One bit of the Deck report and the evdev code it stands for. The order is
+/// only used to index `DeckReport::buttons`.
+#[cfg(target_os = "linux")]
+const DECK_BUTTONS: [(usize, u8, u16); DECK_BUTTON_COUNT] = [
+    (8, 0, BTN_TR2),
+    (8, 1, BTN_TL2),
+    (8, 2, BTN_TR),
+    (8, 3, BTN_TL),
+    // The kernel names the face buttons by the SNES diamond: these are the
+    // physical Y, B, X and A.
+    (8, 4, BTN_WEST),
+    (8, 5, BTN_EAST),
+    (8, 6, BTN_NORTH),
+    (8, 7, BTN_SOUTH),
+    (9, 0, BTN_DPAD_UP),
+    (9, 1, BTN_DPAD_RIGHT),
+    (9, 2, BTN_DPAD_LEFT),
+    (9, 3, BTN_DPAD_DOWN),
+    (9, 4, BTN_SELECT),
+    (9, 5, BTN_MODE),
+    (9, 6, BTN_START),
+    (9, 7, BTN_L5),
+    (10, 0, BTN_R5),
+    (10, 1, BTN_THUMB),
+    (10, 2, BTN_THUMB2),
+    (10, 6, BTN_THUMBL),
+    (11, 2, BTN_THUMBR),
+    (13, 1, BTN_L4),
+    (13, 2, BTN_R4),
+    (14, 2, BTN_QAM),
+];
+
 const ABS_MT_SLOT: u16 = 0x2f;
 const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
@@ -161,6 +222,7 @@ enum Raw {
 /// Stable codes for the two failures the UI can translate itself.
 pub const ERROR_LINUX_ONLY: &str = "linux-only";
 pub const ERROR_NO_DEVICES: &str = "no-devices";
+pub const ERROR_DECK_HIDRAW: &str = "deck-hidraw";
 
 /// Turn an input error code into a line of the current language. Unknown
 /// strings pass through, so a future code never disappears silently.
@@ -176,6 +238,12 @@ pub fn error_text(lang: Lang, code: &str) -> String {
             lang,
             "не найдено доступных устройств ввода. добавьте пользователя в группу input.",
             "no readable input devices. add the user to the input group."
+        )
+        .to_string(),
+        ERROR_DECK_HIDRAW => t!(
+            lang,
+            "тачпады недоступны: steam input держит контроллер, а сырой hidraw-узел не читается. проверьте доступ к /dev/hidraw* (группа input).",
+            "touchpads are unavailable: steam input holds the controller and its raw HID node cannot be read. check access to /dev/hidraw* (input group)."
         )
         .to_string(),
         other => other.to_string(),
@@ -245,6 +313,35 @@ struct ScanState {
     seen: HashSet<std::path::PathBuf>,
     touch_taken: bool,
     motion_taken: bool,
+    hidraw: Option<HidrawReader>,
+}
+
+/// A reader of the Deck's raw report. Steam keeps the hidraw node open while
+/// it runs, so the kernel's evdev device is gone; the reader stops as soon as
+/// Steam Input's virtual pad disappears and evdev can be used again.
+#[cfg(target_os = "linux")]
+struct HidrawReader {
+    path: PathBuf,
+    stop: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
+}
+
+/// The Deck node is the one with HAT1 (its pads) and gamepad keys.
+#[cfg(target_os = "linux")]
+fn is_deck_node(dev: &evdev::Device) -> bool {
+    let gamepad = dev
+        .supported_keys()
+        .map(|keys| {
+            keys.contains(evdev::KeyCode(BTN_SOUTH))
+                || keys.contains(evdev::KeyCode(BTN_EAST))
+                || keys.contains(evdev::KeyCode(BTN_MODE))
+        })
+        .unwrap_or(false);
+    let pads = dev
+        .supported_absolute_axes()
+        .map(|axes| axes.contains(evdev::AbsoluteAxisCode(ABS_HAT1X)))
+        .unwrap_or(false);
+    gamepad && pads
 }
 
 /// Steam Input's emulated pad repeats the Deck's buttons and sticks on a
@@ -261,27 +358,78 @@ fn scan_into(raw_tx: &Sender<Raw>, st: &mut ScanState) -> (Vec<String>, bool, Ve
     let mut has_gamepad = false;
     let mut current = HashSet::new();
 
-    // The Deck node is the one with HAT1 (its pads). If Steam Input's virtual
-    // pad showed up before it, decide once per scan and skip the virtual pad.
-    let deck_present = evdev::enumerate().any(|(_, dev)| {
-        let gamepad = dev
-            .supported_keys()
-            .map(|keys| {
-                keys.contains(evdev::KeyCode(BTN_SOUTH))
-                    || keys.contains(evdev::KeyCode(BTN_EAST))
-                    || keys.contains(evdev::KeyCode(BTN_MODE))
-            })
-            .unwrap_or(false);
-        let pads = dev
-            .supported_absolute_axes()
-            .map(|axes| axes.contains(evdev::AbsoluteAxisCode(ABS_HAT1X)))
-            .unwrap_or(false);
-        gamepad && pads
-    });
-
-    for (path, dev) in evdev::enumerate() {
+    // Enumerate once: opening every event node twice was wasteful and made the
+    // virtual-pad decision race with the loop below.
+    let all: Vec<(PathBuf, evdev::Device)> = evdev::enumerate().collect();
+    let virtual_pad_present = all.iter().any(|(_, dev)| {
         let id = dev.input_id();
-        let skip = deck_present && is_steam_virtual_pad(id.vendor(), id.product());
+        is_steam_virtual_pad(id.vendor(), id.product())
+    });
+    let deck_evdev_present = all.iter().any(|(_, dev)| is_deck_node(dev));
+
+    // Steam Input's userspace driver takes the Deck's hidraw node and the
+    // kernel hid-steam driver removes its evdev device, so in Game Mode the
+    // pads exist only in the raw report. Read it while the virtual pad says
+    // Steam Input is active, and give the hidraw node back when it is not.
+    let hidraw_path = if virtual_pad_present {
+        steam_deck_hidraw()
+    } else {
+        None
+    };
+    let use_hidraw = hidraw_path.is_some();
+
+    let mut stop_reader = false;
+    if let Some(reader) = &st.hidraw {
+        let dead = !reader.alive.load(Ordering::Relaxed);
+        let wrong = hidraw_path.as_ref() != Some(&reader.path);
+        if dead || wrong {
+            stop_reader = true;
+        }
+    }
+    if stop_reader {
+        if let Some(reader) = st.hidraw.take() {
+            reader.stop.store(true, Ordering::Relaxed);
+        }
+    }
+    if st.hidraw.is_none() {
+        if let Some(path) = hidraw_path.clone() {
+            let stop = Arc::new(AtomicBool::new(false));
+            let alive = Arc::new(AtomicBool::new(true));
+            let tx = raw_tx.clone();
+            let thread_stop = stop.clone();
+            let thread_alive = alive.clone();
+            let thread_path = path.clone();
+            std::thread::Builder::new()
+                .name(format!("sdw-input-hidraw-{}", path.display()))
+                .spawn(move || {
+                    read_deck_hidraw(
+                        thread_path,
+                        "Steam Deck".into(),
+                        tx,
+                        thread_stop,
+                        thread_alive,
+                    )
+                })
+                .ok();
+            st.hidraw = Some(HidrawReader { path, stop, alive });
+        }
+    }
+    if let Some(path) = &hidraw_path {
+        devices.push(format!("Steam Deck (hidraw) · {}", path.display()));
+        has_gamepad = true;
+    } else if virtual_pad_present && !deck_evdev_present {
+        errors.push(ERROR_DECK_HIDRAW.to_string());
+    }
+
+    for (path, dev) in all {
+        let id = dev.input_id();
+        // With the raw report we own the whole Deck state: skip both the real
+        // node (it may be a dead leftover) and Steam's duplicate virtual pad.
+        let skip = if use_hidraw {
+            is_deck_node(&dev) || is_steam_virtual_pad(id.vendor(), id.product())
+        } else {
+            deck_evdev_present && is_steam_virtual_pad(id.vendor(), id.product())
+        };
         // Keep the path in `current` even when skipping, so a reader that was
         // already spawned before the Deck node appeared is not spawned twice.
         current.insert(path.clone());
@@ -351,6 +499,220 @@ fn scan_into(raw_tx: &Sender<Raw>, st: &mut ScanState) -> (Vec<String>, bool, Ve
         errors.push(ERROR_NO_DEVICES.to_string());
     }
     (devices, has_gamepad, errors)
+}
+
+/// The Deck's whole state, parsed from one raw report.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, Default)]
+struct DeckReport {
+    buttons: [bool; DECK_BUTTON_COUNT],
+    lx: f32,
+    ly: f32,
+    rx: f32,
+    ry: f32,
+    lt: f32,
+    rt: f32,
+    lpad: (f32, f32),
+    rpad: (f32, f32),
+    accel: [i16; 3],
+    gyro: [i16; 3],
+}
+
+#[cfg(target_os = "linux")]
+fn parse_deck_report(data: &[u8]) -> Option<DeckReport> {
+    if data.len() < DECK_REPORT_SIZE || data[0] != 1 || data[1] != 0 || data[2] != DECK_REPORT_ID {
+        return None;
+    }
+    let s16 = |i: usize| i16::from_le_bytes([data[i], data[i + 1]]);
+    let u16v = |i: usize| u16::from_le_bytes([data[i], data[i + 1]]);
+    let norm = |v: i16| (v as f32 / 32767.0).clamp(-1.0, 1.0);
+    let lpad_touched = data[10] & 0x08 != 0;
+    let rpad_touched = data[10] & 0x10 != 0;
+
+    let mut buttons = [false; DECK_BUTTON_COUNT];
+    for (slot, (byte, bit, _)) in DECK_BUTTONS.iter().enumerate() {
+        buttons[slot] = data[*byte] & (1u8 << *bit) != 0;
+    }
+
+    Some(DeckReport {
+        buttons,
+        lx: norm(s16(48)),
+        // hid-steam reports the sticks' Y already negated; hand the coordinator
+        // the same evdev-style value it would read from the node.
+        ly: -norm(s16(50)),
+        rx: norm(s16(52)),
+        ry: -norm(s16(54)),
+        lt: (u16v(44) as f32 / 32767.0).clamp(0.0, 1.0),
+        rt: (u16v(46) as f32 / 32767.0).clamp(0.0, 1.0),
+        lpad: if lpad_touched {
+            (norm(s16(16)), norm(s16(18)))
+        } else {
+            (0.0, 0.0)
+        },
+        rpad: if rpad_touched {
+            (norm(s16(20)), norm(s16(22)))
+        } else {
+            (0.0, 0.0)
+        },
+        accel: [s16(24), s16(28), -s16(26)],
+        gyro: [s16(30), s16(34), -s16(32)],
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn send_axis(tx: &Sender<Raw>, code: u16, value: f32, old: &mut f32) {
+    if (value - *old).abs() > 0.0005 {
+        *old = value;
+        let _ = tx.send(Raw::Axis {
+            role: Role::SteamDeck,
+            code,
+            value,
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn send_motion(tx: &Sender<Raw>, code: u16, value: i16, old: &mut i16) {
+    if value != *old {
+        *old = value;
+        let _ = tx.send(Raw::Axis {
+            role: Role::Motion,
+            code,
+            value: value as f32,
+        });
+    }
+}
+
+/// Turn one report into the same events hid-steam would have emitted. Axes go
+/// first and buttons last, so a fully pressed trigger's button wins over its
+/// slightly lower analog value.
+#[cfg(target_os = "linux")]
+fn emit_deck_report(report: &DeckReport, prev: &mut DeckReport, tx: &Sender<Raw>, device: &str) {
+    send_axis(tx, ABS_HAT0X, report.lpad.0, &mut prev.lpad.0);
+    send_axis(tx, ABS_HAT0Y, report.lpad.1, &mut prev.lpad.1);
+    send_axis(tx, ABS_HAT1X, report.rpad.0, &mut prev.rpad.0);
+    send_axis(tx, ABS_HAT1Y, report.rpad.1, &mut prev.rpad.1);
+    send_axis(tx, ABS_X, report.lx, &mut prev.lx);
+    send_axis(tx, ABS_Y, report.ly, &mut prev.ly);
+    send_axis(tx, ABS_RX, report.rx, &mut prev.rx);
+    send_axis(tx, ABS_RY, report.ry, &mut prev.ry);
+    send_axis(tx, ABS_HAT2Y, report.lt, &mut prev.lt);
+    send_axis(tx, ABS_HAT2X, report.rt, &mut prev.rt);
+    for (i, code) in [ABS_X, ABS_Y, ABS_Z].iter().enumerate() {
+        send_motion(tx, *code, report.accel[i], &mut prev.accel[i]);
+    }
+    for (i, code) in [ABS_RX, ABS_RY, ABS_RZ].iter().enumerate() {
+        send_motion(tx, *code, report.gyro[i], &mut prev.gyro[i]);
+    }
+    for (slot, (_, _, code)) in DECK_BUTTONS.iter().enumerate() {
+        if report.buttons[slot] != prev.buttons[slot] {
+            let _ = tx.send(Raw::Key {
+                role: Role::SteamDeck,
+                code: *code,
+                value: i32::from(report.buttons[slot]),
+                device: device.to_string(),
+            });
+            prev.buttons[slot] = report.buttons[slot];
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_deck_hidraw(
+    path: PathBuf,
+    device: String,
+    tx: Sender<Raw>,
+    stop: Arc<AtomicBool>,
+    alive: Arc<AtomicBool>,
+) {
+    let mut file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(O_NONBLOCK)
+        .open(&path)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            let _ = tx.send(Raw::Key {
+                role: Role::Keys,
+                code: 0,
+                value: -1,
+                device: format!("{}: {error}", path.display()),
+            });
+            alive.store(false, Ordering::Relaxed);
+            return;
+        }
+    };
+    let mut buf = [0u8; DECK_REPORT_SIZE];
+    let mut prev = DeckReport::default();
+    while !stop.load(Ordering::Relaxed) {
+        match file.read(&mut buf) {
+            Ok(0) => std::thread::sleep(Duration::from_millis(4)),
+            Ok(n) => {
+                if let Some(report) = parse_deck_report(&buf[..n]) {
+                    emit_deck_report(&report, &mut prev, &tx, &device);
+                    let _ = tx.send(Raw::Sync);
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(4));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => {
+                let _ = tx.send(Raw::Key {
+                    role: Role::Keys,
+                    code: 0,
+                    value: -1,
+                    device: format!("{}: {error}", path.display()),
+                });
+                break;
+            }
+        }
+    }
+    alive.store(false, Ordering::Relaxed);
+}
+
+/// Find the hidraw node of the Deck's gamepad interface. The client HID device
+/// Steam opens has no input device of its own; the emulated mouse and keyboard
+/// interfaces do, so that is what tells them apart.
+#[cfg(target_os = "linux")]
+fn steam_deck_hidraw() -> Option<PathBuf> {
+    let entries = std::fs::read_dir("/sys/class/hidraw").ok()?;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let uevent = entry.path().join("device/uevent");
+        let Ok(text) = std::fs::read_to_string(&uevent) else {
+            continue;
+        };
+        if !hidraw_matches(&text) {
+            continue;
+        }
+        let node = PathBuf::from("/dev").join(std::path::Path::new(&name));
+        if !node.exists() {
+            continue;
+        }
+        // Only the layered client device that Steam opens is the gamepad
+        // stream. The emulated mouse and keyboard interfaces have an input
+        // device of their own; opening one of those would read nothing.
+        if !entry.path().join("device/input").exists() {
+            return Some(node);
+        }
+    }
+    None
+}
+
+/// The `HID_ID` line is `bus:vendor:product` in hex.
+#[cfg(target_os = "linux")]
+fn hidraw_matches(uevent: &str) -> bool {
+    uevent.lines().any(|line| {
+        let Some(rest) = line.strip_prefix("HID_ID=") else {
+            return false;
+        };
+        let mut parts = rest.split(':');
+        let _bus = parts.next();
+        let vendor = parts.next().and_then(|v| u32::from_str_radix(v, 16).ok());
+        let product = parts.next().and_then(|v| u32::from_str_radix(v, 16).ok());
+        vendor == Some(u32::from(STEAM_VENDOR)) && product == Some(u32::from(STEAM_DECK_PRODUCT))
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1148,6 +1510,7 @@ pub fn key_name(code: u16) -> String {
         BTN_THUMBR => "R3",
         BTN_THUMB => "L-pad",
         BTN_THUMB2 => "R-pad",
+        BTN_QAM => "QAM",
         BTN_DPAD_UP => "D-pad ↑",
         BTN_DPAD_DOWN => "D-pad ↓",
         BTN_DPAD_LEFT => "D-pad ←",
@@ -1270,5 +1633,172 @@ mod tests {
         assert_eq!(left.id(), "1f-swipe-left@left");
         assert_ne!(glass.id(), left.id());
         assert!(left.label().contains("левая панель"));
+    }
+
+    #[cfg(target_os = "linux")]
+    fn empty_deck_report() -> [u8; DECK_REPORT_SIZE] {
+        let mut data = [0u8; DECK_REPORT_SIZE];
+        data[0] = 1;
+        data[1] = 0;
+        data[2] = DECK_REPORT_ID;
+        data
+    }
+
+    #[cfg(target_os = "linux")]
+    fn deck_button(report: &DeckReport, code: u16) -> bool {
+        DECK_BUTTONS
+            .iter()
+            .position(|(_, _, c)| *c == code)
+            .map(|i| report.buttons[i])
+            .unwrap_or(false)
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn deck_report_reads_pads_sticks_and_triggers() {
+        let mut data = empty_deck_report();
+        // Both pads report their touch bits and a position.
+        data[10] = 0x08 | 0x10;
+        data[16..18].copy_from_slice(&(-16384i16).to_le_bytes());
+        data[18..20].copy_from_slice(&(16384i16).to_le_bytes());
+        data[20..22].copy_from_slice(&(8192i16).to_le_bytes());
+        data[22..24].copy_from_slice(&(-8192i16).to_le_bytes());
+        // Sticks: hid-steam negates Y, so the raw positive Y must come out
+        // negative here as well.
+        data[48..50].copy_from_slice(&(32767i16).to_le_bytes());
+        data[50..52].copy_from_slice(&(32767i16).to_le_bytes());
+        data[52..54].copy_from_slice(&(-32767i16).to_le_bytes());
+        data[54..56].copy_from_slice(&(-32767i16).to_le_bytes());
+        // Triggers: left on HAT2Y, right on HAT2X.
+        data[44..46].copy_from_slice(&(16384u16).to_le_bytes());
+        data[46..48].copy_from_slice(&(32767u16).to_le_bytes());
+
+        let report = parse_deck_report(&data).expect("report 9");
+        assert!((report.lpad.0 + 0.5).abs() < 0.001);
+        assert!((report.lpad.1 - 0.5).abs() < 0.001);
+        assert!((report.rpad.0 - 0.25).abs() < 0.001);
+        assert!((report.rpad.1 + 0.25).abs() < 0.001);
+        assert!((report.lx - 1.0).abs() < 0.001);
+        assert!((report.ly + 1.0).abs() < 0.001);
+        assert!((report.rx + 1.0).abs() < 0.001);
+        assert!((report.ry - 1.0).abs() < 0.001);
+        assert!((report.lt - 0.5).abs() < 0.001);
+        assert!((report.rt - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn deck_report_reads_buttons_and_imu() {
+        let mut data = empty_deck_report();
+        data[13] |= 1 << 1; // left top grip: L4
+        data[10] |= 1 << 1; // left pad click
+        data[14] |= 1 << 2; // quick access
+        data[24..26].copy_from_slice(&(1000i16).to_le_bytes());
+        data[26..28].copy_from_slice(&(2000i16).to_le_bytes());
+        data[28..30].copy_from_slice(&(3000i16).to_le_bytes());
+        data[30..32].copy_from_slice(&(4000i16).to_le_bytes());
+        data[32..34].copy_from_slice(&(5000i16).to_le_bytes());
+        data[34..36].copy_from_slice(&(6000i16).to_le_bytes());
+
+        let report = parse_deck_report(&data).expect("report 9");
+        assert!(deck_button(&report, BTN_L4));
+        assert!(deck_button(&report, BTN_THUMB));
+        assert!(deck_button(&report, BTN_QAM));
+        assert!(!deck_button(&report, BTN_R4));
+        // The kernel maps accel X/Z/Y and gyro X/Z/Y, negating both Zs.
+        assert_eq!(report.accel, [1000, 3000, -2000]);
+        assert_eq!(report.gyro, [4000, 6000, -5000]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn deck_report_rejects_other_messages() {
+        let mut data = empty_deck_report();
+        data[2] = 1; // ordinary controller state
+        assert!(parse_deck_report(&data).is_none());
+        data[2] = DECK_REPORT_ID;
+        assert!(parse_deck_report(&data[..DECK_REPORT_SIZE - 1]).is_none());
+        data[0] = 0;
+        assert!(parse_deck_report(&data).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn deck_report_edges_fire_once() {
+        let (tx, rx) = channel();
+        let mut prev = DeckReport::default();
+        let mut report = DeckReport::default();
+        let slot = DECK_BUTTONS
+            .iter()
+            .position(|(_, _, c)| *c == BTN_L4)
+            .expect("L4");
+        report.buttons[slot] = true;
+        report.lpad = (0.5, -0.5);
+
+        emit_deck_report(&report, &mut prev, &tx, "Steam Deck");
+        let first: Vec<Raw> = rx.try_iter().collect();
+        assert_eq!(
+            first
+                .iter()
+                .filter(|r| matches!(r, Raw::Key { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            first
+                .iter()
+                .filter(|r| matches!(r, Raw::Axis { .. }))
+                .count(),
+            2
+        );
+
+        // The same state again is silence, not a repeated press.
+        emit_deck_report(&report, &mut prev, &tx, "Steam Deck");
+        assert!(rx.try_iter().next().is_none());
+
+        report.buttons[slot] = false;
+        report.lpad = (0.0, 0.0);
+        emit_deck_report(&report, &mut prev, &tx, "Steam Deck");
+        let released: Vec<Raw> = rx.try_iter().collect();
+        assert_eq!(
+            released
+                .iter()
+                .filter(|r| matches!(r, Raw::Key { value: 0, .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn grip_bits_use_the_evdev_codes() {
+        // hid-steam's report 9 bits and the evdev keys they become. L4/R4 are
+        // the upper pair, L5/R5 the lower pair.
+        assert_eq!(
+            (BTN_L4, BTN_R4, BTN_L5, BTN_R5),
+            (0x2c0, 0x2c1, 0x2c2, 0x2c3)
+        );
+        let has = |byte: usize, bit: u8, code: u16| {
+            DECK_BUTTONS
+                .iter()
+                .any(|&(b, bi, c)| b == byte && bi == bit && c == code)
+        };
+        assert!(has(13, 1, BTN_L4));
+        assert!(has(13, 2, BTN_R4));
+        assert!(has(9, 7, BTN_L5));
+        assert!(has(10, 0, BTN_R5));
+        assert!(has(10, 1, BTN_THUMB));
+        assert!(has(10, 2, BTN_THUMB2));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn hidraw_uevent_finds_the_deck_client() {
+        assert!(hidraw_matches(
+            "HID_NAME=Steam Deck\nHID_ID=0003:000028DE:00001205\n"
+        ));
+        assert!(!hidraw_matches("HID_ID=0003:000028DE:000011FF\n"));
+        assert!(!hidraw_matches("HID_ID=0003:0000045E:0000028E\n"));
+        assert!(!hidraw_matches("HID_NAME=Steam Deck\n"));
     }
 }

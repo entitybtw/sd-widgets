@@ -107,7 +107,10 @@ both files once as `*.sdw-backup`. The layout has one action set, **Main**:
 buttons, sticks, triggers and the d-pad stay on xinput, while **both touchpads
 are left unbound** because they are the app's own input. With no pad bound,
 Steam has nothing to turn into a mouse, so a pad touch reaches only the app and
-pad binds and pad gestures see one source.
+pad binds and pad gestures see one source. In Game Mode Steam Input keeps the
+Deck's raw HID node open and the kernel removes the evdev node; the app reads
+report 9 from `/dev/hidraw*` for as long as Steam Input's virtual pad is
+present, and goes back to evdev when Steam quits.
 
 Steam must be closed while its controller files are written, so the installer
 uses the same shutdown window as the shortcut. If the profile has no Steam
@@ -176,6 +179,7 @@ non-Steam game**. Configuration and addons stay in
 | Wrong cover in the library | Steam names artwork by app id. Rerun the installer with `--steam-only`; the artwork is copied for both id variants. |
 | Non-Steam games disappeared from the library | Close Steam completely, then run `python3 steam_shortcut.py restore` (from the installer folder, with the same `HOME`): it restores the `shortcuts.vdf.bak-*` copy with the most shortcuts. Start Steam afterwards. |
 | Touchpads move a cursor in Game Mode | The `sd-widgets` layout is not selected. Rerun with `--steam-only` and check **Steam → sd-widgets → Properties → Controller**; the action set is **Main** and both pads are unbound on purpose. |
+| Touchpads are dead in Game Mode | Steam Input holds the Deck controller and hid-steam has removed its evdev node, so the app reads the raw HID report from `/dev/hidraw*`. Check that the user may read it: `ls -l /dev/hidraw*`. If the nodes are `root:root 0600`, add the user to the `input` group (`sudo usermod -aG input $USER`) and log in again; the input page names the failure when the node cannot be opened. |
 | `systemctl --user` not available | The installer used the XDG autostart entry. Start it now with `~/.local/bin/sdw-daemon --headless &`. |
 | The daemon says `pactl`/`parec` missing | Install `pipewire-pulse` or `pulseaudio-utils`; audio is documented in [`AUDIO.md`](AUDIO.md). |
 | No `python3` on the Deck | SteamOS ships it. Without it the app is installed but the Steam entry must be added via **Steam → Add a Non-Steam Game**. |
