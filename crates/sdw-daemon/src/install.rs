@@ -217,6 +217,86 @@ fn package_for(manager: &str, id: &str) -> &'static str {
     }
 }
 
+/// pkexec without a graphical polkit agent falls back to its own textual
+/// agent, which needs a terminal. A windowed daemon has none, so it prints
+/// this and gives up; the caller then asks sudo for the password instead.
+fn no_authentication_agent(stderr: &str) -> bool {
+    let text = stderr.to_ascii_lowercase();
+    // A plain "no such device or address" also turns up for unrelated
+    // failures, so it only counts next to the terminal wording pkexec uses.
+    let terminal = text.contains("controlling terminal") || text.contains("/dev/tty");
+    text.contains("textual authentication agent")
+        || (terminal && text.contains("no such device or address"))
+}
+
+/// Write the helper `sudo -A` runs to ask for the password.
+///
+/// It is the desktop's own dialog — kdialog on KDE, zenity elsewhere — so the
+/// prompt appears in the user's session instead of a terminal that does not
+/// exist. Only written when one of them is installed.
+#[cfg(unix)]
+fn askpass_helper() -> Option<std::path::PathBuf> {
+    if !sdw_core::util::has("kdialog") && !sdw_core::util::has("zenity") {
+        return None;
+    }
+    let path = sdw_core::util::data_dir().join("askpass.sh");
+    sdw_core::util::ensure_dir(path.parent()?).ok()?;
+    let body = r#"#!/bin/sh
+# sudo askpass for sd-widgets: the desktop's own password box.
+title="sd-widgets"
+if command -v kdialog >/dev/null 2>&1; then
+  password=$(kdialog --password "$1" --title "$title") && {
+    printf '%s\n' "$password"
+    exit 0
+  }
+fi
+if command -v zenity >/dev/null 2>&1; then
+  exec zenity --password --title "$title"
+fi
+exit 1
+"#;
+    std::fs::write(&path, body).ok()?;
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).ok()?;
+    Some(path)
+}
+
+/// Ask for the administrator password with a desktop dialog and run `program`.
+///
+/// The last resort before giving up: it works when pkexec finds no polkit
+/// agent, when polkit is not running at all, and from a daemon started
+/// without a terminal.
+#[cfg(unix)]
+fn run_askpass(program: &str, args: &[&str], ctx: &JobCtx) -> Option<Result<(), String>> {
+    if !sdw_core::util::has("sudo") {
+        return None;
+    }
+    let helper = askpass_helper()?;
+    ctx.line("Нужен пароль администратора — откроется окно запроса.");
+    let out = Command::new("sudo")
+        .arg("-A")
+        .arg(program)
+        .args(args)
+        .env("SUDO_ASKPASS", &helper)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("sudo: {e}"));
+    Some(match out {
+        Ok(out) if out.status.success() => Ok(()),
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Err(if err.is_empty() {
+                format!("{program}: код {}", out.status.code().unwrap_or(-1))
+            } else {
+                err
+            })
+        }
+        Err(e) => Err(e),
+    })
+}
+
 fn run_privileged(
     sudo_password: &str,
     program: &str,
@@ -268,10 +348,24 @@ fn run_privileged(
         if out.status.success() {
             return Ok(());
         }
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        let text = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // No graphical polkit agent: ask sudo for the password in the
+        // desktop's own dialog instead of the terminal pkexec wants.
+        if no_authentication_agent(&text) {
+            #[cfg(unix)]
+            if let Some(result) = run_askpass(program, args, ctx) {
+                return result;
+            }
+        }
+        return Err(text);
+    }
+    #[cfg(unix)]
+    if let Some(result) = run_askpass(program, args, ctx) {
+        return result;
     }
     Err(format!(
-        "{program} требует root. Запустите daemon из терминала или укажите пароль sudo."
+        "{program} требует root. Укажите пароль администратора на странице установки или выполните: sudo {program} {}",
+        args.join(" ")
     ))
 }
 
@@ -645,7 +739,7 @@ pub fn install_status() -> serde_json::Value {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::probe_viiper;
+    use super::{no_authentication_agent, probe_viiper};
     use std::os::unix::fs::PermissionsExt;
 
     fn script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
@@ -653,6 +747,18 @@ mod tests {
         std::fs::write(&path, body).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    #[test]
+    fn a_missing_polkit_agent_is_recognised() {
+        assert!(no_authentication_agent(
+            "Error creating textual authentication agent: Error opening current \
+controlling terminal for the process (`/dev/tty'): No such device or address"
+        ));
+        assert!(!no_authentication_agent("Not authorized"));
+        assert!(!no_authentication_agent("error: target not found: krfb"));
+        // A device error on its own is not a polkit agent problem.
+        assert!(!no_authentication_agent("No such device or address"));
     }
 
     #[test]
