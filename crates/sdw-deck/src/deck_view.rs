@@ -4,7 +4,7 @@
 //! triggers and every button. pressed controls light up with a short animated glow, the
 //! sticks follow the real sticks, and tapping any control selects it so it can be bound.
 
-use crate::input::{self, BTN_LEFT_CLICK, BTN_RIGHT_CLICK, BTN_TOUCH};
+use crate::input::{self, BTN_THUMB, BTN_THUMB2, BTN_TOUCH};
 use crate::theme::{hud, Tokens};
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Response, RichText, Sense,
@@ -130,8 +130,10 @@ impl DeckControl {
             Self::L5 => input::BTN_L5,
             Self::R4 => input::BTN_R4,
             Self::R5 => input::BTN_R5,
-            Self::LTrackpad => BTN_LEFT_CLICK,
-            Self::RTrackpad => BTN_RIGHT_CLICK,
+            // The Deck's touchpads click as BTN_THUMB / BTN_THUMB2; the
+            // mouse buttons never arrive on a deck.
+            Self::LTrackpad => BTN_THUMB,
+            Self::RTrackpad => BTN_THUMB2,
             Self::Screen => BTN_TOUCH,
         }
     }
@@ -440,7 +442,7 @@ pub fn show(
         t,
         l.ltp,
         "L",
-        input.pressed.contains(&BTN_LEFT_CLICK),
+        input.pressed.contains(&BTN_THUMB),
         control_fill,
         "ltp",
         view.cfg.glow,
@@ -450,7 +452,7 @@ pub fn show(
         t,
         l.rtp,
         "R",
-        input.pressed.contains(&BTN_RIGHT_CLICK) || input.pressed.contains(&BTN_LEFT_CLICK),
+        input.pressed.contains(&BTN_THUMB2),
         control_fill,
         "rtp",
         view.cfg.glow,
@@ -1137,6 +1139,7 @@ pub fn gesture_hint(kind: GestureKind, fingers: u8, dir: SwipeDir, lang: Lang) -
         kind,
         fingers,
         dir: Some(dir),
+        pad: None,
     }
     .label_lang(lang)
 }

@@ -625,6 +625,7 @@ impl TouchTrack {
                     } else {
                         SwipeDir::Right
                     }),
+                    pad: None,
                 });
             }
             return None;
@@ -4536,7 +4537,10 @@ impl App {
     }
 
     fn global_gesture(&mut self, spec: &GestureSpec) {
-        if !self.cfg.global_gestures || spec.kind != GestureKind::Swipe {
+        // The three- and four-finger swipes are the glass's own shortcuts; a
+        // gesture on a touchpad belongs to whatever the user bound there (or
+        // to nothing), never to the deck's navigation.
+        if !self.cfg.global_gestures || spec.pad.is_some() || spec.kind != GestureKind::Swipe {
             return;
         }
         let dir = spec.dir.unwrap_or(SwipeDir::Left);
@@ -7190,6 +7194,7 @@ mod bind_tests {
                     kind: GestureKind::Swipe,
                     fingers: 1,
                     dir: Some(SwipeDir::Up),
+                    pad: None,
                 },
             },
             Action::None,

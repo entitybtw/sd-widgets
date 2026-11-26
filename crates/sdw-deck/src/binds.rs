@@ -10,7 +10,7 @@ use eframe::egui::{
     Vec2,
 };
 use sdw_core::model::{
-    random_id, Action, Bind, GestureKind, GestureSpec, HaEntity, SwipeDir, Trigger,
+    random_id, Action, Bind, GestureKind, GestureSpec, HaEntity, PadSide, SwipeDir, Trigger,
 };
 use sdw_core::{t, Lang};
 
@@ -178,6 +178,7 @@ impl BindEditor {
                     kind: GestureKind::Swipe,
                     fingers: 3,
                     dir: Some(SwipeDir::Left),
+                    pad: None,
                 },
             },
             action: Action::None,
@@ -570,6 +571,7 @@ fn seed_defaults(app: &mut App) {
                     kind: GestureKind::Swipe,
                     fingers: 3,
                     dir: Some(SwipeDir::Right),
+                    pad: None,
                 },
             },
             Action::Page {
@@ -587,6 +589,7 @@ fn seed_defaults(app: &mut App) {
                     kind: GestureKind::Swipe,
                     fingers: 4,
                     dir: Some(SwipeDir::Down),
+                    pad: None,
                 },
             },
             Action::Page {
@@ -805,14 +808,42 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             }
                         });
                     }
+                    // Which surface the gesture belongs to. A captured pad
+                    // gesture already carries its side; this lets the same
+                    // gesture be moved to the other pad or the glass by hand.
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(t!(lang, "поверхность", "surface"))
+                                .size(12.0)
+                                .color(t.muted),
+                        );
+                        let mut pad = spec.pad;
+                        if ui
+                            .selectable_label(pad.is_none(), t!(lang, "экран", "screen"))
+                            .clicked()
+                        {
+                            pad = None;
+                        }
+                        for side in [PadSide::Left, PadSide::Right] {
+                            if ui
+                                .selectable_label(pad == Some(side), side.label_lang(lang))
+                                .clicked()
+                            {
+                                pad = Some(side);
+                            }
+                        }
+                        spec.pad = pad;
+                    });
                     if kind != spec.kind
                         || fingers != spec.fingers
                         || (kind == GestureKind::Swipe && Some(dir) != spec.dir)
                     {
+                        let pad = spec.pad;
                         *spec = GestureSpec {
                             kind,
                             fingers,
                             dir: (kind == GestureKind::Swipe).then_some(dir),
+                            pad,
                         };
                     }
                     ui.label(

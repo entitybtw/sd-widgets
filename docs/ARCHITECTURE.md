@@ -74,13 +74,22 @@
   goes up or down does not change the number either.
 - `deck_view.rs` — the drawn Steam Deck and live control highlighting.
 - `binds.rs` — bind list, editor and capture.
-- `input.rs` — evdev reader, gestures and button codes. A recording session
-  listens to both sources: the kernel touch tracker and the window's own touch
-  or pointer drag. The window is what actually works when the compositor turns
-  the touchscreen into a mouse or the touch device is grabbed, and a single
-  gesture is recorded once (a short guard swallows the duplicate from the other
-  source). The page's horizontal-only rule does not apply while recording, so a
-  tap, a long press and a vertical swipe are bindable too.
+- `input.rs` — evdev reader, gestures and button codes. A Deck pad node is
+  recognised by `ABS_HAT1X` (`Role::SteamDeck`): its two touchpads are `HAT0`
+  (left) and `HAT1` (right), and `HAT2` carries the analog triggers, while the
+  sticks stay on `ABS_X/Y` and `ABS_RX/RY`. A generic pad keeps `HAT0` as its
+  d-pad. hid-steam does not expose a pad's touch flag, only zeroed axes, so a
+  pad touch is sampled at every `SYN_REPORT` and ends when both axes are zero;
+  the finished `GestureSpec` carries `pad: Some(PadSide)` so the same swipe can
+  drive a different bind on the left pad, the right pad and the glass (a pad
+  gesture never triggers the glass's three/four-finger short cuts). Pad clicks
+  are `BTN_THUMB`/`BTN_THUMB2` (`L-pad`/`R-pad`). A recording session listens to
+  both sources: the kernel touch tracker and the window's own touch or pointer
+  drag. The window is what actually works when the compositor turns the
+  touchscreen into a mouse or the touch device is grabbed, and a single gesture
+  is recorded once (a short guard swallows the duplicate from the other source).
+  The page's horizontal-only rule does not apply while recording, so a tap, a
+  long press and a vertical swipe are bindable too.
 - `sound.rs` — synthesized WAV packs and playback.
 - `viz.rs` — the sound meter: Goertzel bands from the PCM stream, a track
   fallback, and the bars/dots/wave strip shared by the top bar, the shade and

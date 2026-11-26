@@ -1115,6 +1115,31 @@ pub enum GestureKind {
     PinchOut,
 }
 
+/// One of the deck's two touchpads.
+///
+/// A gesture made on a pad is tracked separately from one made on the glass,
+/// so the same swipe can mean different things on the left pad, the right pad
+/// and the touchscreen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PadSide {
+    Left,
+    Right,
+}
+
+impl PadSide {
+    pub fn label(self) -> &'static str {
+        self.label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
+        match self {
+            Self::Left => crate::t!(lang, "левая панель", "left pad"),
+            Self::Right => crate::t!(lang, "правая панель", "right pad"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GestureSpec {
     pub kind: GestureKind,
@@ -1122,6 +1147,11 @@ pub struct GestureSpec {
     pub fingers: u8,
     #[serde(default)]
     pub dir: Option<SwipeDir>,
+    /// Which touchpad the gesture came from. `None` is the touchscreen, or a
+    /// gesture that does not care which surface it happened on; older configs
+    /// have no such field and load as `None`.
+    #[serde(default)]
+    pub pad: Option<PadSide>,
 }
 
 fn one() -> u8 {
@@ -1134,13 +1164,14 @@ impl Default for GestureSpec {
             kind: GestureKind::Tap,
             fingers: 1,
             dir: None,
+            pad: None,
         }
     }
 }
 
 impl GestureSpec {
     pub fn id(&self) -> String {
-        match self.kind {
+        let base = match self.kind {
             GestureKind::Swipe => format!(
                 "{}f-swipe-{}",
                 self.fingers,
@@ -1155,6 +1186,13 @@ impl GestureSpec {
             GestureKind::LongPress => format!("{}f-long", self.fingers),
             GestureKind::PinchIn => format!("{}f-pinch-in", self.fingers),
             GestureKind::PinchOut => format!("{}f-pinch-out", self.fingers),
+        };
+        // The pad is part of the identity: a swipe on the left pad and the
+        // same swipe on the glass are two different triggers.
+        match self.pad {
+            Some(PadSide::Left) => format!("{base}@left"),
+            Some(PadSide::Right) => format!("{base}@right"),
+            None => base,
         }
     }
     pub fn label(&self) -> String {
@@ -1176,10 +1214,14 @@ impl GestureSpec {
             GestureKind::PinchIn => crate::t!(lang, "сжать", "pinch in"),
             GestureKind::PinchOut => crate::t!(lang, "разжать", "pinch out"),
         };
-        if matches!(self.kind, GestureKind::Swipe) {
+        let base = if matches!(self.kind, GestureKind::Swipe) {
             format!("{fingers}: {what} {dir}")
         } else {
             format!("{fingers}: {what}")
+        };
+        match self.pad {
+            Some(side) => format!("{base} · {}", side.label_lang(lang)),
+            None => base,
         }
     }
 }

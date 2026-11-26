@@ -5,7 +5,7 @@
 //! the virtual pad on the computer.
 
 use sdw_core::model::GestureSpec;
-use sdw_core::model::{GestureKind, SwipeDir};
+use sdw_core::model::{GestureKind, PadSide, SwipeDir};
 use sdw_core::udp::{self, GamepadState};
 use sdw_core::{t, Lang};
 use std::collections::HashSet;
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 pub const EV_KEY: u16 = 1;
 pub const EV_ABS: u16 = 3;
+pub const EV_SYN: u16 = 0;
 
 pub const BTN_SOUTH: u16 = 0x130;
 pub const BTN_EAST: u16 = 0x131;
@@ -31,6 +32,9 @@ pub const BTN_START: u16 = 0x13b;
 pub const BTN_MODE: u16 = 0x13c;
 pub const BTN_THUMBL: u16 = 0x13d;
 pub const BTN_THUMBR: u16 = 0x13e;
+/// Touchpad clicks: the left pad and the right pad respectively.
+pub const BTN_THUMB: u16 = 0x121;
+pub const BTN_THUMB2: u16 = 0x122;
 pub const BTN_DPAD_UP: u16 = 0x220;
 pub const BTN_DPAD_DOWN: u16 = 0x221;
 pub const BTN_DPAD_LEFT: u16 = 0x222;
@@ -53,6 +57,10 @@ const ABS_GAS: u16 = 9;
 const ABS_BRAKE: u16 = 10;
 const ABS_HAT0X: u16 = 16;
 const ABS_HAT0Y: u16 = 17;
+const ABS_HAT1X: u16 = 18;
+const ABS_HAT1Y: u16 = 19;
+const ABS_HAT2X: u16 = 20;
+const ABS_HAT2Y: u16 = 21;
 const ABS_MT_SLOT: u16 = 0x2f;
 const ABS_MT_POSITION_X: u16 = 0x35;
 const ABS_MT_POSITION_Y: u16 = 0x36;
@@ -114,6 +122,9 @@ impl InputHandle {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
     Gamepad,
+    /// A Steam Deck pad node: the sticks and buttons of a normal gamepad plus
+    /// both touchpads (HAT0, HAT1) and the analog triggers (HAT2).
+    SteamDeck,
     Motion,
     Touch,
     Keys,
@@ -138,6 +149,9 @@ enum Raw {
         tracking: Option<i32>,
     },
     TouchDown(bool),
+    /// End of one input report from the Deck pad; the tick that samples both
+    /// touchpads.
+    Sync,
 }
 
 /// Stable codes for the two failures the UI can translate itself.
@@ -258,7 +272,14 @@ fn scan_into(raw_tx: &Sender<Raw>, st: &mut ScanState) -> (Vec<String>, bool, Ve
             Role::Touch
         } else if is_gamepad {
             has_gamepad = true;
-            Role::Gamepad
+            // The Steam Deck puts its two touchpads on HAT0/HAT1 and its analog
+            // triggers on HAT2 of the same node as the sticks. A generic pad
+            // only has HAT0 (the d-pad), so the presence of HAT1 says "Deck".
+            if has_ax(ABS_HAT1X) {
+                Role::SteamDeck
+            } else {
+                Role::Gamepad
+            }
         } else if is_motion && !st.motion_taken {
             st.motion_taken = true;
             Role::Motion
@@ -423,6 +444,25 @@ fn read_device(
                             value: v,
                         });
                     }
+                    Role::SteamDeck => {
+                        let v = match code {
+                            ABS_X | ABS_Y | ABS_RX | ABS_RY => norm_signed(code, value),
+                            // Both touchpads, raw around a centre.
+                            ABS_HAT0X | ABS_HAT0Y | ABS_HAT1X | ABS_HAT1Y => {
+                                norm_signed(code, value)
+                            }
+                            // Analog triggers: HAT2Y is the left one, HAT2X the
+                            // right one, 0..max.
+                            ABS_HAT2Y | ABS_HAT2X => norm(code, value),
+                            ABS_Z | ABS_RZ | ABS_GAS | ABS_BRAKE => norm(code, value),
+                            _ => continue,
+                        };
+                        let _ = tx.send(Raw::Axis {
+                            role,
+                            code,
+                            value: v,
+                        });
+                    }
                     Role::Motion => {
                         let _ = tx.send(Raw::Axis {
                             role,
@@ -432,6 +472,14 @@ fn read_device(
                     }
                     Role::Keys => {}
                 },
+                EV_SYN => {
+                    // One report ends here. The Deck does not expose the pads'
+                    // touch bits, so the report boundary is the only place to
+                    // tell "finger still down" from "finger just lifted".
+                    if code == 0 && role == Role::SteamDeck {
+                        let _ = tx.send(Raw::Sync);
+                    }
+                }
                 _ => {}
             }
         }
@@ -636,6 +684,71 @@ impl Tracker {
     }
 }
 
+/// One touchpad's state across the reports of a single touch.
+#[derive(Default)]
+struct PadState {
+    /// Latest raw position, -1..1 around the centre.
+    x: f32,
+    y: f32,
+    active: bool,
+    started: Option<Instant>,
+    start: (f32, f32),
+    last: (f32, f32),
+}
+
+/// Turns the two touchpads' position reports into gestures, one per touch.
+///
+/// hid-steam reports a pad's coordinates while it is touched and zeroes both
+/// axes when the finger lifts; the touch flag itself is not exposed. So a
+/// report is sampled on every SYN_REPORT, and a sample of (0,0) ends the
+/// touch. That also means a dead-centre tap produces nothing — there is no
+/// coordinate to speak of.
+struct PadTracker {
+    left: PadState,
+    right: PadState,
+}
+
+impl PadTracker {
+    fn new() -> Self {
+        Self {
+            left: PadState::default(),
+            right: PadState::default(),
+        }
+    }
+
+    fn state(&mut self, side: PadSide) -> &mut PadState {
+        match side {
+            PadSide::Left => &mut self.left,
+            PadSide::Right => &mut self.right,
+        }
+    }
+
+    fn sample(&mut self, side: PadSide, now: Instant) -> Option<GestureSpec> {
+        let st = self.state(side);
+        let touched = st.x != 0.0 || st.y != 0.0;
+        // -1..1 around a centre -> the 0..1 the gesture code speaks.
+        let point = ((st.x + 1.0) * 0.5, (st.y + 1.0) * 0.5);
+        if touched {
+            if !st.active {
+                st.active = true;
+                st.started = Some(now);
+                st.start = point;
+            }
+            st.last = point;
+            return None;
+        }
+        if !st.active {
+            return None;
+        }
+        st.active = false;
+        let started = st.started.take()?;
+        let dur = now.saturating_duration_since(started);
+        let mut g = gesture_from(1, dur, st.start, st.last, None)?;
+        g.pad = Some(side);
+        Some(g)
+    }
+}
+
 /// Build a gesture from a completed touch/trackpad movement. Coordinates are
 /// normalised to 0..1 so the same thresholds work on any panel size.
 pub(crate) fn gesture_from(
@@ -658,6 +771,7 @@ pub(crate) fn gesture_from(
                 },
                 fingers,
                 dir: None,
+                pad: None,
             });
         }
     }
@@ -699,6 +813,7 @@ fn swipe_or_tap(fingers: u8, dur: Duration, dist: f32, dx: f32, dy: f32) -> Opti
             kind: GestureKind::Swipe,
             fingers,
             dir: Some(dir),
+            pad: None,
         });
     }
     if dur > Duration::from_millis(620) {
@@ -706,12 +821,14 @@ fn swipe_or_tap(fingers: u8, dur: Duration, dist: f32, dx: f32, dy: f32) -> Opti
             kind: GestureKind::LongPress,
             fingers,
             dir: None,
+            pad: None,
         });
     }
     Some(GestureSpec {
         kind: GestureKind::Tap,
         fingers,
         dir: None,
+        pad: None,
     })
 }
 
@@ -723,6 +840,7 @@ fn coordinate(raw_rx: Receiver<Raw>, cmd_rx: Receiver<InputCmd>, evt_tx: Sender<
     let mut gyro = [0i16; 3];
     let mut accel = [0i16; 3];
     let mut tracker = Tracker::new();
+    let mut pads = PadTracker::new();
     let mut seq = 0u32;
     let mut last_udp = Instant::now() - Duration::from_secs(1);
     let mut last_emit = Instant::now() - Duration::from_secs(1);
@@ -739,6 +857,7 @@ fn coordinate(raw_rx: Receiver<Raw>, cmd_rx: Receiver<InputCmd>, evt_tx: Sender<
                     &mut gyro,
                     &mut accel,
                     &mut tracker,
+                    &mut pads,
                     &evt_tx,
                     &mut pressed,
                 );
@@ -751,6 +870,7 @@ fn coordinate(raw_rx: Receiver<Raw>, cmd_rx: Receiver<InputCmd>, evt_tx: Sender<
                             &mut gyro,
                             &mut accel,
                             &mut tracker,
+                            &mut pads,
                             &evt_tx,
                             &mut pressed,
                         ),
@@ -816,6 +936,7 @@ fn handle_raw(
     gyro: &mut [i16; 3],
     accel: &mut [i16; 3],
     tracker: &mut Tracker,
+    pads: &mut PadTracker,
     evt_tx: &Sender<DeckEvent>,
     pressed: &mut HashSet<u16>,
 ) {
@@ -828,7 +949,7 @@ fn handle_raw(
         } => {
             let down = value != 0;
             match role {
-                Role::Gamepad => {
+                Role::Gamepad | Role::SteamDeck => {
                     if let Some(bit) = gamepad_bit(code) {
                         state.set(bit, down);
                     }
@@ -897,6 +1018,20 @@ fn handle_raw(
                 }
                 _ => {}
             },
+            Role::SteamDeck => match code {
+                ABS_X => state.lx = value,
+                ABS_Y => state.ly = -value,
+                ABS_RX => state.rx = value,
+                ABS_RY => state.ry = -value,
+                // Analog triggers arrive on HAT2, not Z/RZ like a generic pad.
+                ABS_HAT2Y => state.lt = value,
+                ABS_HAT2X => state.rt = value,
+                ABS_HAT0X => pads.left.x = value,
+                ABS_HAT0Y => pads.left.y = value,
+                ABS_HAT1X => pads.right.x = value,
+                ABS_HAT1Y => pads.right.y = value,
+                _ => {}
+            },
             Role::Motion => match code {
                 ABS_X => accel[0] = value as i16,
                 ABS_Y => accel[1] = value as i16,
@@ -925,6 +1060,14 @@ fn handle_raw(
             }
         }
         Raw::TouchDown(down) => tracker.down(down, Instant::now()),
+        Raw::Sync => {
+            let now = Instant::now();
+            for side in [PadSide::Left, PadSide::Right] {
+                if let Some(gesture) = pads.sample(side, now) {
+                    let _ = evt_tx.send(DeckEvent::Gesture(gesture));
+                }
+            }
+        }
     }
 }
 
@@ -966,6 +1109,8 @@ pub fn key_name(code: u16) -> String {
         BTN_MODE => "Steam",
         BTN_THUMBL => "L3",
         BTN_THUMBR => "R3",
+        BTN_THUMB => "L-pad",
+        BTN_THUMB2 => "R-pad",
         BTN_DPAD_UP => "D-pad ↑",
         BTN_DPAD_DOWN => "D-pad ↓",
         BTN_DPAD_LEFT => "D-pad ←",
@@ -1012,5 +1157,73 @@ mod tests {
         assert_eq!(key_name(BTN_WEST), "Y");
         assert_eq!(gamepad_bit(BTN_NORTH), Some(udp::BTN_X));
         assert_eq!(gamepad_bit(BTN_WEST), Some(udp::BTN_Y));
+    }
+
+    #[test]
+    fn pad_click_has_a_name() {
+        assert_eq!(key_name(BTN_THUMB), "L-pad");
+        assert_eq!(key_name(BTN_THUMB2), "R-pad");
+    }
+
+    #[test]
+    fn pad_swipe_is_tagged_with_its_side() {
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        // Finger lands on the left half of the left pad.
+        pads.left.x = -0.5;
+        pads.left.y = 0.0;
+        assert!(pads.sample(PadSide::Left, t0).is_none());
+        // Moves to the right half a moment later.
+        pads.left.x = 0.5;
+        assert!(pads
+            .sample(PadSide::Left, t0 + Duration::from_millis(120))
+            .is_none());
+        // Lifts: both axes are zeroed, which is the only release signal.
+        pads.left.x = 0.0;
+        pads.left.y = 0.0;
+        let g = pads
+            .sample(PadSide::Left, t0 + Duration::from_millis(160))
+            .expect("a swipe");
+        assert_eq!(g.kind, GestureKind::Swipe);
+        assert_eq!(g.dir, Some(SwipeDir::Right));
+        assert_eq!(g.fingers, 1);
+        assert_eq!(g.pad, Some(PadSide::Left));
+    }
+
+    #[test]
+    fn pad_tap_is_a_tap_and_an_untouched_pad_is_silent() {
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        // Nothing happens while the pad is untouched.
+        assert!(pads.sample(PadSide::Right, t0).is_none());
+        pads.right.x = 0.2;
+        pads.right.y = 0.1;
+        assert!(pads.sample(PadSide::Right, t0).is_none());
+        pads.right.x = 0.0;
+        pads.right.y = 0.0;
+        let g = pads
+            .sample(PadSide::Right, t0 + Duration::from_millis(90))
+            .expect("a tap");
+        assert_eq!(g.kind, GestureKind::Tap);
+        assert_eq!(g.pad, Some(PadSide::Right));
+    }
+
+    #[test]
+    fn a_gesture_id_and_label_say_which_pad() {
+        let glass = GestureSpec {
+            kind: GestureKind::Swipe,
+            fingers: 1,
+            dir: Some(SwipeDir::Left),
+            pad: None,
+        };
+        let left = GestureSpec {
+            pad: Some(PadSide::Left),
+            ..glass
+        };
+        // The glass keeps the old id, so existing binds still match.
+        assert_eq!(glass.id(), "1f-swipe-left");
+        assert_eq!(left.id(), "1f-swipe-left@left");
+        assert_ne!(glass.id(), left.id());
+        assert!(left.label().contains("левая панель"));
     }
 }
