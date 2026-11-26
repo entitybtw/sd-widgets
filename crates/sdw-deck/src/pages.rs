@@ -4332,6 +4332,8 @@ fn ha_card(
     categories: &[HaCategory],
     current_category: Option<usize>,
     actions: &mut Vec<HaAction>,
+    // Covers get one gate-style button instead of open/stop/close.
+    one_button: bool,
     // Entity id and the percentage of a slider that was just let go; kept
     // apart so the slider never snaps back before Home Assistant answers.
     bright: &mut Vec<(String, u8)>,
@@ -4789,13 +4791,49 @@ fn ha_card(
                 "cover" => {
                     let position = e.cover_position();
                     ui.horizontal(|ui| {
-                        if ha_icon_button(
-                            ui,
-                            t,
-                            theme::icon::ARROW_UP,
-                            false,
-                            t!(lang, "открыть", "open"),
-                        ) {
+                        if one_button {
+                            let service = sdw_core::ha::cover_step(&e.state);
+                            // While the cover travels the tile says so, and the
+                            // same button is "stop" — the state the optimistic
+                            // map shows is the one the gate remote expects.
+                            let (text, state) = match service {
+                                "stop_cover" => (t!(lang, "стоп", "stop"), None),
+                                "close_cover" => (t!(lang, "закрыть", "close"), Some("closing")),
+                                _ => (t!(lang, "открыть", "open"), Some("opening")),
+                            };
+                            let resp = ui.add(
+                                egui::Button::new(
+                                    RichText::new(text).size(14.5).strong().color(t.ink),
+                                )
+                                .fill(t.well)
+                                .stroke(Stroke::new(1.0, t.line))
+                                .corner_radius(CornerRadius::ZERO)
+                                .min_size(Vec2::new(104.0, 34.0)),
+                            );
+                            if resp
+                                .on_hover_text(t!(
+                                    lang,
+                                    "одна кнопка: открыть, стоп во время движения, закрыть",
+                                    "one button: open, stop while moving, close"
+                                ))
+                                .clicked()
+                            {
+                                actions.push(HaAction {
+                                    call: ha_service(e, service, serde_json::Value::Null),
+                                    entity: e.entity_id.clone(),
+                                    state: state.map(str::to_string),
+                                });
+                            }
+                        }
+                        if !one_button
+                            && ha_icon_button(
+                                ui,
+                                t,
+                                theme::icon::ARROW_UP,
+                                false,
+                                t!(lang, "открыть", "open"),
+                            )
+                        {
                             actions.push(HaAction {
                                 call: ha_service(e, "open_cover", serde_json::Value::Null),
                                 entity: e.entity_id.clone(),
@@ -5777,6 +5815,30 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                 .truncate(),
             );
         }
+        if ha.configured && app.ha.entities.iter().any(|e| e.domain() == "cover") {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let mut one = app.cfg.cover_one_button;
+                if theme::switch(ui, &mut one, t).changed() {
+                    app.cfg.cover_one_button = one;
+                    app.save_soon();
+                }
+                ui.label(
+                    RichText::new(t!(
+                        app.lang,
+                        "шторы одной кнопкой",
+                        "covers with one button"
+                    ))
+                    .size(12.5)
+                    .color(t.muted),
+                )
+                .on_hover_text(t!(
+                    app.lang,
+                    "нажатие открывает закрытую штору, останавливает движущуюся и закрывает открытую — как ворота",
+                    "a press opens a closed cover, stops a moving one and closes an open one — like a gate"
+                ));
+            });
+        }
         if ha.configured && !ha.error.is_empty() && !ha.connected {
             ui.label(
                 RichText::new(util::truncate(&ha.error, 90))
@@ -6569,6 +6631,7 @@ pub fn home_assistant(app: &mut App, ui: &mut Ui, t: &Tokens) {
                             &categories,
                             current_category,
                             &mut actions,
+                            app.cfg.cover_one_button,
                             &mut bright,
                             &mut star,
                             &mut category_change,

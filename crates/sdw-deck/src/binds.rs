@@ -1336,6 +1336,7 @@ fn ha_services(domain: &str) -> &'static [&'static str] {
             "stop_cover",
             "toggle",
             "set_position",
+            "step",
         ],
         "lock" => &["lock", "unlock", "open"],
         "vacuum" => &["start", "stop", "pause", "return_to_base", "locate"],
@@ -1476,6 +1477,18 @@ fn ha_action(
                 }
             });
     });
+
+    if domain == "cover" && service == "step" {
+        ui.label(
+            RichText::new(t!(
+                lang,
+                "одна кнопка: открыть, стоп во время движения, закрыть",
+                "one button: open, stop while moving, close"
+            ))
+            .size(11.0)
+            .color(t.faint),
+        );
+    }
 
     ui.add_space(4.0);
     ui.add(

@@ -4341,9 +4341,29 @@ impl App {
                     self.toast(t!(self.lang, "нет компьютера", "no computer"), false);
                     return;
                 };
+                // "cover step" is one button like a gate remote; the deck
+                // knows the entity's state and turns it into a real service
+                // here, before the call leaves. Without a known entity the
+                // cover's own toggle is the closest thing to it.
+                let service = if domain == "cover" && service == "step" {
+                    let state = self
+                        .ha
+                        .entities
+                        .iter()
+                        .find(|e| &e.entity_id == entity)
+                        .map(|e| e.state.as_str())
+                        .unwrap_or("");
+                    if state.is_empty() {
+                        "toggle".to_string()
+                    } else {
+                        sdw_core::ha::cover_step(state).to_string()
+                    }
+                } else {
+                    service.clone()
+                };
                 let call = HaCall {
                     domain: domain.clone(),
-                    service: service.clone(),
+                    service,
                     target: if entity.is_empty() {
                         serde_json::Value::Null
                     } else {

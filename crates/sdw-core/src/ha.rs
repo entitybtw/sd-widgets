@@ -84,6 +84,20 @@ pub fn service_for(domain: &str, action: &str) -> Option<&'static str> {
     }
 }
 
+/// The next command for a cover driven by one button, like a gate remote.
+///
+/// A moving cover stops, an open one (including a partly open one, which
+/// Home Assistant reports as `open`) closes, and anything else opens. Every
+/// press is a single service call, so a slow cover does not need a second
+/// tap to choose a direction.
+pub fn cover_step(state: &str) -> &'static str {
+    match state {
+        "opening" | "closing" => "stop_cover",
+        "open" => "close_cover",
+        _ => "open_cover",
+    }
+}
+
 /// True when `service` is a real service for `domain`.
 ///
 /// A scenario arrives from another deck over the network, so the daemon keeps a
@@ -108,6 +122,9 @@ pub fn known_service(domain: &str, service: &str) -> bool {
             "stop_cover",
             "toggle",
             "set_cover_position",
+            // One-button control: resolved to open/stop/close from the
+            // cover's state by whoever sends the call.
+            "step",
         ],
         "valve" => &["open_valve", "close_valve", "stop_valve"],
         "lock" => &["lock", "unlock", "open"],
@@ -824,6 +841,12 @@ mod tests {
         assert_eq!(service_for("scene", "run"), Some("turn_on"));
         assert_eq!(service_for("automation", "run"), Some("trigger"));
         assert_eq!(service_for("cover", "open"), Some("open_cover"));
+        // A gate-style press: stop while moving, else go the other way.
+        assert_eq!(cover_step("opening"), "stop_cover");
+        assert_eq!(cover_step("closing"), "stop_cover");
+        assert_eq!(cover_step("open"), "close_cover");
+        assert_eq!(cover_step("closed"), "open_cover");
+        assert_eq!(cover_step("unavailable"), "open_cover");
         assert_eq!(service_for("lock", "on"), Some("unlock"));
         assert_eq!(service_for("lock", "off"), Some("lock"));
         assert_eq!(service_for("button", "run"), Some("press"));
@@ -836,6 +859,7 @@ mod tests {
         assert!(known_service("light", "turn_on"));
         assert!(known_service("automation", "trigger"));
         assert!(known_service("cover", "open_cover"));
+        assert!(known_service("cover", "step"));
         assert!(!known_service("light", "open_cover"));
         assert!(!known_service("automation", "press"));
         assert!(!known_service("sensor", "turn_on"));

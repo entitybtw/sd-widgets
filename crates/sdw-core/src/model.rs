@@ -813,7 +813,9 @@ impl HaEntity {
     pub fn is_on(&self) -> bool {
         matches!(
             self.state.as_str(),
-            "on" | "home" | "playing" | "open" | "unlocked"
+            // A cover that is travelling is active as well: its tile stays lit
+            // while it moves, so "stop" is easy to find.
+            "on" | "home" | "playing" | "open" | "unlocked" | "opening" | "closing"
         )
     }
     pub fn brightness(&self) -> Option<u8> {
@@ -2356,6 +2358,11 @@ pub struct DeckConfig {
     pub ha_instances: Vec<HaInstance>,
     #[serde(default)]
     pub ha_active: String,
+    /// Covers on the Home Assistant page get one gate-style button: a press
+    /// opens a closed cover, stops a moving one and closes an open one,
+    /// instead of the three separate open/stop/close buttons.
+    #[serde(default)]
+    pub cover_one_button: bool,
     #[serde(default)]
     pub audio: AudioDeckCfg,
     #[serde(default)]
@@ -2434,6 +2441,7 @@ impl Default for DeckConfig {
             ha_token: String::new(),
             ha_instances: Vec::new(),
             ha_active: String::new(),
+            cover_one_button: false,
             audio: AudioDeckCfg::default(),
             viz: VizCfg::default(),
             addons: crate::addons::AddonsCfg::default(),

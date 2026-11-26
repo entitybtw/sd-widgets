@@ -305,7 +305,32 @@ impl HaRuntime {
         let Some(client) = &self.client else {
             return Err("Home Assistant не настроен".into());
         };
-        client.call(call)
+        // A cover can be driven by one gate-style button: the deck, a preset
+        // or an addon sends `cover.step`, and the state known here decides
+        // whether it opens, stops or closes. Home Assistant has no such
+        // service, so it never leaves this function unresolved.
+        let mut call = call.clone();
+        if call.domain == "cover" && call.service == "step" {
+            let target = match call.target.get("entity_id") {
+                Some(serde_json::Value::String(s)) => s.as_str(),
+                Some(serde_json::Value::Array(a)) => {
+                    a.first().and_then(serde_json::Value::as_str).unwrap_or("")
+                }
+                _ => "",
+            };
+            let state = self
+                .entities
+                .iter()
+                .find(|e| e.entity_id == target)
+                .map(|e| e.state.as_str())
+                .unwrap_or("");
+            call.service = if state.is_empty() {
+                "toggle".to_string()
+            } else {
+                sdw_core::ha::cover_step(state).to_string()
+            };
+        }
+        client.call(&call)
     }
 
     pub fn toggle(&self, entity_id: &str, on: bool) -> Result<serde_json::Value, String> {

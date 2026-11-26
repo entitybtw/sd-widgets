@@ -31,7 +31,12 @@
 - `ha.rs` — Home Assistant helpers. `service_for(domain, action)` turns a plain
   word (on, off, open, run) into the real service a domain expects, and
   `known_service(domain, service)` is the whitelist the daemon applies to a
-  scenario before it forwards it to `/api/services/...`.
+  scenario before it forwards it to `/api/services/...`. `cover_step(state)`
+  is the next command of the one-button cover mode: a moving cover stops, an
+  open one (a partly open one reports `open`) closes, anything else opens.
+  `step` is whitelisted for covers, so a scenario or a bind can ask for it;
+  whoever sends the call resolves it, because Home Assistant has no such
+  service.
 - `update.rs` — release checks and downloads. `Remote` is the source: a
   Forgejo/Gitea instance (`/api/v1/repos/...`) or GitHub (`/api.github.com` or
   an enterprise host's `/api/v3`), read from a repository web address; both

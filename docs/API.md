@@ -171,6 +171,11 @@ forever, at full rate and with sound.
 | `POST` | `/api/v1/ha/call` | `{ "domain": "light", "service": "toggle", "entity_id": "light.kitchen" }`. |
 | `POST` | `/api/v1/ha/favorites` | Pin or unpin entities. |
 
+`cover` accepts one extra service, `step`: the daemon reads the cover's state and
+sends `open_cover`, `stop_cover` or `close_cover` itself — the next command of a
+gate-style single button (a moving cover stops, an open one closes, anything else
+opens). It never reaches Home Assistant under that name.
+
 ## Remote actions
 
 `POST /api/v1/remote`
