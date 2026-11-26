@@ -4442,7 +4442,15 @@ impl App {
                     let fresh = self.pressed.insert(code);
                     self.last_button = Some((code, label.clone(), Instant::now()));
                     if fresh {
-                        if !self.gamepad_on && !self.binds.capture && pad_key(code) {
+                        // A button an enabled bind listens to runs that bind and
+                        // nothing else. Otherwise pressing Y on the clock would
+                        // also open Home, and B would flip the page back while
+                        // the bind fired.
+                        if !self.gamepad_on
+                            && !self.binds.capture
+                            && pad_key(code)
+                            && !code_in_binds(&self.cfg.binds, code)
+                        {
                             self.pad_press.push(code);
                             if self.pad_press.len() > 16 {
                                 self.pad_press.remove(0);
@@ -6869,6 +6877,23 @@ pub fn max_ui_scale() -> f32 {
     }
 }
 
+/// Whether an enabled bind listens to `code`, alone or as a member of a
+/// combo. Such a button belongs to the bind, not to the deck's own navigation.
+/// A combo counts every member, so the first key of a two-key bind does not
+/// flip a page while the second one is on the way.
+fn code_in_binds(binds: &[sdw_core::model::Bind], code: u16) -> bool {
+    use sdw_core::model::Trigger;
+    let code = code.to_string();
+    binds.iter().any(|b| {
+        b.enabled
+            && match &b.trigger {
+                Trigger::Button { code: c, .. } => *c == code,
+                Trigger::Combo { codes, .. } => codes.iter().any(|c| *c == code),
+                Trigger::Gesture { .. } => false,
+            }
+    })
+}
+
 /// Buttons that drive the deck UI itself (not the virtual pad).
 fn pad_key(code: u16) -> bool {
     matches!(
@@ -7096,5 +7121,58 @@ mod touch_tests {
                 prev = v;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bind_tests {
+    use super::*;
+    use sdw_core::model::{Action, Bind, Trigger};
+
+    fn button(code: &str) -> Bind {
+        Bind::new(
+            "b",
+            Trigger::Button {
+                device: "steam deck".into(),
+                code: code.into(),
+                label: "Y".into(),
+            },
+            Action::None,
+        )
+    }
+
+    #[test]
+    fn a_bound_button_does_not_also_navigate() {
+        let y = button("308");
+        assert!(code_in_binds(&[y.clone()], 308));
+        assert!(!code_in_binds(&[y.clone()], 307));
+
+        let mut off = y.clone();
+        off.enabled = false;
+        assert!(!code_in_binds(&[off], 308));
+
+        let combo = Bind::new(
+            "c",
+            Trigger::Combo {
+                codes: vec!["307".into(), "308".into()],
+                label: "X+Y".into(),
+            },
+            Action::None,
+        );
+        assert!(code_in_binds(&[combo.clone()], 307));
+        assert!(code_in_binds(&[combo], 308));
+
+        let gesture = Bind::new(
+            "g",
+            Trigger::Gesture {
+                spec: GestureSpec {
+                    kind: GestureKind::Swipe,
+                    fingers: 1,
+                    dir: Some(SwipeDir::Up),
+                },
+            },
+            Action::None,
+        );
+        assert!(!code_in_binds(&[gesture], 308));
     }
 }
