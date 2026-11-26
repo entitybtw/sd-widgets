@@ -4343,8 +4343,9 @@ impl App {
                 };
                 // "cover step" is one button like a gate remote; the deck
                 // knows the entity's state and turns it into a real service
-                // here, before the call leaves. Without a known entity the
-                // cover's own toggle is the closest thing to it.
+                // here, before the call leaves. When the deck has not loaded
+                // the entity yet, the call keeps `step` and the daemon resolves
+                // it from its own state instead of guessing.
                 let service = if domain == "cover" && service == "step" {
                     let state = self
                         .ha
@@ -4354,7 +4355,7 @@ impl App {
                         .map(|e| e.state.as_str())
                         .unwrap_or("");
                     if state.is_empty() {
-                        "toggle".to_string()
+                        "step".to_string()
                     } else {
                         sdw_core::ha::cover_step(state).to_string()
                     }

@@ -31,12 +31,14 @@ pub enum ActionKind {
     Page,
     Remote,
     Ha,
+    /// A cover on one gate-style button: open, stop while moving, close.
+    CoverStep,
     Url,
     Http,
 }
 
 impl ActionKind {
-    pub const ALL: [ActionKind; 15] = [
+    pub const ALL: [ActionKind; 16] = [
         ActionKind::None,
         ActionKind::Shell,
         ActionKind::Launch,
@@ -50,6 +52,7 @@ impl ActionKind {
         ActionKind::Page,
         ActionKind::Remote,
         ActionKind::Ha,
+        ActionKind::CoverStep,
         ActionKind::Url,
         ActionKind::Http,
     ];
@@ -68,6 +71,9 @@ impl ActionKind {
             Action::Key { .. } => Self::Key,
             Action::Page { .. } => Self::Page,
             Action::Remote { .. } => Self::Remote,
+            Action::Ha {
+                domain, service, ..
+            } if domain == "cover" && service == "step" => Self::CoverStep,
             Action::Ha { .. } => Self::Ha,
             Action::Url { .. } => Self::Url,
             Action::Http { .. } => Self::Http,
@@ -89,6 +95,7 @@ impl ActionKind {
             Self::Page => t!(lang, "страница", "page"),
             Self::Remote => t!(lang, "компьютер", "computer"),
             Self::Ha => t!(lang, "home assistant", "home assistant"),
+            Self::CoverStep => t!(lang, "шторы одной кнопкой", "covers, one button"),
             Self::Url => t!(lang, "url", "url"),
             Self::Http => t!(lang, "http-запрос", "http request"),
         }
@@ -125,6 +132,13 @@ impl ActionKind {
                 host: None,
                 domain: "light".into(),
                 service: "toggle".into(),
+                entity: String::new(),
+                data: serde_json::Value::Null,
+            },
+            Self::CoverStep => Action::Ha {
+                host: None,
+                domain: "cover".into(),
+                service: "step".into(),
                 entity: String::new(),
                 data: serde_json::Value::Null,
             },
@@ -1093,7 +1107,8 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                     entity,
                     ..
                 } => {
-                    ha_action(app, ui, t, lang, host, domain, service, entity);
+                    let one_button = kind == ActionKind::CoverStep;
+                    ha_action(app, ui, t, lang, host, domain, service, entity, one_button);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t!(lang, "компьютер", "computer")).size(12.5).color(t.muted));
                         let current = host.clone().unwrap_or_default();
@@ -1400,6 +1415,7 @@ fn ha_action(
     domain: &mut String,
     service: &mut String,
     entity: &mut String,
+    one_button: bool,
 ) {
     let pending = app.ha.pending;
     let loaded = app.ha.loaded;
@@ -1432,53 +1448,18 @@ fn ha_action(
         },
     );
 
-    ui.horizontal_wrapped(|ui| {
-        let domains = ha_domains(&app.ha.entities, domain, lang);
-        let domain_text = if domain.is_empty() {
-            t!(lang, "домен", "domain").to_string()
-        } else {
-            format!("{}  {domain}", sdw_core::ha::domain_label(domain, lang))
-        };
-        egui::ComboBox::from_id_salt("bind-ha-domain")
-            .selected_text(RichText::new(domain_text).size(12.5))
-            .width(170.0)
-            .show_ui(ui, |ui| {
-                for name in &domains {
-                    let text = format!("{}  {name}", sdw_core::ha::domain_label(name, lang));
-                    if ui
-                        .selectable_label(domain == name, RichText::new(text).size(12.5))
-                        .clicked()
-                    {
-                        *domain = name.clone();
-                        // A service belongs to its domain: keep the choice valid.
-                        if !ha_services(name).contains(&service.as_str()) {
-                            *service = ha_services(name).first().copied().unwrap_or("").to_string();
-                        }
-                    }
-                }
-            });
-
-        let services = ha_services(domain);
-        egui::ComboBox::from_id_salt("bind-ha-service")
-            .selected_text(if service.is_empty() {
-                t!(lang, "сервис", "service").to_string()
-            } else {
-                service.clone()
-            })
-            .width(170.0)
-            .show_ui(ui, |ui| {
-                for name in services {
-                    let label = RichText::new(*name)
-                        .family(FontFamily::Monospace)
-                        .size(12.5);
-                    if ui.selectable_label(service == name, label).clicked() {
-                        *service = (*name).to_string();
-                    }
-                }
-            });
-    });
-
-    if domain == "cover" && service == "step" {
+    if one_button {
+        // The dedicated "covers, one button" action fixes the domain and the
+        // service; only the entity is left to pick.
+        ui.label(
+            RichText::new(format!(
+                "{} · cover.step",
+                sdw_core::ha::domain_label(domain, lang)
+            ))
+            .family(FontFamily::Monospace)
+            .size(11.5)
+            .color(t.muted),
+        );
         ui.label(
             RichText::new(t!(
                 lang,
@@ -1488,6 +1469,65 @@ fn ha_action(
             .size(11.0)
             .color(t.faint),
         );
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            let domains = ha_domains(&app.ha.entities, domain, lang);
+            let domain_text = if domain.is_empty() {
+                t!(lang, "домен", "domain").to_string()
+            } else {
+                format!("{}  {domain}", sdw_core::ha::domain_label(domain, lang))
+            };
+            egui::ComboBox::from_id_salt("bind-ha-domain")
+                .selected_text(RichText::new(domain_text).size(12.5))
+                .width(170.0)
+                .show_ui(ui, |ui| {
+                    for name in &domains {
+                        let text = format!("{}  {name}", sdw_core::ha::domain_label(name, lang));
+                        if ui
+                            .selectable_label(domain == name, RichText::new(text).size(12.5))
+                            .clicked()
+                        {
+                            *domain = name.clone();
+                            // A service belongs to its domain: keep the choice valid.
+                            if !ha_services(name).contains(&service.as_str()) {
+                                *service =
+                                    ha_services(name).first().copied().unwrap_or("").to_string();
+                            }
+                        }
+                    }
+                });
+
+            let services = ha_services(domain);
+            egui::ComboBox::from_id_salt("bind-ha-service")
+                .selected_text(if service.is_empty() {
+                    t!(lang, "сервис", "service").to_string()
+                } else {
+                    service.clone()
+                })
+                .width(170.0)
+                .show_ui(ui, |ui| {
+                    for name in services {
+                        let label = RichText::new(*name)
+                            .family(FontFamily::Monospace)
+                            .size(12.5);
+                        if ui.selectable_label(service == name, label).clicked() {
+                            *service = (*name).to_string();
+                        }
+                    }
+                });
+        });
+
+        if !one_button && domain == "cover" && service == "step" {
+            ui.label(
+                RichText::new(t!(
+                    lang,
+                    "одна кнопка: открыть, стоп во время движения, закрыть",
+                    "one button: open, stop while moving, close"
+                ))
+                .size(11.0)
+                .color(t.faint),
+            );
+        }
     }
 
     ui.add_space(4.0);
@@ -1572,18 +1612,20 @@ fn ha_action(
     )
     .id_salt("bind-ha-manual")
     .show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.add(
-                TextEdit::singleline(domain)
-                    .hint_text("light")
-                    .desired_width(110.0),
-            );
-            ui.add(
-                TextEdit::singleline(service)
-                    .hint_text("toggle")
-                    .desired_width(130.0),
-            );
-        });
+        if !one_button {
+            ui.horizontal(|ui| {
+                ui.add(
+                    TextEdit::singleline(domain)
+                        .hint_text("light")
+                        .desired_width(110.0),
+                );
+                ui.add(
+                    TextEdit::singleline(service)
+                        .hint_text("toggle")
+                        .desired_width(130.0),
+                );
+            });
+        }
         ui.add(
             TextEdit::singleline(entity)
                 .hint_text("light.kitchen")
