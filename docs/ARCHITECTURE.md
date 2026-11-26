@@ -69,7 +69,13 @@
   goes up or down does not change the number either.
 - `deck_view.rs` — the drawn Steam Deck and live control highlighting.
 - `binds.rs` — bind list, editor and capture.
-- `input.rs` — evdev reader, gestures and button codes.
+- `input.rs` — evdev reader, gestures and button codes. A recording session
+  listens to both sources: the kernel touch tracker and the window's own touch
+  or pointer drag. The window is what actually works when the compositor turns
+  the touchscreen into a mouse or the touch device is grabbed, and a single
+  gesture is recorded once (a short guard swallows the duplicate from the other
+  source). The page's horizontal-only rule does not apply while recording, so a
+  tap, a long press and a vertical swipe are bindable too.
 - `sound.rs` — synthesized WAV packs and playback.
 - `viz.rs` — the sound meter: Goertzel bands from the PCM stream, a track
   fallback, and the bars/dots/wave strip shared by the top bar, the shade and
@@ -121,10 +127,15 @@
   prereleases (GitHub's `dev-snapshot`) and takes the highest stable tag. It
   picks the asset for this OS and CPU, verifies its `SHA256SUMS` and runs
   `viiper --help` before calling the download installed: VIIPER has no
-  `version` command, and a file that cannot print its banner is removed. On
-  Windows `ffmpeg` is downloaded as a portable zip and unpacked into
-  `<data>/bin` (put first on `PATH` at startup), while the Virtual Display
-  Driver and usbipd go through `winget`.
+  `version` command, and a file that cannot print its banner is removed. Root
+  is obtained in this order: the command runs as is when the daemon is already
+  root, then `sudo` with the password typed on the install page, then `pkexec`.
+  A session with no graphical polkit agent makes `pkexec` fall back to a
+  terminal it does not have; that is recognised and the password is asked for
+  with `sudo -A` through kdialog/zenity instead. On Windows `ffmpeg` is
+  downloaded as a portable zip and unpacked into `<data>/bin` (put first on
+  `PATH` at startup), while the Virtual Display Driver and usbipd go through
+  `winget`.
 - `win/` — the Windows layer, chosen with `#[cfg(windows)]` at the crate root:
   `display.rs` (Virtual Display Driver, monitor placement), `audio.rs` (WASAPI
   loopback, per-process capture), `media.rs` (system media transport controls),
