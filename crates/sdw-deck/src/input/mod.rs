@@ -18,7 +18,9 @@ pub const EV_ABS: u16 = 3;
 
 pub const BTN_SOUTH: u16 = 0x130;
 pub const BTN_EAST: u16 = 0x131;
+/// Kernel alias of `BTN_X`: both hid-steam and xpad send the physical X here.
 pub const BTN_NORTH: u16 = 0x133;
+/// Kernel alias of `BTN_Y`: both hid-steam and xpad send the physical Y here.
 pub const BTN_WEST: u16 = 0x134;
 pub const BTN_TL: u16 = 0x136;
 pub const BTN_TR: u16 = 0x137;
@@ -930,8 +932,10 @@ fn gamepad_bit(code: u16) -> Option<u32> {
     Some(match code {
         BTN_SOUTH => udp::BTN_A,
         BTN_EAST => udp::BTN_B,
-        BTN_NORTH => udp::BTN_Y,
-        BTN_WEST => udp::BTN_X,
+        // `BTN_NORTH` is `BTN_X` and `BTN_WEST` is `BTN_Y` in the kernel:
+        // the north/west names describe the SNES diamond, not the Xbox one.
+        BTN_NORTH => udp::BTN_X,
+        BTN_WEST => udp::BTN_Y,
         BTN_TL => udp::BTN_LB,
         BTN_TR => udp::BTN_RB,
         BTN_SELECT => udp::BTN_BACK,
@@ -951,8 +955,8 @@ pub fn key_name(code: u16) -> String {
     let name = match code {
         BTN_SOUTH => "A",
         BTN_EAST => "B",
-        BTN_NORTH => "Y",
-        BTN_WEST => "X",
+        BTN_NORTH => "X",
+        BTN_WEST => "Y",
         BTN_TL => "LB",
         BTN_TR => "RB",
         BTN_TL2 => "LT",
@@ -992,4 +996,21 @@ pub fn key_name(code: u16) -> String {
         }
     };
     name.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn face_buttons_follow_the_kernel_alias() {
+        // The kernel names these by the SNES diamond: BTN_NORTH is BTN_X and
+        // BTN_WEST is BTN_Y. hid-steam (Steam Deck) and xpad both report the
+        // physical X there, so the label and the forwarded bit must follow the
+        // alias, not the compass direction.
+        assert_eq!(key_name(BTN_NORTH), "X");
+        assert_eq!(key_name(BTN_WEST), "Y");
+        assert_eq!(gamepad_bit(BTN_NORTH), Some(udp::BTN_X));
+        assert_eq!(gamepad_bit(BTN_WEST), Some(udp::BTN_Y));
+    }
 }

@@ -111,8 +111,8 @@ impl DeckControl {
         match self {
             Self::A => input::BTN_SOUTH,
             Self::B => input::BTN_EAST,
-            Self::X => input::BTN_WEST,
-            Self::Y => input::BTN_NORTH,
+            Self::X => input::BTN_NORTH,
+            Self::Y => input::BTN_WEST,
             Self::DpadUp => input::BTN_DPAD_UP,
             Self::DpadDown => input::BTN_DPAD_DOWN,
             Self::DpadLeft => input::BTN_DPAD_LEFT,

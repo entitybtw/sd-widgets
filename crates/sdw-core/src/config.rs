@@ -1,7 +1,22 @@
 //! Persisted Deck-side configuration.
 
-use crate::model::DeckConfig;
+use crate::model::{DeckConfig, Trigger};
 use std::path::PathBuf;
+
+/// The kernel calls the physical X `BTN_NORTH`/`BTN_X` (0x133) and the physical
+/// Y `BTN_WEST`/`BTN_Y` (0x134). Before 0.7.0 the deck read the compass name
+/// and stored the opposite label, so a bind captured as "Y" holds 0x133. Flip
+/// both codes once, and an old bind keeps the button the user pressed.
+const KEY_X: u16 = 0x133;
+const KEY_Y: u16 = 0x134;
+
+fn flip_face_code(code: &str) -> String {
+    match code.trim().parse::<u16>() {
+        Ok(KEY_X) => KEY_Y.to_string(),
+        Ok(KEY_Y) => KEY_X.to_string(),
+        _ => code.to_string(),
+    }
+}
 
 pub fn path() -> PathBuf {
     crate::util::config_dir().join("deck.json")
@@ -29,6 +44,26 @@ pub fn load() -> DeckConfig {
 /// Material symbol. The palette is handed back to the theme and the name to its
 /// glyph; a value the user actually chose is left alone.
 pub fn migrate(mut cfg: DeckConfig) -> DeckConfig {
+    // Fix the face-button codes first: a file from before 0.7.0 stores the
+    // swapped X/Y pair and must be flipped once.
+    if cfg.input_rev < 1 {
+        for bind in &mut cfg.binds {
+            match &mut bind.trigger {
+                Trigger::Button { code, .. } => {
+                    let next = flip_face_code(code);
+                    *code = next;
+                }
+                Trigger::Combo { codes, .. } => {
+                    for code in codes.iter_mut() {
+                        let next = flip_face_code(code);
+                        *code = next;
+                    }
+                }
+                Trigger::Gesture { .. } => {}
+            }
+        }
+        cfg.input_rev = 1;
+    }
     let clock = &mut cfg.clock;
     let fixed = crate::model::clock_icon(&clock.icon).map(str::to_string);
     match fixed {
@@ -131,6 +166,60 @@ pub fn save(cfg: &DeckConfig) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_face_button_binds_are_flipped_once() {
+        use crate::model::{Action, Bind, Trigger};
+        let mut cfg = DeckConfig::default();
+        cfg.input_rev = 0;
+        cfg.binds = vec![
+            Bind::new(
+                "y",
+                Trigger::Button {
+                    device: "Steam Deck".into(),
+                    // The label the user saw was "Y"; the code was the physical X.
+                    code: "307".into(),
+                    label: "Y".into(),
+                },
+                Action::Page {
+                    page: "home".into(),
+                },
+            ),
+            Bind::new(
+                "x+y",
+                Trigger::Combo {
+                    codes: vec!["308".into(), "307".into(), "306".into()],
+                    label: "X+Y".into(),
+                },
+                Action::Mute,
+            ),
+        ];
+        let cfg = migrate(cfg);
+        assert_eq!(cfg.input_rev, 1);
+        match &cfg.binds[0].trigger {
+            Trigger::Button { code, label, .. } => {
+                // Same physical button, now under its true code and label.
+                assert_eq!(code, "308");
+                assert_eq!(label, "Y");
+            }
+            other => panic!("unexpected trigger {other:?}"),
+        }
+        match &cfg.binds[1].trigger {
+            Trigger::Combo { codes, .. } => assert_eq!(codes, &["307", "308", "306"]),
+            other => panic!("unexpected trigger {other:?}"),
+        }
+        // Running the migration again must not flip them back.
+        let cfg = migrate(cfg);
+        match &cfg.binds[0].trigger {
+            Trigger::Button { code, .. } => assert_eq!(code, "308"),
+            other => panic!("unexpected trigger {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fresh_config_is_already_on_the_new_button_codes() {
+        assert_eq!(DeckConfig::default().input_rev, 1);
+    }
 
     #[test]
     fn clock_follows_theme_by_default() {

@@ -2281,6 +2281,11 @@ pub struct DeckConfig {
     pub active_host: Option<String>,
     #[serde(default)]
     pub binds: Vec<Bind>,
+    /// Button-code revision. Files written before 0.7.0 have 0 and store the
+    /// old, swapped X/Y face-button codes; `config::migrate` flips them once
+    /// and sets this to 1.
+    #[serde(default)]
+    pub input_rev: u32,
     #[serde(default = "default_true")]
     pub global_gestures: bool,
     #[serde(default)]
@@ -2402,6 +2407,7 @@ impl Default for DeckConfig {
             hosts: Vec::new(),
             active_host: None,
             binds: Vec::new(),
+            input_rev: 1,
             global_gestures: true,
             gesture_device: None,
             theme: default_theme(),

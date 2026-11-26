@@ -1350,7 +1350,7 @@ impl App {
                 crate::input::BTN_EAST => self.go_back(ctx),
                 crate::input::BTN_TL => self.nav_step(-1),
                 crate::input::BTN_TR => self.nav_step(1),
-                crate::input::BTN_NORTH => self.set_page(Page::Home),
+                crate::input::BTN_WEST => self.set_page(Page::Home),
                 crate::input::BTN_SELECT => self.set_page(Page::Settings),
                 crate::input::BTN_START => self.set_page(Page::Gamepad),
                 crate::input::BTN_MODE => self.set_page(Page::Home),
@@ -6740,7 +6740,7 @@ fn pad_key(code: u16) -> bool {
         code,
         input::BTN_SOUTH
             | input::BTN_EAST
-            | input::BTN_NORTH
+            | input::BTN_WEST
             | input::BTN_TL
             | input::BTN_TR
             | input::BTN_SELECT
