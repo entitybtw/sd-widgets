@@ -4364,30 +4364,12 @@ impl App {
                     self.toast(t!(self.lang, "нет компьютера", "no computer"), false);
                     return;
                 };
-                // "cover step" is one button like a gate remote; the deck
-                // knows the entity's state and turns it into a real service
-                // here, before the call leaves. When the deck has not loaded
-                // the entity yet, the call keeps `step` and the daemon resolves
-                // it from its own state instead of guessing.
-                let service = if domain == "cover" && service == "step" {
-                    let state = self
-                        .ha
-                        .entities
-                        .iter()
-                        .find(|e| &e.entity_id == entity)
-                        .map(|e| e.state.as_str())
-                        .unwrap_or("");
-                    if state.is_empty() {
-                        "step".to_string()
-                    } else {
-                        sdw_core::ha::cover_step(state).to_string()
-                    }
-                } else {
-                    service.clone()
-                };
+                // "cover step" is one button like a gate remote; the client
+                // resolves it against Home Assistant's live state, so a press
+                // is never decided by a stale cached snapshot.
                 let call = HaCall {
                     domain: domain.clone(),
-                    service,
+                    service: service.clone(),
                     target: if entity.is_empty() {
                         serde_json::Value::Null
                     } else {

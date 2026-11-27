@@ -98,6 +98,103 @@ pub fn cover_step(state: &str) -> &'static str {
     }
 }
 
+/// How long a move sent from a `step` is remembered. Many covers never report
+/// `opening`/`closing` and stay `open` for the whole travel, so the state alone
+/// cannot tell a moving cover from a resting one. The next press within this
+/// window, with the state still where the move started, is a stop.
+const STEP_MOVE_WINDOW: Duration = Duration::from_secs(90);
+
+/// The last move a `step` sent, per installation and entity: when, the state
+/// it started from, and the command. A process-wide map because the deck builds
+/// a fresh client for every call.
+fn step_memory() -> &'static std::sync::Mutex<std::collections::HashMap<String, StepMove>> {
+    static MEMORY: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, StepMove>>,
+    > = std::sync::OnceLock::new();
+    MEMORY.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+struct StepMove {
+    at: std::time::Instant,
+    /// The state the cover reported when the move was sent.
+    from: String,
+    /// The state it will report once the move is done: `open` or `closed`.
+    to: &'static str,
+}
+
+/// The service one press of a one-button cover should send.
+///
+/// `from` is the live state reported a moment ago. A cover that says it is
+/// moving stops; otherwise the press continues the move started by the previous
+/// press while the state has not changed yet, and only then decides by the
+/// state. Without that memory a cover that stays `open` for the whole travel
+/// would be told to close again instead of stopping.
+fn resolve_step(base: &str, entity: &str, state: &str) -> &'static str {
+    let mut all = match step_memory().lock() {
+        Ok(all) => all,
+        Err(e) => e.into_inner(),
+    };
+    all.retain(|_, m| m.at.elapsed() < STEP_MOVE_WINDOW);
+    let key = format!("{base}|{entity}");
+    if matches!(state, "opening" | "closing") {
+        all.remove(&key);
+        return "stop_cover";
+    }
+    if let Some(m) = all.remove(&key) {
+        // A cover that has reached the state its last move was sent towards is
+        // at rest again; only a state it never left means the move is running.
+        if m.from == state && m.to != state {
+            // The cover still reports the state it was in when the last press
+            // sent it moving, so it is that move still running: stop it. A
+            // cover that reports `opening`/`closing` was handled above.
+            return "stop_cover";
+        }
+    }
+    let command = cover_step(state);
+    let to = match command {
+        "open_cover" => Some("open"),
+        "close_cover" => Some("closed"),
+        _ => None,
+    };
+    if let Some(to) = to {
+        all.insert(
+            key,
+            StepMove {
+                at: std::time::Instant::now(),
+                from: state.to_string(),
+                to,
+            },
+        );
+    }
+    command
+}
+
+/// What a press on a one-button cover would send, without sending anything.
+///
+/// Same rule as `resolve_step` but it changes no memory, so a page can label
+/// the button with the command a press would really send: a cover that stays
+/// `open` while it closes still offers "stop".
+pub fn cover_step_preview(entity: &str, state: &str) -> &'static str {
+    if matches!(state, "opening" | "closing") {
+        return "stop_cover";
+    }
+    let all = match step_memory().lock() {
+        Ok(all) => all,
+        Err(e) => e.into_inner(),
+    };
+    let travelling = all.iter().any(|(key, m)| {
+        key.rsplit('|').next() == Some(entity)
+            && m.from == state
+            && m.to != state
+            && m.at.elapsed() < STEP_MOVE_WINDOW
+    });
+    if travelling {
+        "stop_cover"
+    } else {
+        cover_step(state)
+    }
+}
+
 /// True when `service` is a real service for `domain`.
 ///
 /// A scenario arrives from another deck over the network, so the daemon keeps a
@@ -159,6 +256,15 @@ pub fn known_service(domain: &str, service: &str) -> bool {
         _ => &[],
     };
     list.contains(&service)
+}
+
+/// The entity a call targets: a string, or the first of a list.
+fn entity_id_of(target: &Value) -> &str {
+    match target.get("entity_id") {
+        Some(Value::String(s)) => s.as_str(),
+        Some(Value::Array(a)) => a.first().and_then(Value::as_str).unwrap_or(""),
+        _ => "",
+    }
 }
 
 #[derive(Clone)]
@@ -385,7 +491,42 @@ impl HaClient {
         Ok(out)
     }
 
+    /// The state of one entity, read from Home Assistant itself. Used where a
+    /// decision has to be made on what the device is doing *now* rather than
+    /// on a cached snapshot that may be seconds old.
+    pub fn entity_state(&self, entity_id: &str) -> Result<String, String> {
+        let v = self.get(&format!("/api/states/{entity_id}"))?;
+        Ok(v.get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string())
+    }
+
     pub fn call(&self, call: &HaCall) -> Result<Value, String> {
+        // "cover step" is one button like a gate remote: open when closed,
+        // stop while moving, close when open. The state must be read live:
+        // a cached one is already wrong by the time a slow cover has moved,
+        // and a stale "open" turns a press on a closed cover into a close.
+        // Resolving it here keeps every caller honest — the deck, the daemon's
+        // HTTP endpoint and the daemon's own UI all go through this.
+        let mut call = call.clone();
+        if call.domain == "cover" && call.service == "step" {
+            let target = entity_id_of(&call.target);
+            if target.is_empty() {
+                return Err(
+                    "cover step: no entity chosen — pick the cover this button drives".into(),
+                );
+            }
+            // A failed read must not leave the button dead: `toggle` is the
+            // one service Home Assistant can decide for itself.
+            let state = self.entity_state(target).unwrap_or_default();
+            call.service = if state.is_empty() {
+                "toggle".to_string()
+            } else {
+                resolve_step(&self.base, target, &state).to_string()
+            };
+        }
+        let call = &call;
         let mut body = serde_json::Map::new();
         if let Some(t) = call.target.as_object() {
             for (k, v) in t {
@@ -852,6 +993,87 @@ mod tests {
         assert_eq!(service_for("button", "run"), Some("press"));
         assert_eq!(service_for("light", "on"), Some("turn_on"));
         assert_eq!(service_for("sensor", "on"), None);
+    }
+
+    #[test]
+    fn a_second_press_on_a_silent_cover_stops_it() {
+        // Many covers keep reporting `open` for the whole travel. The state
+        // alone then says "close" again, which is the bug where a press did
+        // not stop the curtains. The press after a move from the same state is
+        // a stop, and the press after that starts a new move.
+        let base = "http://cover-memory.test";
+        assert_eq!(resolve_step(base, "cover.one", "open"), "close_cover");
+        assert_eq!(resolve_step(base, "cover.one", "open"), "stop_cover");
+        assert_eq!(resolve_step(base, "cover.one", "open"), "close_cover");
+        // A cover that does report motion stops on the first press.
+        assert_eq!(resolve_step(base, "cover.two", "open"), "close_cover");
+        assert_eq!(resolve_step(base, "cover.two", "closing"), "stop_cover");
+        // And a state change makes the next press follow the state: the cover
+        // finished opening while the memory still said it was closing.
+        assert_eq!(resolve_step(base, "cover.three", "closed"), "open_cover");
+        assert_eq!(resolve_step(base, "cover.three", "open"), "close_cover");
+        // The label reads the same rule without spending the memory, so what
+        // the tile offers is what the press will send.
+        assert_eq!(
+            cover_step_preview("cover.four", "open"),
+            resolve_step(base, "cover.four", "open")
+        );
+        assert_eq!(
+            cover_step_preview("cover.four", "open"),
+            resolve_step(base, "cover.four", "open")
+        );
+        assert_eq!(cover_step_preview("cover.four", "closing"), "stop_cover");
+    }
+
+    #[test]
+    fn a_cover_step_reads_the_live_state_before_it_picks_a_service() {
+        // The bug it guards: a press on a closed cover was decided from a
+        // cached "open" and closed it again instead of opening it. The call
+        // must ask Home Assistant what the cover is doing right now.
+        use std::io::{Read, Write};
+        use std::sync::mpsc;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let first = head.lines().next().unwrap_or("").to_string();
+                let (status, body) = if first.starts_with("GET /api/states/cover.gate") {
+                    ("200 OK", r#"{"entity_id":"cover.gate","state":"closed"}"#)
+                } else if first.starts_with("POST /api/services/cover/open_cover") {
+                    ("200 OK", "[]")
+                } else {
+                    ("404 Not Found", "{}")
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = tx.send(first);
+            }
+        });
+
+        let client = HaClient::new(&format!("http://127.0.0.1:{port}"), "token");
+        let out = client.call(&HaCall {
+            domain: "cover".into(),
+            service: "step".into(),
+            target: json!({ "entity_id": "cover.gate" }),
+            data: Value::Null,
+        });
+        assert!(out.is_ok(), "the resolved call must go through: {out:?}");
+        let first = rx.recv().unwrap();
+        let second = rx.recv().unwrap();
+        assert!(first.contains("/api/states/cover.gate"), "{first}");
+        assert!(
+            second.contains("cover/open_cover"),
+            "a closed cover opens: {second}"
+        );
     }
 
     #[test]

@@ -4839,14 +4839,16 @@ fn ha_card(
                     let position = e.cover_position();
                     ui.horizontal(|ui| {
                         if one_button {
-                            let service = sdw_core::ha::cover_step(&e.state);
-                            // While the cover travels the tile says so, and the
-                            // same button is "stop" — the state the optimistic
-                            // map shows is the one the gate remote expects.
-                            let (text, state) = match service {
-                                "stop_cover" => (t!(lang, "стоп", "stop"), None),
-                                "close_cover" => (t!(lang, "закрыть", "close"), Some("closing")),
-                                _ => (t!(lang, "открыть", "open"), Some("opening")),
+                            // The label follows what a press would send: a
+                            // cover that has been sent moving but still reports
+                            // its old state offers "stop", not "close" again.
+                            // The call itself is resolved at send time, so the
+                            // label never decides the behaviour.
+                            let next = sdw_core::ha::cover_step_preview(&e.entity_id, &e.state);
+                            let text = match next {
+                                "stop_cover" => t!(lang, "стоп", "stop"),
+                                "close_cover" => t!(lang, "закрыть", "close"),
+                                _ => t!(lang, "открыть", "open"),
                             };
                             let resp = ui.add(
                                 egui::Button::new(
@@ -4865,10 +4867,16 @@ fn ha_card(
                                 ))
                                 .clicked()
                             {
+                                // No guessed state here: a guessed "closing"
+                                // would outlive a stop and leave the tile
+                                // offering "stop" for seconds after the cover
+                                // had already stopped. The page reloads the
+                                // entity right after the call, so the real
+                                // state takes over at once.
                                 actions.push(HaAction {
-                                    call: ha_service(e, service, serde_json::Value::Null),
+                                    call: ha_service(e, "step", serde_json::Value::Null),
                                     entity: e.entity_id.clone(),
-                                    state: state.map(str::to_string),
+                                    state: None,
                                 });
                             }
                         }
@@ -4881,10 +4889,14 @@ fn ha_card(
                                 t!(lang, "открыть", "open"),
                             )
                         {
+                            // "opening", not "open": the cover is travelling,
+                            // so the one-button tile must offer "stop" and not
+                            // its opposite. The real state replaces it as soon
+                            // as the sensor reports.
                             actions.push(HaAction {
                                 call: ha_service(e, "open_cover", serde_json::Value::Null),
                                 entity: e.entity_id.clone(),
-                                state: Some("open".into()),
+                                state: Some("opening".into()),
                             });
                         }
                         if ha_icon_button(ui, t, theme::icon::STOP, false, t!(lang, "стоп", "stop"))
@@ -4905,7 +4917,7 @@ fn ha_card(
                             actions.push(HaAction {
                                 call: ha_service(e, "close_cover", serde_json::Value::Null),
                                 entity: e.entity_id.clone(),
-                                state: Some("closed".into()),
+                                state: Some("closing".into()),
                             });
                         }
                         if let Some(current) = position {

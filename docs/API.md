@@ -171,10 +171,15 @@ forever, at full rate and with sound.
 | `POST` | `/api/v1/ha/call` | `{ "domain": "light", "service": "toggle", "entity_id": "light.kitchen" }`. |
 | `POST` | `/api/v1/ha/favorites` | Pin or unpin entities. |
 
-`cover` accepts one extra service, `step`: the daemon reads the cover's state and
-sends `open_cover`, `stop_cover` or `close_cover` itself — the next command of a
-gate-style single button (a moving cover stops, an open one closes, anything else
-opens). It never reaches Home Assistant under that name.
+`cover` accepts one extra service, `step`: the cover's state is read from
+`/api/states/<entity>` at the moment of the call and turned into `open_cover`,
+`stop_cover` or `close_cover` — the next command of a gate-style single button (a
+moving cover stops, an open one closes, anything else opens). The read is live,
+not the cached list, so a cover that has moved since the last poll still gets the
+right command. A cover that keeps reporting `open` for the whole travel (many do
+not report `opening`/`closing`) is handled by memory: a press that finds the
+state unchanged since the previous move sends `stop_cover`, so a second press
+really stops the curtains. `step` never reaches Home Assistant under that name.
 
 ## Remote actions
 

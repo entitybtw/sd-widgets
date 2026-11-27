@@ -35,8 +35,16 @@
   is the next command of the one-button cover mode: a moving cover stops, an
   open one (a partly open one reports `open`) closes, anything else opens.
   `step` is whitelisted for covers, so a scenario or a bind can ask for it;
-  whoever sends the call resolves it, because Home Assistant has no such
-  service.
+  `HaClient::call` reads the cover's state live from `/api/states/<entity>`
+  before it picks the real service, so a stale cached state (an open cover that
+  has since closed) cannot turn a press into the wrong direction. Because many
+  covers keep reporting `open` (or `closed`) for the whole travel instead of
+  `opening`/`closing`, a press that finds the state unchanged since the previous
+  move is a stop: `resolve_step` remembers the last move per installation and
+  entity for 90 s, and `cover_step_preview` reads the same rule (without
+  consuming it) so a tile can label the button with what a press would send.
+  Every caller — the deck, the daemon's HTTP endpoint and its own UI — goes
+  through `HaClient::call`.
 - `update.rs` — release checks and downloads. `Remote` is the source: a
   Forgejo/Gitea instance (`/api/v1/repos/...`) or GitHub (`/api.github.com` or
   an enterprise host's `/api/v3`), read from a repository web address; both
