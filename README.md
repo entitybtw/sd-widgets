@@ -66,7 +66,7 @@ remote — and it looks like a hard-edged, 32 px grid system instead of a phone 
 | **Computers** | LAN discovery, pairing by password, switching between several computers. |
 | **Control** | Lock, sleep, restart, shut down or blank the computer's screen, and start any installed application. |
 | **Bluetooth** | Devices known to the computer: connect, disconnect, pair, trust, forget, and the headphone battery. |
-| **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control, gesture or a quarter of a touchpad. |
+| **Gamepad** | A drawn Steam Deck with every control, live highlighting, and a bind editor for any control, gesture or one of the 64 cells of a touchpad. |
 | **Screen** | The extra monitor stream: start/stop, backend, position, resolution, fps, quality; view-only on the Deck. |
 | **Audio** | The computer's sound, or picked applications, through the Deck speakers; source, quality, volume and confirmations. A cava-style visualizer reads the computer's own mix and is fully adjustable. |
 | **Notifications** | Mirrored desktop notifications, newest first, unread counters; each card slides away with a sideways swipe, and "read all" clears the counters in one press. |

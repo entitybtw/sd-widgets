@@ -1140,60 +1140,234 @@ impl PadSide {
     }
 }
 
-/// One quarter of a touchpad. A pad's surface is a 2×2 grid; a tap or a press
-/// that starts in a part is bound to that part, so one pad can act as four
-/// buttons. `x` grows to the right and `y` down, as on the screen.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PadZone {
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
+/// One part of a touchpad. The surface is an 8×8 grid — fine enough to act as a
+/// touch menu of its own — and a tap or a press belongs to the cell the finger
+/// landed in, so one pad can act as 64 buttons. `x` grows to the right and `y`
+/// down, as on the screen.
+///
+/// `span` is 1 for a cell. A bind written before the grid existed named one of
+/// four quarters; those load as a 4×4 block so they keep covering exactly the
+/// surface they used to. A lookup tries the cell, then the quarter around it,
+/// then the whole pad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PadZone {
+    pub col: u8,
+    pub row: u8,
+    pub span: u8,
 }
 
 impl PadZone {
-    pub const ALL: [Self; 4] = [
-        Self::TopLeft,
-        Self::TopRight,
-        Self::BottomLeft,
-        Self::BottomRight,
-    ];
+    /// Cells per side. Kept a power of two: a quarter is then exactly 4×4.
+    pub const GRID: u8 = 8;
+    /// Side of the block an older "quarter" bind covers.
+    pub const QUARTER: u8 = 4;
+
+    pub fn cell(col: u8, row: u8) -> Self {
+        Self {
+            col: col.min(Self::GRID - 1),
+            row: row.min(Self::GRID - 1),
+            span: 1,
+        }
+    }
 
     /// The part a point belongs to. `x` and `y` are 0..1 across the pad, the
     /// same space the gesture code speaks: `x` grows to the right and `y`
     /// down, as on the screen.
     pub fn from_point(x: f32, y: f32) -> Self {
-        match (x < 0.5, y < 0.5) {
-            (true, true) => Self::TopLeft,
-            (false, true) => Self::TopRight,
-            (true, false) => Self::BottomLeft,
-            (false, false) => Self::BottomRight,
+        let step = |v: f32| -> u8 {
+            let v = v.clamp(0.0, 0.999_9);
+            (v * f32::from(Self::GRID)) as u8
+        };
+        Self::cell(step(x), step(y))
+    }
+
+    /// Every cell of the grid, row by row, for a picker.
+    pub fn all_cells() -> impl Iterator<Item = Self> {
+        (0..Self::GRID).flat_map(|row| (0..Self::GRID).map(move |col| Self::cell(col, row)))
+    }
+
+    pub fn is_cell(self) -> bool {
+        self.span == 1
+    }
+
+    /// The same part inside the grid. A hand-edited config can name a column
+    /// past the edge or a block wider than the space left; neither may panic
+    /// or point at cells that do not exist.
+    pub fn clamped(self) -> Option<Self> {
+        if self.col >= Self::GRID || self.row >= Self::GRID {
+            return None;
         }
+        let room = (Self::GRID - self.col).min(Self::GRID - self.row);
+        Some(Self {
+            col: self.col,
+            row: self.row,
+            span: self.span.clamp(1, room),
+        })
+    }
+
+    /// The old 4×4 quarter this cell sits in, if any bind might still use one.
+    pub fn quarter(self) -> Option<Self> {
+        if self.span >= Self::QUARTER {
+            return None;
+        }
+        Some(Self {
+            col: self.col / Self::QUARTER * Self::QUARTER,
+            row: self.row / Self::QUARTER * Self::QUARTER,
+            span: Self::QUARTER,
+        })
+    }
+
+    /// The old name of a block that is exactly one of the four quarters, if it
+    /// is one. Used for the id, the label and the stored form, so a quarter
+    /// written before the grid existed reads and writes exactly as it did.
+    pub fn quarter_name(self) -> Option<&'static str> {
+        if self.span != Self::QUARTER
+            || self.col % Self::QUARTER != 0
+            || self.row % Self::QUARTER != 0
+        {
+            return None;
+        }
+        Some(match (self.col < Self::QUARTER, self.row < Self::QUARTER) {
+            (true, true) => "tl",
+            (false, true) => "tr",
+            (true, false) => "bl",
+            (false, false) => "br",
+        })
     }
 
     /// Short, stable suffix for a bind id.
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::TopLeft => "tl",
-            Self::TopRight => "tr",
-            Self::BottomLeft => "bl",
-            Self::BottomRight => "br",
+    pub fn key(self) -> String {
+        if let Some(name) = self.quarter_name() {
+            return name.to_string();
+        }
+        if self.span == 1 {
+            format!("c{}r{}", self.col, self.row)
+        } else {
+            format!("c{}r{}s{}", self.col, self.row, self.span)
         }
     }
 
-    pub fn label(self) -> &'static str {
+    /// Read a key back. Accepts the compact form written today and the four
+    /// quarter names older configs carry.
+    pub fn from_key(key: &str) -> Option<Self> {
+        match key.trim() {
+            "tl" | "top_left" => {
+                return Some(Self {
+                    col: 0,
+                    row: 0,
+                    span: Self::QUARTER,
+                })
+            }
+            "tr" | "top_right" => {
+                return Some(Self {
+                    col: Self::QUARTER,
+                    row: 0,
+                    span: Self::QUARTER,
+                })
+            }
+            "bl" | "bottom_left" => {
+                return Some(Self {
+                    col: 0,
+                    row: Self::QUARTER,
+                    span: Self::QUARTER,
+                })
+            }
+            "br" | "bottom_right" => {
+                return Some(Self {
+                    col: Self::QUARTER,
+                    row: Self::QUARTER,
+                    span: Self::QUARTER,
+                })
+            }
+            _ => {}
+        }
+        let rest = key.trim().strip_prefix('c')?;
+        let (col, rest) = rest.split_once('r')?;
+        let (row, span) = match rest.split_once('s') {
+            Some((row, span)) => (row, Some(span)),
+            None => (rest, None),
+        };
+        let zone = Self {
+            col: col.parse::<u8>().ok()?,
+            row: row.parse::<u8>().ok()?,
+            span: span.map(|s| s.parse().ok()).unwrap_or(Some(1))?,
+        };
+        zone.clamped()
+    }
+
+    pub fn label(self) -> String {
         self.label_lang(crate::i18n::Lang::Ru)
     }
 
-    pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
-        match self {
-            Self::TopLeft => crate::t!(lang, "верхний левый", "top left"),
-            Self::TopRight => crate::t!(lang, "верхний правый", "top right"),
-            Self::BottomLeft => crate::t!(lang, "нижний левый", "bottom left"),
-            Self::BottomRight => crate::t!(lang, "нижний правый", "bottom right"),
+    pub fn label_lang(self, lang: crate::i18n::Lang) -> String {
+        if let Some(name) = self.quarter_name() {
+            return match name {
+                "tl" => crate::t!(lang, "верхний левый", "top left").to_string(),
+                "tr" => crate::t!(lang, "верхний правый", "top right").to_string(),
+                "bl" => crate::t!(lang, "нижний левый", "bottom left").to_string(),
+                _ => crate::t!(lang, "нижний правый", "bottom right").to_string(),
+            };
+        }
+        // Counting from one: the picker and the label speak the same numbers.
+        if self.span > 1 {
+            return format!(
+                "{} {}×{} · {}×{}",
+                crate::t!(lang, "клетка", "cell"),
+                self.col as u16 + 1,
+                self.row as u16 + 1,
+                self.span,
+                self.span
+            );
+        }
+        format!(
+            "{} {}×{}",
+            crate::t!(lang, "клетка", "cell"),
+            self.col as u16 + 1,
+            self.row as u16 + 1
+        )
+    }
+}
+
+impl Serialize for PadZone {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        // A quarter keeps the long name it was written with before the grid
+        // existed, so a config survives a downgrade; a cell has no older form.
+        let name = match self.quarter_name() {
+            Some("tl") => "top_left",
+            Some("tr") => "top_right",
+            Some("bl") => "bottom_left",
+            Some("br") => "bottom_right",
+            _ => return s.serialize_str(&self.key()),
+        };
+        s.serialize_str(name)
+    }
+}
+
+impl<'de> Deserialize<'de> for PadZone {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire {
+            Key(String),
+            Cell {
+                col: u8,
+                row: u8,
+                #[serde(default = "one_span")]
+                span: u8,
+            },
+        }
+        match Wire::deserialize(d)? {
+            Wire::Key(key) => Self::from_key(&key)
+                .ok_or_else(|| serde::de::Error::custom(format!("unknown touchpad part {key:?}"))),
+            Wire::Cell { col, row, span } => Self { col, row, span }.clamped().ok_or_else(|| {
+                serde::de::Error::custom(format!("touchpad cell {col}×{row} is off the grid"))
+            }),
         }
     }
+}
+
+fn one_span() -> u8 {
+    1
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1262,7 +1436,6 @@ impl GestureSpec {
             None => base,
         }
     }
-
     /// A tap on one part of a pad. Both a light touch and a pad press resolve
     /// to this, so the part answers whichever way it is hit.
     pub fn pad_part(side: PadSide, zone: PadZone) -> Self {
@@ -1282,6 +1455,27 @@ impl GestureSpec {
             zone: None,
             ..*self
         }
+    }
+
+    /// The ids to try for this gesture, most specific first: the cell, then
+    /// the quarter around it, then the whole pad. A bind for any of them
+    /// still works, so a grid cell never orphans a bind made earlier.
+    pub fn lookup_ids(&self) -> Vec<String> {
+        let mut ids = vec![self.id()];
+        if let Some(zone) = self.zone {
+            if let Some(quarter) = zone.quarter() {
+                ids.push(
+                    Self {
+                        zone: Some(quarter),
+                        ..*self
+                    }
+                    .id(),
+                );
+            }
+            ids.push(self.whole_pad().id());
+        }
+        ids.dedup();
+        ids
     }
     pub fn label(&self) -> String {
         self.label_lang(crate::i18n::Lang::Ru)
@@ -2608,5 +2802,93 @@ pub fn platform() -> &'static str {
         "linux"
     } else {
         "unknown"
+    }
+}
+
+#[cfg(test)]
+mod pad_zone_tests {
+    use super::*;
+
+    #[test]
+    fn a_cell_is_written_compactly_and_reads_back() {
+        let cell = PadZone::cell(5, 1);
+        let json = serde_json::to_string(&cell).unwrap();
+        assert_eq!(json, "\"c5r1\"");
+        assert_eq!(serde_json::from_str::<PadZone>(&json).unwrap(), cell);
+    }
+
+    #[test]
+    fn a_quarter_keeps_the_name_an_older_config_used() {
+        // A config written by 0.7.6 says "top_left"; an older file must load as
+        // the 4×4 block it was, and the id keeps the short key.
+        for (shared, col, row, key, name) in [
+            (
+                PadZone::cell(0, 0).quarter().unwrap(),
+                0,
+                0,
+                "tl",
+                "top_left",
+            ),
+            (
+                PadZone::cell(7, 0).quarter().unwrap(),
+                4,
+                0,
+                "tr",
+                "top_right",
+            ),
+            (
+                PadZone::cell(0, 7).quarter().unwrap(),
+                0,
+                4,
+                "bl",
+                "bottom_left",
+            ),
+            (
+                PadZone::cell(7, 7).quarter().unwrap(),
+                4,
+                4,
+                "br",
+                "bottom_right",
+            ),
+        ] {
+            assert_eq!((shared.col, shared.row), (col, row));
+            assert_eq!(shared.key(), key);
+            let json = serde_json::to_string(&shared).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<PadZone>(&json).unwrap(), shared);
+        }
+        assert_eq!(
+            serde_json::from_str::<PadZone>("\"tr\"").unwrap(),
+            PadZone::cell(7, 1).quarter().unwrap()
+        );
+        assert!(serde_json::from_str::<PadZone>("\"middle\"").is_err());
+    }
+
+    #[test]
+    fn a_hand_edited_part_stays_inside_the_grid() {
+        // A config can be edited by hand. A column past the edge must not point
+        // at a cell that does not exist, and a block must not run off the pad.
+        assert!(serde_json::from_str::<PadZone>("\"c9r0\"").is_err());
+        assert!(serde_json::from_str::<PadZone>("\"c0r99\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<PadZone>("\"c7r7s8\"").unwrap(),
+            PadZone::cell(7, 7)
+        );
+        assert_eq!(
+            serde_json::from_str::<PadZone>("\"c6r6s4\"").unwrap(),
+            PadZone {
+                col: 6,
+                row: 6,
+                span: 2
+            }
+        );
+    }
+
+    #[test]
+    fn a_cell_knows_the_quarter_it_sits_in() {
+        assert_eq!(PadZone::cell(0, 0).quarter().unwrap().key(), "tl");
+        assert_eq!(PadZone::cell(3, 3).quarter().unwrap().key(), "tl");
+        assert_eq!(PadZone::cell(4, 3).quarter().unwrap().key(), "tr");
+        assert_eq!(PadZone::cell(7, 7).quarter().unwrap().key(), "br");
     }
 }

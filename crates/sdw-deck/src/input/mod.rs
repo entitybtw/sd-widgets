@@ -1198,8 +1198,8 @@ struct PadState {
     start: (f32, f32),
     last: (f32, f32),
     /// The part of the pad this touch is in, from where it started. A click
-    /// resolves through it too, so the same press means one thing in each
-    /// quarter of the pad.
+    /// resolves through it too, so the same press means one thing in each cell
+    /// of the pad.
     zone: Option<PadZone>,
     /// Farthest point from `start` and how far it is. Using the farthest point
     /// instead of the last one means a curved swipe or a swipe that comes back
@@ -1344,10 +1344,15 @@ impl PadTracker {
                 st.reach_at = point;
                 st.travel = 0.0;
                 // The part is fixed by where the finger landed, not by where
-                // it ends: dragging out of a quarter must not move the tap.
+                // it ends: dragging out of a cell must not move the tap.
                 st.zone = Some(PadZone::from_point(point.0, point.1));
+                // A click that already fired without a position stays fired:
+                // the coordinate arriving a moment later must not run the same
+                // press again, this time on its cell.
                 st.click_seen = st.clicked;
-                st.click_sent = false;
+                if !st.click_seen {
+                    st.click_sent = false;
+                }
             }
             // A hard press is a tap on the part it went down in, so pressing
             // an edge of the pad runs that edge's bind. It is resolved here,
@@ -2104,20 +2109,20 @@ mod tests {
         let mut pads = PadTracker::new();
         let t0 = Instant::now();
         // The click bit and the touch bit arrive together; the press is the
-        // action, and it goes to the part the finger is in. The release must
+        // action, and it goes to the cell the finger is in. The release must
         // not fire a second, whole-pad tap on top of it.
         pads.click(PadSide::Left, true);
         let g = pads
-            .feed(PadSide::Left, -0.5, -0.5, true, t0)
+            .feed(PadSide::Left, -0.6, -0.6, true, t0)
             .expect("the press resolves a part");
         assert_eq!(g.kind, GestureKind::Tap);
         assert_eq!(g.pad, Some(PadSide::Left));
-        assert_eq!(g.zone, Some(PadZone::TopLeft));
+        assert_eq!(g.zone, Some(PadZone::cell(1, 1)));
         assert!(pads
             .feed(
                 PadSide::Left,
-                -0.5,
-                -0.5,
+                -0.6,
+                -0.6,
                 false,
                 t0 + Duration::from_millis(90),
             )
@@ -2128,7 +2133,7 @@ mod tests {
             .feed(
                 PadSide::Left,
                 -0.5,
-                -0.6,
+                -0.5,
                 true,
                 t0 + Duration::from_millis(500)
             )
@@ -2137,13 +2142,13 @@ mod tests {
             .feed(
                 PadSide::Left,
                 -0.5,
-                -0.6,
+                -0.5,
                 false,
                 t0 + Duration::from_millis(560),
             )
             .expect("a later tap");
         assert_eq!(g.kind, GestureKind::Tap);
-        assert_eq!(g.zone, Some(PadZone::TopLeft));
+        assert_eq!(g.zone, Some(PadZone::cell(2, 2)));
     }
 
     #[test]
@@ -2170,6 +2175,17 @@ mod tests {
                 t0 + Duration::from_millis(40)
             )
             .is_none());
+        // The coordinate arriving after the press fired must not run the same
+        // press a second time, this time on its cell.
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                -0.6,
+                -0.6,
+                true,
+                t0 + Duration::from_millis(60)
+            )
+            .is_none());
     }
 
     #[test]
@@ -2182,7 +2198,8 @@ mod tests {
         let press = pads
             .feed(PadSide::Right, -0.7, 0.7, true, t0)
             .expect("the press");
-        assert_eq!(press.zone, Some(PadZone::BottomLeft));
+        // x -0.7 is 0.15 across, y 0.7 is 0.85 down: column 1, row 6.
+        assert_eq!(press.zone, Some(PadZone::cell(1, 6)));
         // A long slide after the press stays quiet.
         for step in 1..12 {
             let x = -0.7 + step as f32 * 0.12;
@@ -2228,9 +2245,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pad_part_keeps_the_whole_pad_id_as_its_prefix() {
-        // A bind for the whole pad must stay an id of its own, so a part's id
-        // can fall back to it without ever matching it directly.
+    fn a_pad_cell_and_a_quarter_are_different_binds() {
         let whole = GestureSpec {
             kind: GestureKind::Tap,
             fingers: 1,
@@ -2239,38 +2254,43 @@ mod tests {
             zone: None,
         };
         assert_eq!(whole.id(), "1f-tap@left");
-        let part = GestureSpec::pad_part(PadSide::Left, PadZone::TopRight);
-        assert_eq!(part.id(), "1f-tap@left:tr");
-        assert_ne!(part.id(), whole.id());
-        // The fallback drops only the part.
-        assert_eq!(part.whole_pad().id(), whole.id());
-        assert!(part.label().contains("верхний правый"));
-        assert!(!whole.label().contains("верхний правый"));
+        let cell = GestureSpec::pad_part(PadSide::Left, PadZone::cell(5, 1));
+        assert_eq!(cell.id(), "1f-tap@left:c5r1");
+        assert_ne!(cell.id(), whole.id());
+        // A bind written before the grid named a quarter; its id is unchanged.
+        let quarter = GestureSpec {
+            zone: PadZone::from_key("tr"),
+            ..whole
+        };
+        assert_eq!(quarter.id(), "1f-tap@left:tr");
+        assert!(quarter.label().contains("верхний правый"));
+        assert!(cell.label().contains("6×2"), "{}", cell.label());
     }
 
     #[test]
-    fn every_part_of_a_pad_gets_its_own_id() {
-        let mut ids: Vec<String> = PadZone::ALL
-            .iter()
-            .map(|z| GestureSpec::pad_part(PadSide::Right, *z).id())
+    fn every_cell_of_a_pad_gets_its_own_id() {
+        let mut ids: Vec<String> = PadZone::all_cells()
+            .map(|z| GestureSpec::pad_part(PadSide::Right, z).id())
             .collect();
+        assert_eq!(ids.len(), 64, "an 8x8 pad is 64 cells");
         let count = ids.len();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), count, "each part is a different bind");
+        assert_eq!(ids.len(), count, "each cell is a different bind");
     }
 
     #[test]
     fn a_part_is_taken_from_where_the_finger_lands() {
-        // The pad's own coordinates, so the halves are the visual ones.
-        assert_eq!(PadZone::from_point(0.1, 0.1), PadZone::TopLeft);
-        assert_eq!(PadZone::from_point(0.9, 0.1), PadZone::TopRight);
-        assert_eq!(PadZone::from_point(0.1, 0.9), PadZone::BottomLeft);
-        assert_eq!(PadZone::from_point(0.9, 0.9), PadZone::BottomRight);
+        // 0..1 across the pad, the space the gesture code speaks.
+        assert_eq!(PadZone::from_point(0.0, 0.0), PadZone::cell(0, 0));
+        assert_eq!(PadZone::from_point(0.2, 0.2), PadZone::cell(1, 1));
+        assert_eq!(PadZone::from_point(0.99, 0.01), PadZone::cell(7, 0));
+        // The edges belong to their cell, not to the one before or a panic.
+        assert_eq!(PadZone::from_point(1.0, 1.0), PadZone::cell(7, 7));
     }
 
     #[test]
-    fn a_press_and_a_light_tap_on_the_same_part_agree() {
+    fn a_press_and_a_light_tap_on_the_same_cell_agree() {
         // Both ways of hitting a pad must resolve to the same part, otherwise
         // a bind would work with a press and not with a touch.
         let mut pads = PadTracker::new();
@@ -2313,22 +2333,55 @@ mod tests {
     }
 
     #[test]
-    fn dragging_into_another_part_keeps_the_one_it_started_in() {
-        // A finger that lands in one quarter and moves is still that quarter's
-        // press when it lifts; the movement is a swipe, not a moved tap.
+    fn dragging_into_another_cell_keeps_the_one_it_started_in() {
+        // A finger that lands in one cell and moves is still that cell's tap
+        // when it lifts; the movement is a swipe, not a moved tap.
         let mut pads = PadTracker::new();
         let t0 = Instant::now();
         assert!(pads.feed(PadSide::Left, -0.6, -0.6, true, t0).is_none());
+        // A tiny slide across the cell boundary at 0.25, well under the swipe
+        // threshold: the tap must still be the cell it started in.
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                -0.50,
+                -0.6,
+                true,
+                t0 + Duration::from_millis(40)
+            )
+            .is_none());
         let g = pads
             .feed(
                 PadSide::Left,
-                -0.6,
+                -0.50,
                 -0.6,
                 false,
                 t0 + Duration::from_millis(70),
             )
             .expect("a tap");
-        assert_eq!(g.zone, Some(PadZone::TopLeft));
+        assert_eq!(g.kind, GestureKind::Tap);
+        assert_eq!(g.zone, Some(PadZone::cell(1, 1)));
+        // The coordinate now sits in cell 2, so a test that only looked at the
+        // lift point would be wrong.
+        assert_eq!(
+            PadZone::from_point((-0.50 + 1.0) * 0.5, 0.2),
+            PadZone::cell(2, 1)
+        );
+    }
+
+    #[test]
+    fn a_cell_falls_back_to_its_quarter_then_the_whole_pad() {
+        // A bind made for a quarter or for the whole pad must keep working
+        // inside the finer grid, so the lookup tries the cell first and then
+        // widens instead of dead-ending.
+        let cell = GestureSpec::pad_part(PadSide::Left, PadZone::cell(5, 1));
+        let ids = cell.lookup_ids();
+        assert_eq!(ids[0], "1f-tap@left:c5r1");
+        assert_eq!(ids[1], "1f-tap@left:tr");
+        assert_eq!(ids[2], "1f-tap@left");
+        // A whole-pad gesture has nowhere wider to go.
+        let whole = cell.whole_pad();
+        assert_eq!(whole.lookup_ids(), vec!["1f-tap@left".to_string()]);
     }
 
     #[cfg(target_os = "linux")]

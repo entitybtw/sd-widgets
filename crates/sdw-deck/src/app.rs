@@ -4486,30 +4486,24 @@ impl App {
                 if self.gamepad_on {
                     return;
                 }
-                let id = spec.id();
-                let mut hit = self
-                    .cfg
-                    .binds
-                    .iter()
-                    .find(|b| {
-                        b.enabled
-                            && matches!(&b.trigger, Trigger::Gesture { spec: s } if s.id() == id)
-                    })
-                    .cloned();
-                // A part of a pad answers first; the whole pad is its
-                // fallback, so a bind for the entire pad still works after
-                // one quarter has been given its own action.
-                if hit.is_none() && spec.zone.is_some() {
-                    let whole = spec.whole_pad().id();
+                // A cell answers first, then the quarter around it, then the
+                // whole pad, so a bind made at any of those levels still works
+                // after a finer one exists.
+                let ids = spec.lookup_ids();
+                let mut hit = None;
+                for id in &ids {
                     hit = self
                         .cfg
                         .binds
                         .iter()
                         .find(|b| {
                             b.enabled
-                                && matches!(&b.trigger, Trigger::Gesture { spec: s } if s.id() == whole)
+                                && matches!(&b.trigger, Trigger::Gesture { spec: s } if &s.id() == id)
                         })
                         .cloned();
+                    if hit.is_some() {
+                        break;
+                    }
                 }
                 if let Some(bind) = hit {
                     if let (Some(side), Some(_)) = (spec.pad, spec.zone) {

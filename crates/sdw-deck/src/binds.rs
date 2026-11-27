@@ -838,10 +838,11 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         }
                         spec.pad = pad;
                     });
-                    // Which part of that pad. A tap or a press in a quarter
-                    // runs that quarter's bind before the whole pad's, so one
-                    // pad can act as four buttons.
-                    if spec.pad.is_some() && matches!(spec.kind, GestureKind::Tap | GestureKind::LongPress)
+                    // Which part of that pad. A tap or a press in a cell
+                    // runs that cell's bind before the quarter's and then the
+                    // whole pad's, so one pad can act as up to 64 buttons.
+                    if spec.pad.is_some()
+                        && matches!(spec.kind, GestureKind::Tap | GestureKind::LongPress)
                     {
                         ui.horizontal(|ui| {
                             ui.label(
@@ -849,27 +850,101 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                                     .size(12.0)
                                     .color(t.muted),
                             );
-                            let mut zone = spec.zone;
                             if ui
                                 .selectable_label(
-                                    zone.is_none(),
+                                    spec.zone.is_none(),
                                     t!(lang, "вся панель", "whole pad"),
                                 )
                                 .clicked()
                             {
-                                zone = None;
+                                spec.zone = None;
                             }
-                            for z in PadZone::ALL {
-                                if ui.selectable_label(zone == Some(z), z.label_lang(lang)).clicked()
-                                {
-                                    zone = Some(z);
-                                }
-                            }
-                            spec.zone = zone;
+                            let current = spec.zone.map(|z| z.label_lang(lang));
+                            ui.label(
+                                RichText::new(match &current {
+                                    None => t!(lang, "вся панель", "whole pad").to_string(),
+                                    Some(label) => label.clone(),
+                                })
+                                .family(FontFamily::Monospace)
+                                .size(11.5)
+                                .color(t.faint),
+                            );
                         });
+                        // The 8×8 grid the pad is bound by, fine enough to act
+                        // as a touch menu of its own. Clicking a cell picks it;
+                        // a part from an older config fills the whole block it
+                        // covers, so it is clear that it still answers there.
+                        let cell = 15.0;
+                        let mut zone = spec.zone;
+                        let covered = |zone: Option<PadZone>, part: PadZone| -> bool {
+                            zone.is_some_and(|z| {
+                                part.col >= z.col
+                                    && part.col < z.col.saturating_add(z.span)
+                                    && part.row >= z.row
+                                    && part.row < z.row.saturating_add(z.span)
+                            })
+                        };
+                        ui.vertical(|ui| {
+                            for row in 0..PadZone::GRID {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    for col in 0..PadZone::GRID {
+                                        let z = PadZone::cell(col, row);
+                                        let chosen = zone == Some(z);
+                                        let (rect, resp) = ui.allocate_exact_size(
+                                            egui::vec2(cell, cell),
+                                            egui::Sense::click(),
+                                        );
+                                        let fill = if chosen {
+                                            t.accent
+                                        } else if covered(zone, z) {
+                                            t.accent.gamma_multiply(0.35)
+                                        } else if resp.hovered() {
+                                            t.well
+                                        } else {
+                                            Color32::TRANSPARENT
+                                        };
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            CornerRadius::ZERO,
+                                            fill,
+                                        );
+                                        ui.painter().rect_stroke(
+                                            rect,
+                                            CornerRadius::ZERO,
+                                            Stroke::new(1.0, t.line.gamma_multiply(0.7)),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                        if resp.clicked() {
+                                            zone = if chosen { None } else { Some(z) };
+                                        }
+                                        let tip = z.label_lang(lang);
+                                        resp.on_hover_text(tip);
+                                    }
+                                });
+                            }
+                        });
+                        // A quarter from an older config covers 4×4 cells; the
+                        // grid shows the cell, but the bind keeps working on
+                        // the whole quarter, so say so rather than silently
+                        // shrinking it to one cell.
+                        if let Some(z) = zone {
+                            if !z.is_cell() {
+                                ui.label(
+                                    RichText::new(t!(
+                                        lang,
+                                        "старая четверть: работает на всю четверть",
+                                        "an older quarter: it covers the whole quarter"
+                                    ))
+                                    .size(11.0)
+                                    .color(t.faint),
+                                );
+                            }
+                        }
+                        spec.zone = zone;
                     } else if spec.pad.is_none() {
-                        // The glass has no quarters: dropping the pad must not
-                        // leave a part behind, or the id would stop matching.
+                        // The glass has no parts: dropping the pad must not
+                        // leave one behind, or the id would stop matching.
                         spec.zone = None;
                     }
                     if kind != spec.kind
@@ -877,7 +952,13 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         || (kind == GestureKind::Swipe && Some(dir) != spec.dir)
                     {
                         let pad = spec.pad;
-                        let zone = spec.zone;
+                        // Only a tap or a long press lands in a cell; a swipe
+                        // covers the whole pad, and a stray cell would make its
+                        // id impossible to match.
+                        let zone = match kind {
+                            GestureKind::Tap | GestureKind::LongPress => spec.zone,
+                            _ => None,
+                        };
                         *spec = GestureSpec {
                             kind,
                             fingers,

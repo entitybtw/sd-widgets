@@ -1048,62 +1048,46 @@ fn trackpad(
         Stroke::new(1.0, if active { t.accent } else { t.line }),
         egui::StrokeKind::Inside,
     );
-    // hairlines so it reads as a trackpad, not a button
-    for i in 1..4 {
-        let x = rect.left() + rect.width() * i as f32 / 4.0;
-        p.line_segment(
-            [
-                Pos2::new(x, rect.top() + 8.0),
-                Pos2::new(x, rect.bottom() - 8.0),
-            ],
-            Stroke::new(1.0, t.line.gamma_multiply(0.55)),
+    // The 8×8 grid the pad is bound by: a hairline per cell, the lines on the
+    // quarters a touch stronger so the surface still reads as four areas at a
+    // glance, and the cell under a finger filled in. The lines and the live dot
+    // share one inset area, so the filled cell is the one under the dot.
+    let zone_alpha = if touch.is_some() { 0.75 } else { 0.28 };
+    let grid = f32::from(sdw_core::model::PadZone::GRID);
+    let inset = rect.width() * 0.12;
+    let area = rect.shrink2(Vec2::new(inset, inset));
+    for i in 1..sdw_core::model::PadZone::GRID {
+        let strong = i % sdw_core::model::PadZone::QUARTER == 0;
+        let stroke = Stroke::new(
+            1.0,
+            t.line
+                .gamma_multiply(if strong { zone_alpha } else { 0.12 }),
         );
-        let y = rect.top() + rect.height() * i as f32 / 4.0;
+        let x = area.left() + area.width() * f32::from(i) / grid;
         p.line_segment(
-            [
-                Pos2::new(rect.left() + 8.0, y),
-                Pos2::new(rect.right() - 8.0, y),
-            ],
-            Stroke::new(1.0, t.line.gamma_multiply(0.55)),
+            [Pos2::new(x, area.top()), Pos2::new(x, area.bottom())],
+            stroke,
+        );
+        let y = area.top() + area.height() * f32::from(i) / grid;
+        p.line_segment(
+            [Pos2::new(area.left(), y), Pos2::new(area.right(), y)],
+            stroke,
         );
     }
-    // The quarters the pad is bound by: the middle lines run corner to corner
-    // so the four parts read as one grid, and the part under a finger is
-    // filled in. A pad used as one surface leaves them faint.
-    let zone_alpha = if touch.is_some() { 0.75 } else { 0.35 };
-    p.line_segment(
-        [
-            Pos2::new(rect.left(), rect.center().y),
-            Pos2::new(rect.right(), rect.center().y),
-        ],
-        Stroke::new(1.0, t.line.gamma_multiply(zone_alpha)),
-    );
-    p.line_segment(
-        [
-            Pos2::new(rect.center().x, rect.top()),
-            Pos2::new(rect.center().x, rect.bottom()),
-        ],
-        Stroke::new(1.0, t.line.gamma_multiply(zone_alpha)),
-    );
     if let Some((x, y)) = touch {
         let zone = sdw_core::model::PadZone::from_point((x + 1.0) * 0.5, (y + 1.0) * 0.5);
-        let (left, top) = match zone {
-            sdw_core::model::PadZone::TopLeft => (true, true),
-            sdw_core::model::PadZone::TopRight => (false, true),
-            sdw_core::model::PadZone::BottomLeft => (true, false),
-            sdw_core::model::PadZone::BottomRight => (false, false),
-        };
-        let zr = Rect::from_min_max(
+        // Same band the live dot is drawn in, so the filled cell is the one
+        // under that dot.
+        let cw = area.width() / grid;
+        let ch = area.height() / grid;
+        let zr = Rect::from_min_size(
             Pos2::new(
-                if left { rect.left() } else { rect.center().x },
-                if top { rect.top() } else { rect.center().y },
+                area.left() + cw * f32::from(zone.col),
+                area.top() + ch * f32::from(zone.row),
             ),
-            Pos2::new(
-                if left { rect.center().x } else { rect.right() },
-                if top { rect.center().y } else { rect.bottom() },
-            ),
+            Vec2::new(cw, ch),
         );
-        p.rect_filled(zr, CornerRadius::ZERO, t.accent.gamma_multiply(0.14));
+        p.rect_filled(zr, CornerRadius::ZERO, t.accent.gamma_multiply(0.55));
     }
     p.text(
         rect.center(),
@@ -1115,8 +1099,6 @@ fn trackpad(
     // The live touch point: a small hard square with a hairline crosshair, so
     // a finger on the exact centre is visible as "here", not as "nothing".
     if let Some((x, y)) = touch {
-        let inset = rect.width() * 0.12;
-        let area = rect.shrink2(Vec2::new(inset, inset));
         let pos = Pos2::new(
             area.left() + (x.clamp(-1.0, 1.0) + 1.0) * 0.5 * area.width(),
             area.top() + (y.clamp(-1.0, 1.0) + 1.0) * 0.5 * area.height(),
