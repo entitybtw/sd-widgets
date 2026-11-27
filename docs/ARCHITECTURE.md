@@ -103,7 +103,17 @@
   pad's pressure (bytes 56–60, which the kernel reads but does not use); the app
   shows it, with the raw touch bit and the live position, on the input card, so
   a light touch that produces no gesture can be diagnosed on the Deck itself.
-  A recording session listens to
+  A tap or a long press also carries the part of the pad it landed in
+  (`zone: Option<PadZone>`, a 2×2 grid in `PadZone::from_point`): the quarter is
+  fixed when the finger lands, so dragging into another quarter does not move
+  the bind, and a part's id is the whole pad's plus `:tl`, `:tr`, `:bl` or
+  `:br` (`1f-tap@left:tr`). In a part of a pad only the middle matters: a press
+  is a tap on that part, and one press is one action, never a press followed by
+  a swipe or a tap from the same finger. A press with no usable position (the
+  evdev node zeroes the axes on a lift) still fires the whole pad, so a quick
+  press is not lost. The app looks up the part's bind first and falls back to
+  the whole pad's id, so giving one quarter its own action leaves the rest of
+  the pad on its old bind. A recording session listens to
   both sources: the kernel touch tracker and the window's own touch or pointer
   drag. The window is what actually works when the compositor turns the
   touchscreen into a mouse or the touch device is grabbed, and a single gesture

@@ -10,7 +10,8 @@ use eframe::egui::{
     Vec2,
 };
 use sdw_core::model::{
-    random_id, Action, Bind, GestureKind, GestureSpec, HaEntity, PadSide, SwipeDir, Trigger,
+    random_id, Action, Bind, GestureKind, GestureSpec, HaEntity, PadSide, PadZone, SwipeDir,
+    Trigger,
 };
 use sdw_core::{t, Lang};
 
@@ -179,6 +180,7 @@ impl BindEditor {
                     fingers: 3,
                     dir: Some(SwipeDir::Left),
                     pad: None,
+                    zone: None,
                 },
             },
             action: Action::None,
@@ -572,6 +574,7 @@ fn seed_defaults(app: &mut App) {
                     fingers: 3,
                     dir: Some(SwipeDir::Right),
                     pad: None,
+                    zone: None,
                 },
             },
             Action::Page {
@@ -590,6 +593,7 @@ fn seed_defaults(app: &mut App) {
                     fingers: 4,
                     dir: Some(SwipeDir::Down),
                     pad: None,
+                    zone: None,
                 },
             },
             Action::Page {
@@ -834,16 +838,52 @@ pub fn editor_ui(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         }
                         spec.pad = pad;
                     });
+                    // Which part of that pad. A tap or a press in a quarter
+                    // runs that quarter's bind before the whole pad's, so one
+                    // pad can act as four buttons.
+                    if spec.pad.is_some() && matches!(spec.kind, GestureKind::Tap | GestureKind::LongPress)
+                    {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(t!(lang, "часть панели", "pad part"))
+                                    .size(12.0)
+                                    .color(t.muted),
+                            );
+                            let mut zone = spec.zone;
+                            if ui
+                                .selectable_label(
+                                    zone.is_none(),
+                                    t!(lang, "вся панель", "whole pad"),
+                                )
+                                .clicked()
+                            {
+                                zone = None;
+                            }
+                            for z in PadZone::ALL {
+                                if ui.selectable_label(zone == Some(z), z.label_lang(lang)).clicked()
+                                {
+                                    zone = Some(z);
+                                }
+                            }
+                            spec.zone = zone;
+                        });
+                    } else if spec.pad.is_none() {
+                        // The glass has no quarters: dropping the pad must not
+                        // leave a part behind, or the id would stop matching.
+                        spec.zone = None;
+                    }
                     if kind != spec.kind
                         || fingers != spec.fingers
                         || (kind == GestureKind::Swipe && Some(dir) != spec.dir)
                     {
                         let pad = spec.pad;
+                        let zone = spec.zone;
                         *spec = GestureSpec {
                             kind,
                             fingers,
                             dir: (kind == GestureKind::Swipe).then_some(dir),
                             pad,
+                            zone,
                         };
                     }
                     ui.label(

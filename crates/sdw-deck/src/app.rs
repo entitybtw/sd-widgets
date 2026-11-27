@@ -626,6 +626,7 @@ impl TouchTrack {
                         SwipeDir::Right
                     }),
                     pad: None,
+                    zone: None,
                 });
             }
             return None;
@@ -792,6 +793,10 @@ pub struct App {
     /// pressure. They say why a sample did or did not become a touch.
     pub pad_bit: [bool; 2],
     pub pad_pressure: [u16; 2],
+    /// When a pad's part last fired its bind. The hardware click of the same
+    /// press arrives just after the gesture, and must not run a second, older
+    /// whole-pad button bind on top of it.
+    pub pad_part_at: Option<(PadSide, Instant)>,
     /// When a gesture was just recorded. The same physical touch can reach the
     /// app twice — as window input and from the kernel — and the second copy
     /// must not turn a page, open the panel or fire a bind.
@@ -1103,6 +1108,7 @@ impl App {
             pad_touch_frames: [0, 0],
             pad_bit: [false, false],
             pad_pressure: [0, 0],
+            pad_part_at: None,
             capture_guard: None,
             capture_drag: CaptureDrag::default(),
             pad_cursor: None,
@@ -4481,7 +4487,7 @@ impl App {
                     return;
                 }
                 let id = spec.id();
-                let hit = self
+                let mut hit = self
                     .cfg
                     .binds
                     .iter()
@@ -4490,7 +4496,25 @@ impl App {
                             && matches!(&b.trigger, Trigger::Gesture { spec: s } if s.id() == id)
                     })
                     .cloned();
+                // A part of a pad answers first; the whole pad is its
+                // fallback, so a bind for the entire pad still works after
+                // one quarter has been given its own action.
+                if hit.is_none() && spec.zone.is_some() {
+                    let whole = spec.whole_pad().id();
+                    hit = self
+                        .cfg
+                        .binds
+                        .iter()
+                        .find(|b| {
+                            b.enabled
+                                && matches!(&b.trigger, Trigger::Gesture { spec: s } if s.id() == whole)
+                        })
+                        .cloned();
+                }
                 if let Some(bind) = hit {
+                    if let (Some(side), Some(_)) = (spec.pad, spec.zone) {
+                        self.pad_part_at = Some((side, Instant::now()));
+                    }
                     self.execute_bind(&bind);
                     return;
                 }
@@ -4536,7 +4560,7 @@ impl App {
                         }
                         // The forwarded pad is the game's controller: the same
                         // button must not also launch an app or a macro.
-                        if !self.gamepad_on {
+                        if !self.gamepad_on && !self.pad_part_just_ran(code) {
                             self.run_button_binds(code);
                         }
                     }
@@ -4545,6 +4569,18 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Whether a pad press has already run the bind of its part. A pad click
+    /// and the gesture of the same press are one action, not two.
+    fn pad_part_just_ran(&self, code: u16) -> bool {
+        let side = match code {
+            input::BTN_THUMB => PadSide::Left,
+            input::BTN_THUMB2 => PadSide::Right,
+            _ => return false,
+        };
+        self.pad_part_at
+            .is_some_and(|(at, when)| at == side && when.elapsed() < Duration::from_millis(200))
     }
 
     fn run_button_binds(&mut self, code: u16) {
@@ -7237,6 +7273,7 @@ mod bind_tests {
                     fingers: 1,
                     dir: Some(SwipeDir::Up),
                     pad: None,
+                    zone: None,
                 },
             },
             Action::None,

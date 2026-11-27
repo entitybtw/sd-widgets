@@ -1067,6 +1067,44 @@ fn trackpad(
             Stroke::new(1.0, t.line.gamma_multiply(0.55)),
         );
     }
+    // The quarters the pad is bound by: the middle lines run corner to corner
+    // so the four parts read as one grid, and the part under a finger is
+    // filled in. A pad used as one surface leaves them faint.
+    let zone_alpha = if touch.is_some() { 0.75 } else { 0.35 };
+    p.line_segment(
+        [
+            Pos2::new(rect.left(), rect.center().y),
+            Pos2::new(rect.right(), rect.center().y),
+        ],
+        Stroke::new(1.0, t.line.gamma_multiply(zone_alpha)),
+    );
+    p.line_segment(
+        [
+            Pos2::new(rect.center().x, rect.top()),
+            Pos2::new(rect.center().x, rect.bottom()),
+        ],
+        Stroke::new(1.0, t.line.gamma_multiply(zone_alpha)),
+    );
+    if let Some((x, y)) = touch {
+        let zone = sdw_core::model::PadZone::from_point((x + 1.0) * 0.5, (y + 1.0) * 0.5);
+        let (left, top) = match zone {
+            sdw_core::model::PadZone::TopLeft => (true, true),
+            sdw_core::model::PadZone::TopRight => (false, true),
+            sdw_core::model::PadZone::BottomLeft => (true, false),
+            sdw_core::model::PadZone::BottomRight => (false, false),
+        };
+        let zr = Rect::from_min_max(
+            Pos2::new(
+                if left { rect.left() } else { rect.center().x },
+                if top { rect.top() } else { rect.center().y },
+            ),
+            Pos2::new(
+                if left { rect.center().x } else { rect.right() },
+                if top { rect.center().y } else { rect.bottom() },
+            ),
+        );
+        p.rect_filled(zr, CornerRadius::ZERO, t.accent.gamma_multiply(0.14));
+    }
     p.text(
         rect.center(),
         Align2::CENTER_CENTER,
@@ -1182,6 +1220,7 @@ pub fn gesture_hint(kind: GestureKind, fingers: u8, dir: SwipeDir, lang: Lang) -
         fingers,
         dir: Some(dir),
         pad: None,
+        zone: None,
     }
     .label_lang(lang)
 }

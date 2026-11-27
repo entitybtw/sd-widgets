@@ -5,7 +5,7 @@
 //! the virtual pad on the computer.
 
 use sdw_core::model::GestureSpec;
-use sdw_core::model::{GestureKind, PadSide, SwipeDir};
+use sdw_core::model::{GestureKind, PadSide, PadZone, SwipeDir};
 use sdw_core::udp::{self, GamepadState};
 use sdw_core::{t, Lang};
 use std::collections::HashSet;
@@ -1188,12 +1188,19 @@ struct PadState {
     /// would otherwise make on release.
     clicked: bool,
     click_seen: bool,
+    /// The click already fired its part's bind, so a second sample and the
+    /// release must not fire it again.
+    click_sent: bool,
     /// A swipe or a long press already fired during this touch, so the
     /// release must not fire a second gesture.
     fired: bool,
     started: Option<Instant>,
     start: (f32, f32),
     last: (f32, f32),
+    /// The part of the pad this touch is in, from where it started. A click
+    /// resolves through it too, so the same press means one thing in each
+    /// quarter of the pad.
+    zone: Option<PadZone>,
     /// Farthest point from `start` and how far it is. Using the farthest point
     /// instead of the last one means a curved swipe or a swipe that comes back
     /// still counts.
@@ -1278,6 +1285,7 @@ impl PadTracker {
             st.click_seen = true;
         } else if !st.active {
             st.click_seen = false;
+            st.click_sent = false;
         }
     }
 
@@ -1335,8 +1343,22 @@ impl PadTracker {
                 st.reach = 0.0;
                 st.reach_at = point;
                 st.travel = 0.0;
+                // The part is fixed by where the finger landed, not by where
+                // it ends: dragging out of a quarter must not move the tap.
+                st.zone = Some(PadZone::from_point(point.0, point.1));
                 st.click_seen = st.clicked;
-                return None;
+                st.click_sent = false;
+            }
+            // A hard press is a tap on the part it went down in, so pressing
+            // an edge of the pad runs that edge's bind. It is resolved here,
+            // on the pad sample, because the zone is only known once the
+            // finger's position has arrived.
+            if st.clicked && !st.click_sent {
+                st.click_sent = true;
+                // The press is the action: the same touch must not also turn
+                // into a swipe or a tap under the finger.
+                st.fired = true;
+                return Some(pad_press(side, st.zone));
             }
             st.travel += distance(st.last, point);
             let reach = distance(st.start, point);
@@ -1357,17 +1379,26 @@ impl PadTracker {
             if let Some(started) = st.started {
                 if now.saturating_duration_since(started) >= PAD_LONG {
                     st.fired = true;
+                    let zone = st.zone;
                     return Some(GestureSpec {
                         kind: GestureKind::LongPress,
                         fingers: 1,
                         dir: None,
                         pad: Some(side),
+                        zone,
                     });
                 }
             }
             return None;
         }
         if !st.active {
+            // The click may arrive with no usable position (the evdev node
+            // zeroes the axes on a lift). It still has to run its bind, so it
+            // goes to the whole pad rather than nowhere.
+            if st.clicked && !st.click_sent {
+                st.click_sent = true;
+                return Some(pad_press(side, None));
+            }
             return None;
         }
         st.active = false;
@@ -1377,10 +1408,17 @@ impl PadTracker {
         let dur = now.saturating_duration_since(started);
         let fired = st.fired;
         let click_seen = st.click_seen;
+        let click_sent = st.click_sent;
         st.fired = false;
         st.click_seen = false;
+        st.click_sent = false;
         if fired {
             return None;
+        }
+        if click_seen && !click_sent {
+            // The press and the lift landed in the same sample: the part is
+            // still the action, and losing it would make a quick press dead.
+            return Some(pad_press(side, st.zone));
         }
         let mut g = if st.reach > PAD_SWIPE || st.travel > PAD_TRAVEL_LIVE {
             pad_gesture(side, st, GestureKind::Swipe)
@@ -1390,6 +1428,7 @@ impl PadTracker {
                 fingers: 1,
                 dir: None,
                 pad: Some(side),
+                zone: st.zone,
             }
         } else if click_seen {
             // The click was the action; the touch that carried it is not a
@@ -1401,12 +1440,28 @@ impl PadTracker {
                 fingers: 1,
                 dir: None,
                 pad: Some(side),
+                zone: st.zone,
             }
         };
         if g.kind == GestureKind::Swipe && g.dir.is_none() {
             g.dir = Some(SwipeDir::Right);
         }
         Some(g)
+    }
+}
+
+/// A pad press: the part the finger went down in, or the whole pad when no
+/// position has arrived yet, so a press is never simply lost.
+fn pad_press(side: PadSide, zone: Option<PadZone>) -> GestureSpec {
+    match zone {
+        Some(zone) => GestureSpec::pad_part(side, zone),
+        None => GestureSpec {
+            kind: GestureKind::Tap,
+            fingers: 1,
+            dir: None,
+            pad: Some(side),
+            zone: None,
+        },
     }
 }
 
@@ -1433,6 +1488,7 @@ fn pad_gesture(side: PadSide, st: &PadState, kind: GestureKind) -> GestureSpec {
         fingers: 1,
         dir: Some(dir),
         pad: Some(side),
+        zone: None,
     }
 }
 
@@ -1459,6 +1515,7 @@ pub(crate) fn gesture_from(
                 fingers,
                 dir: None,
                 pad: None,
+                zone: None,
             });
         }
     }
@@ -1501,6 +1558,7 @@ fn swipe_or_tap(fingers: u8, dur: Duration, dist: f32, dx: f32, dy: f32) -> Opti
             fingers,
             dir: Some(dir),
             pad: None,
+            zone: None,
         });
     }
     if dur > Duration::from_millis(620) {
@@ -1509,6 +1567,7 @@ fn swipe_or_tap(fingers: u8, dur: Duration, dist: f32, dx: f32, dy: f32) -> Opti
             fingers,
             dir: None,
             pad: None,
+            zone: None,
         });
     }
     Some(GestureSpec {
@@ -1516,6 +1575,7 @@ fn swipe_or_tap(fingers: u8, dur: Duration, dist: f32, dx: f32, dy: f32) -> Opti
         fingers,
         dir: None,
         pad: None,
+        zone: None,
     })
 }
 
@@ -2040,29 +2100,35 @@ mod tests {
     }
 
     #[test]
-    fn a_pad_click_does_not_also_fire_a_tap() {
+    fn a_pad_click_fires_its_part_and_not_a_tap() {
         let mut pads = PadTracker::new();
         let t0 = Instant::now();
-        // The click bit and the touch bit arrive together; the click is the
-        // action and must not be doubled by a tap on release.
+        // The click bit and the touch bit arrive together; the press is the
+        // action, and it goes to the part the finger is in. The release must
+        // not fire a second, whole-pad tap on top of it.
         pads.click(PadSide::Left, true);
-        assert!(pads.feed(PadSide::Left, 0.2, 0.1, true, t0).is_none());
+        let g = pads
+            .feed(PadSide::Left, -0.5, -0.5, true, t0)
+            .expect("the press resolves a part");
+        assert_eq!(g.kind, GestureKind::Tap);
+        assert_eq!(g.pad, Some(PadSide::Left));
+        assert_eq!(g.zone, Some(PadZone::TopLeft));
         assert!(pads
             .feed(
                 PadSide::Left,
-                0.2,
-                0.1,
+                -0.5,
+                -0.5,
                 false,
                 t0 + Duration::from_millis(90),
             )
             .is_none());
         pads.click(PadSide::Left, false);
-        // A later real tap still works.
+        // A later light touch is its own part, with its own bind.
         assert!(pads
             .feed(
                 PadSide::Left,
-                0.1,
-                0.1,
+                -0.5,
+                -0.6,
                 true,
                 t0 + Duration::from_millis(500)
             )
@@ -2070,13 +2136,75 @@ mod tests {
         let g = pads
             .feed(
                 PadSide::Left,
-                0.1,
-                0.1,
+                -0.5,
+                -0.6,
                 false,
                 t0 + Duration::from_millis(560),
             )
             .expect("a later tap");
         assert_eq!(g.kind, GestureKind::Tap);
+        assert_eq!(g.zone, Some(PadZone::TopLeft));
+    }
+
+    #[test]
+    fn a_press_without_a_position_still_fires_the_whole_pad() {
+        // The evdev node zeroes the pad axes when the finger lifts, so a
+        // click can arrive with no usable coordinate. It must still run a
+        // bind, not vanish.
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        pads.click(PadSide::Left, true);
+        let g = pads
+            .feed(PadSide::Left, 0.0, 0.0, false, t0)
+            .expect("the press fires");
+        assert_eq!(g.kind, GestureKind::Tap);
+        assert_eq!(g.pad, Some(PadSide::Left));
+        assert_eq!(g.zone, None);
+        // One press is one action.
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                0.0,
+                0.0,
+                false,
+                t0 + Duration::from_millis(40)
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn a_press_is_not_also_a_swipe() {
+        // Holding the pad and sliding used to produce the press and then a
+        // swipe from the same finger. The press is the action.
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        pads.click(PadSide::Right, true);
+        let press = pads
+            .feed(PadSide::Right, -0.7, 0.7, true, t0)
+            .expect("the press");
+        assert_eq!(press.zone, Some(PadZone::BottomLeft));
+        // A long slide after the press stays quiet.
+        for step in 1..12 {
+            let x = -0.7 + step as f32 * 0.12;
+            assert!(pads
+                .feed(
+                    PadSide::Right,
+                    x,
+                    0.7,
+                    true,
+                    t0 + Duration::from_millis(step * 12)
+                )
+                .is_none());
+        }
+        assert!(pads
+            .feed(
+                PadSide::Right,
+                0.7,
+                0.7,
+                false,
+                t0 + Duration::from_millis(200)
+            )
+            .is_none());
     }
 
     #[test]
@@ -2086,6 +2214,7 @@ mod tests {
             fingers: 1,
             dir: Some(SwipeDir::Left),
             pad: None,
+            zone: None,
         };
         let left = GestureSpec {
             pad: Some(PadSide::Left),
@@ -2096,6 +2225,110 @@ mod tests {
         assert_eq!(left.id(), "1f-swipe-left@left");
         assert_ne!(glass.id(), left.id());
         assert!(left.label().contains("левая панель"));
+    }
+
+    #[test]
+    fn a_pad_part_keeps_the_whole_pad_id_as_its_prefix() {
+        // A bind for the whole pad must stay an id of its own, so a part's id
+        // can fall back to it without ever matching it directly.
+        let whole = GestureSpec {
+            kind: GestureKind::Tap,
+            fingers: 1,
+            dir: None,
+            pad: Some(PadSide::Left),
+            zone: None,
+        };
+        assert_eq!(whole.id(), "1f-tap@left");
+        let part = GestureSpec::pad_part(PadSide::Left, PadZone::TopRight);
+        assert_eq!(part.id(), "1f-tap@left:tr");
+        assert_ne!(part.id(), whole.id());
+        // The fallback drops only the part.
+        assert_eq!(part.whole_pad().id(), whole.id());
+        assert!(part.label().contains("верхний правый"));
+        assert!(!whole.label().contains("верхний правый"));
+    }
+
+    #[test]
+    fn every_part_of_a_pad_gets_its_own_id() {
+        let mut ids: Vec<String> = PadZone::ALL
+            .iter()
+            .map(|z| GestureSpec::pad_part(PadSide::Right, *z).id())
+            .collect();
+        let count = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), count, "each part is a different bind");
+    }
+
+    #[test]
+    fn a_part_is_taken_from_where_the_finger_lands() {
+        // The pad's own coordinates, so the halves are the visual ones.
+        assert_eq!(PadZone::from_point(0.1, 0.1), PadZone::TopLeft);
+        assert_eq!(PadZone::from_point(0.9, 0.1), PadZone::TopRight);
+        assert_eq!(PadZone::from_point(0.1, 0.9), PadZone::BottomLeft);
+        assert_eq!(PadZone::from_point(0.9, 0.9), PadZone::BottomRight);
+    }
+
+    #[test]
+    fn a_press_and_a_light_tap_on_the_same_part_agree() {
+        // Both ways of hitting a pad must resolve to the same part, otherwise
+        // a bind would work with a press and not with a touch.
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        pads.click(PadSide::Right, true);
+        let press = pads
+            .feed(PadSide::Right, 0.6, 0.6, true, t0)
+            .expect("a press");
+        pads.click(PadSide::Right, false);
+        pads.feed(
+            PadSide::Right,
+            0.6,
+            0.6,
+            false,
+            t0 + Duration::from_millis(80),
+        );
+
+        assert!(pads
+            .feed(
+                PadSide::Right,
+                0.6,
+                0.6,
+                true,
+                t0 + Duration::from_millis(400),
+            )
+            .is_none());
+        let tap = pads
+            .feed(
+                PadSide::Right,
+                0.6,
+                0.6,
+                false,
+                t0 + Duration::from_millis(460),
+            )
+            .expect("a tap");
+        assert_eq!(tap.kind, GestureKind::Tap);
+        assert_eq!(tap.zone, press.zone);
+        assert_eq!(tap.pad, press.pad);
+        assert_eq!(tap.id(), press.id());
+    }
+
+    #[test]
+    fn dragging_into_another_part_keeps_the_one_it_started_in() {
+        // A finger that lands in one quarter and moves is still that quarter's
+        // press when it lifts; the movement is a swipe, not a moved tap.
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        assert!(pads.feed(PadSide::Left, -0.6, -0.6, true, t0).is_none());
+        let g = pads
+            .feed(
+                PadSide::Left,
+                -0.6,
+                -0.6,
+                false,
+                t0 + Duration::from_millis(70),
+            )
+            .expect("a tap");
+        assert_eq!(g.zone, Some(PadZone::TopLeft));
     }
 
     #[cfg(target_os = "linux")]

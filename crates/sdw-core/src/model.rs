@@ -1140,6 +1140,62 @@ impl PadSide {
     }
 }
 
+/// One quarter of a touchpad. A pad's surface is a 2×2 grid; a tap or a press
+/// that starts in a part is bound to that part, so one pad can act as four
+/// buttons. `x` grows to the right and `y` down, as on the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PadZone {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl PadZone {
+    pub const ALL: [Self; 4] = [
+        Self::TopLeft,
+        Self::TopRight,
+        Self::BottomLeft,
+        Self::BottomRight,
+    ];
+
+    /// The part a point belongs to. `x` and `y` are 0..1 across the pad, the
+    /// same space the gesture code speaks: `x` grows to the right and `y`
+    /// down, as on the screen.
+    pub fn from_point(x: f32, y: f32) -> Self {
+        match (x < 0.5, y < 0.5) {
+            (true, true) => Self::TopLeft,
+            (false, true) => Self::TopRight,
+            (true, false) => Self::BottomLeft,
+            (false, false) => Self::BottomRight,
+        }
+    }
+
+    /// Short, stable suffix for a bind id.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::TopLeft => "tl",
+            Self::TopRight => "tr",
+            Self::BottomLeft => "bl",
+            Self::BottomRight => "br",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        self.label_lang(crate::i18n::Lang::Ru)
+    }
+
+    pub fn label_lang(self, lang: crate::i18n::Lang) -> &'static str {
+        match self {
+            Self::TopLeft => crate::t!(lang, "верхний левый", "top left"),
+            Self::TopRight => crate::t!(lang, "верхний правый", "top right"),
+            Self::BottomLeft => crate::t!(lang, "нижний левый", "bottom left"),
+            Self::BottomRight => crate::t!(lang, "нижний правый", "bottom right"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GestureSpec {
     pub kind: GestureKind,
@@ -1152,6 +1208,10 @@ pub struct GestureSpec {
     /// have no such field and load as `None`.
     #[serde(default)]
     pub pad: Option<PadSide>,
+    /// Which part of that pad the tap landed on. `None` is the whole pad, and
+    /// is what every older config has.
+    #[serde(default)]
+    pub zone: Option<PadZone>,
 }
 
 fn one() -> u8 {
@@ -1165,6 +1225,7 @@ impl Default for GestureSpec {
             fingers: 1,
             dir: None,
             pad: None,
+            zone: None,
         }
     }
 }
@@ -1189,10 +1250,37 @@ impl GestureSpec {
         };
         // The pad is part of the identity: a swipe on the left pad and the
         // same swipe on the glass are two different triggers.
-        match self.pad {
+        let base = match self.pad {
             Some(PadSide::Left) => format!("{base}@left"),
             Some(PadSide::Right) => format!("{base}@right"),
             None => base,
+        };
+        // And so is the part: the top-left of a pad is a different button
+        // from the whole pad.
+        match self.zone {
+            Some(zone) => format!("{base}:{}", zone.key()),
+            None => base,
+        }
+    }
+
+    /// A tap on one part of a pad. Both a light touch and a pad press resolve
+    /// to this, so the part answers whichever way it is hit.
+    pub fn pad_part(side: PadSide, zone: PadZone) -> Self {
+        Self {
+            kind: GestureKind::Tap,
+            fingers: 1,
+            dir: None,
+            pad: Some(side),
+            zone: Some(zone),
+        }
+    }
+
+    /// The same gesture with its part dropped: the whole pad, as an older
+    /// config knows it.
+    pub fn whole_pad(&self) -> Self {
+        Self {
+            zone: None,
+            ..*self
         }
     }
     pub fn label(&self) -> String {
@@ -1219,10 +1307,14 @@ impl GestureSpec {
         } else {
             format!("{fingers}: {what}")
         };
-        match self.pad {
+        let mut label = match self.pad {
             Some(side) => format!("{base} · {}", side.label_lang(lang)),
             None => base,
+        };
+        if let Some(zone) = self.zone {
+            label = format!("{label} · {}", zone.label_lang(lang));
         }
+        label
     }
 }
 
