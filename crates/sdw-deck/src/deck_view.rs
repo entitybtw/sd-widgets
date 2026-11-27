@@ -150,6 +150,9 @@ impl DeckControl {
 pub struct DeckInput<'a> {
     pub state: &'a GamepadState,
     pub pressed: &'a HashSet<u16>,
+    /// Latest raw touch position per pad, -1..1 around the centre. `None`
+    /// means the finger is not on that pad.
+    pub pad_touch: [Option<(f32, f32)>; 2],
     pub host: &'a str,
     pub pad_label: &'a str,
     pub online: bool,
@@ -446,6 +449,7 @@ pub fn show(
         control_fill,
         "ltp",
         view.cfg.glow,
+        input.pad_touch[0],
     );
     trackpad(
         ui,
@@ -456,6 +460,7 @@ pub fn show(
         control_fill,
         "rtp",
         view.cfg.glow,
+        input.pad_touch[1],
     );
     hit(ui, DeckControl::LTrackpad, l.ltp);
     hit(ui, DeckControl::RTrackpad, l.rtp);
@@ -1026,6 +1031,7 @@ fn trackpad(
     fill: Color32,
     id: &str,
     glow: bool,
+    touch: Option<(f32, f32)>,
 ) {
     let k = ui
         .ctx()
@@ -1068,7 +1074,43 @@ fn trackpad(
         FontId::new(rect.height() * 0.22, FontFamily::Monospace),
         if active { Color32::WHITE } else { t.faint },
     );
-    if glow && active {
+    // The live touch point: a small hard square with a hairline crosshair, so
+    // a finger on the exact centre is visible as "here", not as "nothing".
+    if let Some((x, y)) = touch {
+        let inset = rect.width() * 0.12;
+        let area = rect.shrink2(Vec2::new(inset, inset));
+        let pos = Pos2::new(
+            area.left() + (x.clamp(-1.0, 1.0) + 1.0) * 0.5 * area.width(),
+            area.top() + (y.clamp(-1.0, 1.0) + 1.0) * 0.5 * area.height(),
+        );
+        let dot = rect.width() * 0.045;
+        p.line_segment(
+            [
+                Pos2::new(pos.x, rect.top() + 6.0),
+                Pos2::new(pos.x, rect.bottom() - 6.0),
+            ],
+            Stroke::new(1.0, t.accent.gamma_multiply(0.45)),
+        );
+        p.line_segment(
+            [
+                Pos2::new(rect.left() + 6.0, pos.y),
+                Pos2::new(rect.right() - 6.0, pos.y),
+            ],
+            Stroke::new(1.0, t.accent.gamma_multiply(0.45)),
+        );
+        p.rect_filled(
+            Rect::from_center_size(pos, Vec2::splat(dot)),
+            CornerRadius::ZERO,
+            t.accent,
+        );
+        p.rect_stroke(
+            Rect::from_center_size(pos, Vec2::splat(dot * 2.2)),
+            CornerRadius::ZERO,
+            Stroke::new(1.0, t.accent.gamma_multiply(0.5)),
+            egui::StrokeKind::Outside,
+        );
+    }
+    if glow && (active || touch.is_some()) {
         p.rect_stroke(
             rect.expand(4.0),
             CornerRadius::ZERO,

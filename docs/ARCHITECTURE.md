@@ -78,12 +78,32 @@
   pad node is recognised by `ABS_HAT1X` (`Role::SteamDeck`): its two touchpads
   are `HAT0` (left) and `HAT1` (right), and `HAT2` carries the analog triggers,
   while the sticks stay on `ABS_X/Y` and `ABS_RX/RY`. A generic pad keeps `HAT0`
-  as its d-pad. hid-steam does not expose a pad's touch flag, only zeroed axes, so a
-  pad touch is sampled at every `SYN_REPORT` and ends when both axes are zero;
-  the finished `GestureSpec` carries `pad: Some(PadSide)` so the same swipe can
-  drive a different bind on the left pad, the right pad and the glass (a pad
-  gesture never triggers the glass's three/four-finger short cuts). Pad clicks
-  are `BTN_THUMB`/`BTN_THUMB2` (`L-pad`/`R-pad`). A recording session listens to
+  as its d-pad. A pad's position is a sample of its own. On the hidraw path the
+  report's touch bit is what ends a touch: SDL caches the last coordinates
+  across a release, so a nonzero coordinate alone proves nothing, and only the
+  bit can tell a lifted finger from a resting one. A touch the bit reported
+  starts and ends with it, which makes a finger resting exactly on the middle a
+  real `(0, 0)` touch and a lift an explicit release. A touch the bit never
+  reported (the evdev node, or firmware that raises the bit late) is read from
+  the coordinate: a clear offset from the middle is the finger, and the middle
+  is the release. The decision is per touch, not per pad, so a firm press
+  cannot switch light touches off. The pad's Y is negated on both paths, as SDL
+  does: the hardware reports positive as up, while the rest of the app calls
+  down positive, so without the flip every swipe would come out upside down.
+  A swipe and a long press fire while the finger is still down, as soon as the
+  direction or the duration is clear, so a release that never arrives cannot
+  swallow them; only the tap waits for the lift, because it is defined by one.
+  The direction comes from the farthest point of the path (not the newest
+  sample), and the total travel is checked too, so a curved swipe or one that
+  comes back still counts. The finished `GestureSpec` carries
+  `pad: Some(PadSide)` so the same swipe can drive a different bind on the left
+  pad, the right pad and the glass (a pad gesture never triggers the glass's
+  three/four-finger short cuts). Pad clicks are `BTN_THUMB`/`BTN_THUMB2`
+  (`L-pad`/`R-pad`) and are not doubled into a tap. The report also carries each
+  pad's pressure (bytes 56–60, which the kernel reads but does not use); the app
+  shows it, with the raw touch bit and the live position, on the input card, so
+  a light touch that produces no gesture can be diagnosed on the Deck itself.
+  A recording session listens to
   both sources: the kernel touch tracker and the window's own touch or pointer
   drag. The window is what actually works when the compositor turns the
   touchscreen into a mouse or the touch device is grabbed, and a single gesture

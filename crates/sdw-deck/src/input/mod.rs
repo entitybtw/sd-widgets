@@ -156,6 +156,18 @@ pub enum InputCmd {
 #[derive(Debug, Clone)]
 pub enum DeckEvent {
     Pad(GamepadState),
+    /// One raw touchpad sample. `touched` is what the tracker decided (a
+    /// finger is on the pad); `bit` is the raw hardware touch bit and
+    /// `pressure` the pad's pressure reading, kept for the input card so a
+    /// light touch can be diagnosed on the Deck itself.
+    PadTouch {
+        side: PadSide,
+        x: f32,
+        y: f32,
+        touched: bool,
+        bit: bool,
+        pressure: u16,
+    },
     Gesture(GestureSpec),
     Button {
         code: u16,
@@ -214,9 +226,18 @@ enum Raw {
         tracking: Option<i32>,
     },
     TouchDown(bool),
-    /// End of one input report from the Deck pad; the tick that samples both
-    /// touchpads.
-    Sync,
+    /// One touchpad sample from either the hidraw report or evdev. `touch` is
+    /// the hardware touch bit: the kernel and SDL both treat it as the only
+    /// authority on whether a coordinate is a finger, and `false` means the
+    /// axes were left behind by the last touch. `pressure` is reported for
+    /// diagnostics only (evdev has none, so it is 0 there).
+    Pad {
+        side: PadSide,
+        x: f32,
+        y: f32,
+        touch: bool,
+        pressure: u16,
+    },
 }
 
 /// Stable codes for the two failures the UI can translate itself.
@@ -514,6 +535,14 @@ struct DeckReport {
     rt: f32,
     lpad: (f32, f32),
     rpad: (f32, f32),
+    /// The hardware touch bits. Unlike the zeroed axes they survive a finger
+    /// resting exactly on the centre of a pad.
+    lpad_touched: bool,
+    rpad_touched: bool,
+    /// Capacitive/pressure readings, bytes 56..60. A finger on the pad is
+    /// above the rest level; 0 means nothing is there.
+    lpad_pressure: u16,
+    rpad_pressure: u16,
     accel: [i16; 3],
     gyro: [i16; 3],
 }
@@ -544,16 +573,15 @@ fn parse_deck_report(data: &[u8]) -> Option<DeckReport> {
         ry: -norm(s16(54)),
         lt: (u16v(44) as f32 / 32767.0).clamp(0.0, 1.0),
         rt: (u16v(46) as f32 / 32767.0).clamp(0.0, 1.0),
-        lpad: if lpad_touched {
-            (norm(s16(16)), norm(s16(18)))
-        } else {
-            (0.0, 0.0)
-        },
-        rpad: if rpad_touched {
-            (norm(s16(20)), norm(s16(22)))
-        } else {
-            (0.0, 0.0)
-        },
+        // SDL negates the pad's Y: the hardware reports positive as "up",
+        // while the rest of this code (and the screen) calls down positive.
+        // Without this a swipe up would fire "down".
+        lpad: (norm(s16(16)), -norm(s16(18))),
+        rpad: (norm(s16(20)), -norm(s16(22))),
+        lpad_touched,
+        rpad_touched,
+        lpad_pressure: u16v(56),
+        rpad_pressure: u16v(58),
         accel: [s16(24), s16(28), -s16(26)],
         gyro: [s16(30), s16(34), -s16(32)],
     })
@@ -588,10 +616,25 @@ fn send_motion(tx: &Sender<Raw>, code: u16, value: i16, old: &mut i16) {
 /// slightly lower analog value.
 #[cfg(target_os = "linux")]
 fn emit_deck_report(report: &DeckReport, prev: &mut DeckReport, tx: &Sender<Raw>, device: &str) {
-    send_axis(tx, ABS_HAT0X, report.lpad.0, &mut prev.lpad.0);
-    send_axis(tx, ABS_HAT0Y, report.lpad.1, &mut prev.lpad.1);
-    send_axis(tx, ABS_HAT1X, report.rpad.0, &mut prev.rpad.0);
-    send_axis(tx, ABS_HAT1Y, report.rpad.1, &mut prev.rpad.1);
+    // Every report carries both pads, with the hardware touch bit and the
+    // position. The bit is the truth (`hid-steam` clears the axes when it is
+    // gone), and the position is sent unchanged, so a dead-centre touch is a
+    // real (0, 0) sample rather than a release. The pressure goes along so the
+    // input card can show what the pad really reports.
+    let _ = tx.send(Raw::Pad {
+        side: PadSide::Left,
+        x: report.lpad.0,
+        y: report.lpad.1,
+        touch: report.lpad_touched,
+        pressure: report.lpad_pressure,
+    });
+    let _ = tx.send(Raw::Pad {
+        side: PadSide::Right,
+        x: report.rpad.0,
+        y: report.rpad.1,
+        touch: report.rpad_touched,
+        pressure: report.rpad_pressure,
+    });
     send_axis(tx, ABS_X, report.lx, &mut prev.lx);
     send_axis(tx, ABS_Y, report.ly, &mut prev.ly);
     send_axis(tx, ABS_RX, report.rx, &mut prev.rx);
@@ -644,13 +687,40 @@ fn read_deck_hidraw(
     };
     let mut buf = [0u8; DECK_REPORT_SIZE];
     let mut prev = DeckReport::default();
+    // A node that exists but never yields report 9 is the failure the Deck
+    // test needs to see: silence would look like a dead touchpad. The first
+    // unexpected bytes are kept, so the format is visible in the error line.
+    let mut unparsed = 0u32;
+    let mut sample: Option<Vec<u8>> = None;
     while !stop.load(Ordering::Relaxed) {
         match file.read(&mut buf) {
             Ok(0) => std::thread::sleep(Duration::from_millis(4)),
             Ok(n) => {
                 if let Some(report) = parse_deck_report(&buf[..n]) {
+                    unparsed = 0;
+                    sample = None;
                     emit_deck_report(&report, &mut prev, &tx, &device);
-                    let _ = tx.send(Raw::Sync);
+                } else {
+                    unparsed = unparsed.saturating_add(1);
+                    if sample.is_none() {
+                        sample = Some(buf[..n].to_vec());
+                    }
+                    if unparsed == 50 {
+                        let head = sample
+                            .as_deref()
+                            .unwrap_or(&[])
+                            .iter()
+                            .take(16)
+                            .map(|b| format!("{b:02x}"))
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let _ = tx.send(Raw::Key {
+                            role: Role::Keys,
+                            code: 0,
+                            value: -1,
+                            device: format!("{}: unexpected report {head}", path.display()),
+                        });
+                    }
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -751,6 +821,11 @@ fn read_device(
 
     let is_mt = ranges.contains_key(&ABS_MT_POSITION_X);
     let mut slot: u8 = 0;
+    // evdev has no touch bit for the pads, so the last seen axes are sampled
+    // at every SYN_REPORT and zero means "lifted". The raw hidraw path uses
+    // the real touch bits instead.
+    let mut lpad = (0.0f32, 0.0f32);
+    let mut rpad = (0.0f32, 0.0f32);
     loop {
         let events = match dev.fetch_events() {
             Ok(e) => e,
@@ -843,25 +918,32 @@ fn read_device(
                             value: v,
                         });
                     }
-                    Role::SteamDeck => {
-                        let v = match code {
-                            ABS_X | ABS_Y | ABS_RX | ABS_RY => norm_signed(code, value),
-                            // Both touchpads, raw around a centre.
-                            ABS_HAT0X | ABS_HAT0Y | ABS_HAT1X | ABS_HAT1Y => {
-                                norm_signed(code, value)
-                            }
-                            // Analog triggers: HAT2Y is the left one, HAT2X the
-                            // right one, 0..max.
-                            ABS_HAT2Y | ABS_HAT2X => norm(code, value),
-                            ABS_Z | ABS_RZ | ABS_GAS | ABS_BRAKE => norm(code, value),
-                            _ => continue,
-                        };
-                        let _ = tx.send(Raw::Axis {
-                            role,
-                            code,
-                            value: v,
-                        });
-                    }
+                    Role::SteamDeck => match code {
+                        // Both touchpads, raw around a centre. Keep the last
+                        // value and publish it at the report boundary.
+                        ABS_HAT0X => lpad.0 = norm_signed(code, value),
+                        // hid-steam passes the pad's Y through unnegated, so
+                        // it is flipped here for the same screen convention
+                        // as the hidraw report.
+                        ABS_HAT0Y => lpad.1 = -norm_signed(code, value),
+                        ABS_HAT1X => rpad.0 = norm_signed(code, value),
+                        ABS_HAT1Y => rpad.1 = -norm_signed(code, value),
+                        _ => {
+                            let v = match code {
+                                ABS_X | ABS_Y | ABS_RX | ABS_RY => norm_signed(code, value),
+                                // Analog triggers: HAT2Y is the left one,
+                                // HAT2X the right one, 0..max.
+                                ABS_HAT2Y | ABS_HAT2X => norm(code, value),
+                                ABS_Z | ABS_RZ | ABS_GAS | ABS_BRAKE => norm(code, value),
+                                _ => continue,
+                            };
+                            let _ = tx.send(Raw::Axis {
+                                role,
+                                code,
+                                value: v,
+                            });
+                        }
+                    },
                     Role::Motion => {
                         let _ = tx.send(Raw::Axis {
                             role,
@@ -872,11 +954,26 @@ fn read_device(
                     Role::Keys => {}
                 },
                 EV_SYN => {
-                    // One report ends here. The Deck does not expose the pads'
-                    // touch bits, so the report boundary is the only place to
-                    // tell "finger still down" from "finger just lifted".
+                    // One report ends here. evdev has no touch bit, so the
+                    // report boundary is the only place to tell "finger still
+                    // down" from "finger just lifted".
                     if code == 0 && role == Role::SteamDeck {
-                        let _ = tx.send(Raw::Sync);
+                        let _ = tx.send(Raw::Pad {
+                            side: PadSide::Left,
+                            x: lpad.0,
+                            y: lpad.1,
+                            // evdev has no touch bit and no pressure: the
+                            // coordinate itself is all there is.
+                            touch: false,
+                            pressure: 0,
+                        });
+                        let _ = tx.send(Raw::Pad {
+                            side: PadSide::Right,
+                            x: rpad.0,
+                            y: rpad.1,
+                            touch: false,
+                            pressure: 0,
+                        });
                     }
                 }
                 _ => {}
@@ -1086,22 +1183,63 @@ impl Tracker {
 /// One touchpad's state across the reports of a single touch.
 #[derive(Default)]
 struct PadState {
-    /// Latest raw position, -1..1 around the centre.
-    x: f32,
-    y: f32,
     active: bool,
+    /// The pad click is a separate bind; it must not also produce the tap it
+    /// would otherwise make on release.
+    clicked: bool,
+    click_seen: bool,
+    /// A swipe or a long press already fired during this touch, so the
+    /// release must not fire a second gesture.
+    fired: bool,
     started: Option<Instant>,
     start: (f32, f32),
     last: (f32, f32),
+    /// Farthest point from `start` and how far it is. Using the farthest point
+    /// instead of the last one means a curved swipe or a swipe that comes back
+    /// still counts.
+    reach: f32,
+    reach_at: (f32, f32),
+    /// Total length of the path, so a circle that returns near the start is
+    /// still movement rather than a tap.
+    travel: f32,
+    /// Whether this touch was reported by the hardware bit at least once.
+    /// Such a touch ends with the bit, because SDL shows that the coordinates
+    /// can outlive the finger. A touch the bit never mentioned is read from
+    /// the coordinate instead, so a firmware that raises the bit only on a
+    /// firm press cannot make light touches stop working.
+    bit_this_touch: bool,
+    /// Where the last touch ended. A leftover coordinate that never moves must
+    /// not start a new touch, or a lifted finger would look like a press held
+    /// forever; a real new touch begins once the coordinate leaves this point.
+    release_at: Option<(f32, f32)>,
 }
 
-/// Turns the two touchpads' position reports into gestures, one per touch.
+/// How far a finger must travel on a pad before it is a swipe, in the 0..1
+/// space the gesture code speaks (a full pad is 1.0 across). The live
+/// threshold is a little larger than the release one so a gesture fires once
+/// the direction is clear, not on the first jittery sample.
+const PAD_SWIPE: f32 = 0.055;
+const PAD_SWIPE_LIVE: f32 = 0.08;
+const PAD_TRAVEL_LIVE: f32 = 0.14;
+const PAD_LONG: Duration = Duration::from_millis(620);
+/// How far from the middle a coordinate must be to count as a finger on a pad
+/// that sends no touch bit at all.
+const PAD_OFF_CENTRE: f32 = 0.02;
+
+/// Turns the two touchpads' samples into gestures, one per touch.
 ///
-/// hid-steam reports a pad's coordinates while it is touched and zeroes both
-/// axes when the finger lifts; the touch flag itself is not exposed. So a
-/// report is sampled on every SYN_REPORT, and a sample of (0,0) ends the
-/// touch. That also means a dead-centre tap produces nothing — there is no
-/// coordinate to speak of.
+/// In Game Mode report 9 carries an explicit touch bit for each pad, so a
+/// finger on the exact centre is a real touch and a release is a bit, not a
+/// guess: the coordinates outlive the finger there, so only the bit can end a
+/// touch. On the evdev node there is no such bit; hid-steam zeroes the axes
+/// when the finger lifts, so there the middle is the release and an offset is
+/// the finger.
+///
+/// A movement gesture does not wait for the release: the swipe fires as soon
+/// as the finger has clearly travelled, and a long press fires while the
+/// finger is still down. That way a pad gesture cannot be lost to a release
+/// bit that never arrives, and the answer is felt under the finger. The tap
+/// is the only gesture that needs the release, because it is defined by one.
 struct PadTracker {
     left: PadState,
     right: PadState,
@@ -1122,29 +1260,179 @@ impl PadTracker {
         }
     }
 
-    fn sample(&mut self, side: PadSide, now: Instant) -> Option<GestureSpec> {
+    /// Whether a finger is currently on that pad, as the tracker understands
+    /// it. The UI uses this, not the raw coordinate.
+    fn is_touched(&self, side: PadSide) -> bool {
+        match side {
+            PadSide::Left => self.left.active,
+            PadSide::Right => self.right.active,
+        }
+    }
+
+    /// Remember a pad click. The click bind is the action; a short touch that
+    /// happens to include a click must not fire a second, tap bind.
+    fn click(&mut self, side: PadSide, down: bool) {
         let st = self.state(side);
-        let touched = st.x != 0.0 || st.y != 0.0;
+        st.clicked = down;
+        if down {
+            st.click_seen = true;
+        } else if !st.active {
+            st.click_seen = false;
+        }
+    }
+
+    /// Feed one sample. Returns a gesture when this sample completes one:
+    /// a swipe or a long press as soon as it is clear, a tap on release.
+    ///
+    /// `signal` is the hardware touch bit. Once a touch has been reported by
+    /// the bit, only the bit can end it: SDL keeps the last coordinates across
+    /// a release, so a nonzero position proves nothing there. A touch the bit
+    /// never reported (evdev, or firmware that raises it late) is read from
+    /// the coordinate: a clear offset from the middle is a finger, and the
+    /// middle is the release.
+    fn feed(
+        &mut self,
+        side: PadSide,
+        x: f32,
+        y: f32,
+        signal: bool,
+        now: Instant,
+    ) -> Option<GestureSpec> {
+        let st = self.state(side);
         // -1..1 around a centre -> the 0..1 the gesture code speaks.
-        let point = ((st.x + 1.0) * 0.5, (st.y + 1.0) * 0.5);
+        let point = (
+            ((x + 1.0) * 0.5).clamp(0.0, 1.0),
+            ((y + 1.0) * 0.5).clamp(0.0, 1.0),
+        );
+        let off_centre = distance(point, (0.5, 0.5)) > PAD_OFF_CENTRE;
+        // A coordinate the firmware left behind after a release sits exactly
+        // where the last touch ended, so it cannot start a new one.
+        let away_from_release = st
+            .release_at
+            .map(|at| distance(at, point) > PAD_OFF_CENTRE)
+            .unwrap_or(true);
+        let touched = if signal {
+            st.bit_this_touch = true;
+            true
+        } else if st.bit_this_touch {
+            // This touch came from the bit and this sample has none: the
+            // finger is up, whatever the axes still say.
+            false
+        } else if st.active {
+            // A position-only touch continues while the coordinate stays off
+            // the middle.
+            off_centre
+        } else {
+            off_centre && away_from_release
+        };
         if touched {
             if !st.active {
                 st.active = true;
+                st.fired = false;
                 st.started = Some(now);
                 st.start = point;
+                st.last = point;
+                st.reach = 0.0;
+                st.reach_at = point;
+                st.travel = 0.0;
+                st.click_seen = st.clicked;
+                return None;
+            }
+            st.travel += distance(st.last, point);
+            let reach = distance(st.start, point);
+            if reach > st.reach {
+                st.reach = reach;
+                st.reach_at = point;
             }
             st.last = point;
+            if st.fired {
+                return None;
+            }
+            // The direction is taken from the farthest point, not the newest
+            // one: a curve or a swipe back still has one clear direction.
+            if st.reach >= PAD_SWIPE_LIVE || st.travel >= PAD_TRAVEL_LIVE {
+                st.fired = true;
+                return Some(pad_gesture(side, st, GestureKind::Swipe));
+            }
+            if let Some(started) = st.started {
+                if now.saturating_duration_since(started) >= PAD_LONG {
+                    st.fired = true;
+                    return Some(GestureSpec {
+                        kind: GestureKind::LongPress,
+                        fingers: 1,
+                        dir: None,
+                        pad: Some(side),
+                    });
+                }
+            }
             return None;
         }
         if !st.active {
             return None;
         }
         st.active = false;
+        st.release_at = Some(point);
+        st.bit_this_touch = false;
         let started = st.started.take()?;
         let dur = now.saturating_duration_since(started);
-        let mut g = gesture_from(1, dur, st.start, st.last, None)?;
-        g.pad = Some(side);
+        let fired = st.fired;
+        let click_seen = st.click_seen;
+        st.fired = false;
+        st.click_seen = false;
+        if fired {
+            return None;
+        }
+        let mut g = if st.reach > PAD_SWIPE || st.travel > PAD_TRAVEL_LIVE {
+            pad_gesture(side, st, GestureKind::Swipe)
+        } else if dur >= PAD_LONG {
+            GestureSpec {
+                kind: GestureKind::LongPress,
+                fingers: 1,
+                dir: None,
+                pad: Some(side),
+            }
+        } else if click_seen {
+            // The click was the action; the touch that carried it is not a
+            // second, separate tap.
+            return None;
+        } else {
+            GestureSpec {
+                kind: GestureKind::Tap,
+                fingers: 1,
+                dir: None,
+                pad: Some(side),
+            }
+        };
+        if g.kind == GestureKind::Swipe && g.dir.is_none() {
+            g.dir = Some(SwipeDir::Right);
+        }
         Some(g)
+    }
+}
+
+/// A swipe in the direction of the farthest travelled point.
+fn pad_gesture(side: PadSide, st: &PadState, kind: GestureKind) -> GestureSpec {
+    let (dx, dy) = if st.reach > 0.02 {
+        (st.reach_at.0 - st.start.0, st.reach_at.1 - st.start.1)
+    } else {
+        (st.last.0 - st.start.0, st.last.1 - st.start.1)
+    };
+    let dir = if dx.abs() > dy.abs() {
+        if dx > 0.0 {
+            SwipeDir::Right
+        } else {
+            SwipeDir::Left
+        }
+    } else if dy > 0.0 {
+        SwipeDir::Down
+    } else {
+        SwipeDir::Up
+    };
+    GestureSpec {
+        kind,
+        fingers: 1,
+        dir: Some(dir),
+        pad: Some(side),
     }
 }
 
@@ -1357,6 +1645,13 @@ fn handle_raw(
                         BTN_TR2 => state.rt = if down { 1.0 } else { 0.0 },
                         _ => {}
                     }
+                    if role == Role::SteamDeck {
+                        match code {
+                            BTN_THUMB => pads.click(PadSide::Left, down),
+                            BTN_THUMB2 => pads.click(PadSide::Right, down),
+                            _ => {}
+                        }
+                    }
                     if code != 0 {
                         let _ = evt_tx.send(DeckEvent::Button {
                             code,
@@ -1425,10 +1720,6 @@ fn handle_raw(
                 // Analog triggers arrive on HAT2, not Z/RZ like a generic pad.
                 ABS_HAT2Y => state.lt = value,
                 ABS_HAT2X => state.rt = value,
-                ABS_HAT0X => pads.left.x = value,
-                ABS_HAT0Y => pads.left.y = value,
-                ABS_HAT1X => pads.right.x = value,
-                ABS_HAT1Y => pads.right.y = value,
                 _ => {}
             },
             Role::Motion => match code {
@@ -1459,12 +1750,27 @@ fn handle_raw(
             }
         }
         Raw::TouchDown(down) => tracker.down(down, Instant::now()),
-        Raw::Sync => {
+        Raw::Pad {
+            side,
+            x,
+            y,
+            touch,
+            pressure,
+        } => {
             let now = Instant::now();
-            for side in [PadSide::Left, PadSide::Right] {
-                if let Some(gesture) = pads.sample(side, now) {
-                    let _ = evt_tx.send(DeckEvent::Gesture(gesture));
-                }
+            // The UI shows a touch only when the tracker says the pad is
+            // really occupied; a stale coordinate is not a finger.
+            let present = pads.feed(side, x, y, touch, now);
+            let _ = evt_tx.send(DeckEvent::PadTouch {
+                side,
+                x,
+                y,
+                touched: pads.is_touched(side),
+                bit: touch,
+                pressure,
+            });
+            if let Some(gesture) = present {
+                let _ = evt_tx.send(DeckEvent::Gesture(gesture));
             }
         }
     }
@@ -1578,24 +1884,32 @@ mod tests {
         let mut pads = PadTracker::new();
         let t0 = Instant::now();
         // Finger lands on the left half of the left pad.
-        pads.left.x = -0.5;
-        pads.left.y = 0.0;
-        assert!(pads.sample(PadSide::Left, t0).is_none());
-        // Moves to the right half a moment later.
-        pads.left.x = 0.5;
-        assert!(pads
-            .sample(PadSide::Left, t0 + Duration::from_millis(120))
-            .is_none());
-        // Lifts: both axes are zeroed, which is the only release signal.
-        pads.left.x = 0.0;
-        pads.left.y = 0.0;
+        assert!(pads.feed(PadSide::Left, -0.5, 0.0, true, t0).is_none());
+        // Moves to the right half: the swipe fires under the finger, without
+        // waiting for a release bit that may never arrive.
         let g = pads
-            .sample(PadSide::Left, t0 + Duration::from_millis(160))
+            .feed(
+                PadSide::Left,
+                0.5,
+                0.0,
+                true,
+                t0 + Duration::from_millis(120),
+            )
             .expect("a swipe");
         assert_eq!(g.kind, GestureKind::Swipe);
         assert_eq!(g.dir, Some(SwipeDir::Right));
         assert_eq!(g.fingers, 1);
         assert_eq!(g.pad, Some(PadSide::Left));
+        // The release does not repeat it.
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                0.0,
+                0.0,
+                false,
+                t0 + Duration::from_millis(160),
+            )
+            .is_none());
     }
 
     #[test]
@@ -1603,17 +1917,166 @@ mod tests {
         let mut pads = PadTracker::new();
         let t0 = Instant::now();
         // Nothing happens while the pad is untouched.
-        assert!(pads.sample(PadSide::Right, t0).is_none());
-        pads.right.x = 0.2;
-        pads.right.y = 0.1;
-        assert!(pads.sample(PadSide::Right, t0).is_none());
-        pads.right.x = 0.0;
-        pads.right.y = 0.0;
+        assert!(pads.feed(PadSide::Right, 0.0, 0.0, false, t0).is_none());
+        // A finger resting in place is not a gesture yet.
+        assert!(pads.feed(PadSide::Right, 0.2, 0.1, true, t0).is_none());
         let g = pads
-            .sample(PadSide::Right, t0 + Duration::from_millis(90))
+            .feed(
+                PadSide::Right,
+                0.2,
+                0.1,
+                false,
+                t0 + Duration::from_millis(90),
+            )
             .expect("a tap");
         assert_eq!(g.kind, GestureKind::Tap);
         assert_eq!(g.pad, Some(PadSide::Right));
+    }
+
+    #[test]
+    fn pad_centre_touch_is_a_tap_not_a_miss() {
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        // The hardware touch bit is set while both axes are exactly zero.
+        assert!(pads.feed(PadSide::Left, 0.0, 0.0, true, t0).is_none());
+        let g = pads
+            .feed(
+                PadSide::Left,
+                0.0,
+                0.0,
+                false,
+                t0 + Duration::from_millis(70),
+            )
+            .expect("a centre tap");
+        assert_eq!(g.kind, GestureKind::Tap);
+        assert_eq!(g.pad, Some(PadSide::Left));
+    }
+
+    #[test]
+    fn pad_full_path_keeps_a_swipe_that_returns() {
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        assert!(pads.feed(PadSide::Left, -0.5, 0.0, true, t0).is_none());
+        // The swipe fires on the farthest point of the path.
+        let g = pads
+            .feed(
+                PadSide::Left,
+                0.6,
+                0.0,
+                true,
+                t0 + Duration::from_millis(100),
+            )
+            .expect("a swipe");
+        assert_eq!(g.kind, GestureKind::Swipe);
+        assert_eq!(g.dir, Some(SwipeDir::Right));
+        // Coming back to the start must not produce a tap on release.
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                -0.5,
+                0.0,
+                true,
+                t0 + Duration::from_millis(180),
+            )
+            .is_none());
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                0.0,
+                0.0,
+                false,
+                t0 + Duration::from_millis(220),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn pad_finds_all_four_swipe_directions() {
+        for (x, y, want) in [
+            (0.7, 0.0, SwipeDir::Right),
+            (-0.7, 0.0, SwipeDir::Left),
+            (0.0, 0.7, SwipeDir::Down),
+            (0.0, -0.7, SwipeDir::Up),
+        ] {
+            let mut pads = PadTracker::new();
+            let t0 = Instant::now();
+            assert!(pads.feed(PadSide::Right, 0.0, 0.0, true, t0).is_none());
+            let g = pads
+                .feed(PadSide::Right, x, y, true, t0 + Duration::from_millis(100))
+                .expect("a swipe");
+            assert_eq!(g.kind, GestureKind::Swipe);
+            assert_eq!(g.dir, Some(want), "raw ({x}, {y})");
+        }
+    }
+
+    #[test]
+    fn pad_long_press_fires_while_the_finger_stays() {
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        assert!(pads.feed(PadSide::Right, 0.1, 0.1, true, t0).is_none());
+        // Still down, but past the long-press mark: the gesture fires now,
+        // so a release bit that never comes cannot swallow it.
+        let g = pads
+            .feed(
+                PadSide::Right,
+                0.1,
+                0.1,
+                true,
+                t0 + Duration::from_millis(700),
+            )
+            .expect("a long press");
+        assert_eq!(g.kind, GestureKind::LongPress);
+        assert_eq!(g.pad, Some(PadSide::Right));
+        // The release is not a second gesture.
+        assert!(pads
+            .feed(
+                PadSide::Right,
+                0.1,
+                0.1,
+                false,
+                t0 + Duration::from_millis(1000),
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn a_pad_click_does_not_also_fire_a_tap() {
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        // The click bit and the touch bit arrive together; the click is the
+        // action and must not be doubled by a tap on release.
+        pads.click(PadSide::Left, true);
+        assert!(pads.feed(PadSide::Left, 0.2, 0.1, true, t0).is_none());
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                0.2,
+                0.1,
+                false,
+                t0 + Duration::from_millis(90),
+            )
+            .is_none());
+        pads.click(PadSide::Left, false);
+        // A later real tap still works.
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                0.1,
+                0.1,
+                true,
+                t0 + Duration::from_millis(500)
+            )
+            .is_none());
+        let g = pads
+            .feed(
+                PadSide::Left,
+                0.1,
+                0.1,
+                false,
+                t0 + Duration::from_millis(560),
+            )
+            .expect("a later tap");
+        assert_eq!(g.kind, GestureKind::Tap);
     }
 
     #[test]
@@ -1674,16 +2137,258 @@ mod tests {
         data[46..48].copy_from_slice(&(32767u16).to_le_bytes());
 
         let report = parse_deck_report(&data).expect("report 9");
+        assert!(report.lpad_touched);
+        assert!(report.rpad_touched);
         assert!((report.lpad.0 + 0.5).abs() < 0.001);
-        assert!((report.lpad.1 - 0.5).abs() < 0.001);
+        // Raw Y is +0.5 (up), which is negative in screen terms.
+        assert!((report.lpad.1 + 0.5).abs() < 0.001);
         assert!((report.rpad.0 - 0.25).abs() < 0.001);
-        assert!((report.rpad.1 + 0.25).abs() < 0.001);
+        assert!((report.rpad.1 - 0.25).abs() < 0.001);
         assert!((report.lx - 1.0).abs() < 0.001);
         assert!((report.ly + 1.0).abs() < 0.001);
         assert!((report.rx + 1.0).abs() < 0.001);
         assert!((report.ry - 1.0).abs() < 0.001);
         assert!((report.lt - 0.5).abs() < 0.001);
         assert!((report.rt - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn deck_report_keeps_a_centre_touch_alive() {
+        let mut data = empty_deck_report();
+        // The touch bit is set while both coordinates are exactly zero.
+        data[10] = 0x08;
+        let report = parse_deck_report(&data).expect("report 9");
+        assert!(report.lpad_touched);
+        assert!(!report.rpad_touched);
+        assert_eq!(report.lpad, (0.0, 0.0));
+
+        let (tx, rx) = channel();
+        let mut prev = DeckReport::default();
+        emit_deck_report(&report, &mut prev, &tx, "test");
+        drop(tx);
+        let mut seen = false;
+        for raw in rx {
+            if let Raw::Pad {
+                side: PadSide::Left,
+                x,
+                y,
+                touch: true,
+                ..
+            } = raw
+            {
+                assert_eq!((x, y), (0.0, 0.0));
+                seen = true;
+            }
+        }
+        assert!(seen, "the centre touch must reach the tracker");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn the_position_reaches_the_tracker_and_the_bit_is_not_faked() {
+        let mut data = empty_deck_report();
+        // No touch bit, but the axes clearly left the centre. The position must
+        // arrive unchanged; the bit must stay honest so the tracker keeps
+        // trusting it over the coordinates on a pad that does send it.
+        data[16..18].copy_from_slice(&(16384i16).to_le_bytes());
+        data[20..22].copy_from_slice(&(-16384i16).to_le_bytes());
+        let report = parse_deck_report(&data).expect("report 9");
+        assert!(!report.lpad_touched);
+        assert!(!report.rpad_touched);
+
+        let (tx, rx) = channel();
+        let mut prev = DeckReport::default();
+        emit_deck_report(&report, &mut prev, &tx, "test");
+        drop(tx);
+        let samples: Vec<(PadSide, f32, f32, bool)> = rx
+            .into_iter()
+            .filter_map(|raw| match raw {
+                Raw::Pad {
+                    side, x, y, touch, ..
+                } => Some((side, x, y, touch)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(samples.len(), 2);
+        assert!(!samples[0].3);
+        assert_eq!(samples[0].0, PadSide::Left);
+        assert!((samples[0].1 - 0.5).abs() < 0.01);
+        assert_eq!(samples[1].0, PadSide::Right);
+        assert!((samples[1].1 + 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_raw_upward_move_becomes_an_up_swipe() {
+        // End to end through the report: the hardware's positive Y is up, and
+        // the tracker must call it "up", not "down". This is the sign SDL
+        // uses, and the one the Deck's pads need.
+        let mut data = empty_deck_report();
+        data[10] = 0x08;
+        data[16..18].copy_from_slice(&(0i16).to_le_bytes());
+        data[18..20].copy_from_slice(&(0i16).to_le_bytes());
+        let start = parse_deck_report(&data).expect("report 9");
+
+        let mut moved = data;
+        // Slide the finger up: the raw Y grows positive.
+        moved[18..20].copy_from_slice(&(22000i16).to_le_bytes());
+        let end = parse_deck_report(&moved).expect("report 9");
+
+        let (tx, rx) = channel();
+        let mut prev = DeckReport::default();
+        emit_deck_report(&start, &mut prev, &tx, "test");
+        emit_deck_report(&end, &mut prev, &tx, "test");
+        drop(tx);
+
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        let mut gestures = Vec::new();
+        for raw in rx {
+            if let Raw::Pad {
+                side: PadSide::Left,
+                x,
+                y,
+                touch,
+                ..
+            } = raw
+            {
+                if let Some(g) = pads.feed(PadSide::Left, x, y, touch, t0) {
+                    gestures.push(g);
+                }
+            }
+        }
+        assert_eq!(gestures.len(), 1, "one swipe");
+        assert_eq!(gestures[0].kind, GestureKind::Swipe);
+        assert_eq!(gestures[0].dir, Some(SwipeDir::Up));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn pad_pressure_is_parsed_for_diagnostics() {
+        let mut data = empty_deck_report();
+        data[56..58].copy_from_slice(&(120u16).to_le_bytes());
+        data[58..60].copy_from_slice(&(7u16).to_le_bytes());
+        let report = parse_deck_report(&data).expect("report 9");
+        assert_eq!(report.lpad_pressure, 120);
+        assert_eq!(report.rpad_pressure, 7);
+        // Pressure is a reading, not the touch signal: the axes stayed at the
+        // centre without the bit, so nothing is reported as touched.
+        assert!(!report.lpad_touched);
+
+        let (tx, rx) = channel();
+        let mut prev = DeckReport::default();
+        emit_deck_report(&report, &mut prev, &tx, "test");
+        drop(tx);
+        let pressures: Vec<u16> = rx
+            .into_iter()
+            .filter_map(|raw| match raw {
+                Raw::Pad { pressure, .. } => Some(pressure),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pressures, vec![120, 7]);
+    }
+
+    #[test]
+    fn a_pad_that_sends_the_bit_ignores_a_leftover_coordinate() {
+        // The bit arrives once, then stops while the axes stay put. SDL keeps
+        // the last position like this, so the coordinates must not keep the
+        // touch alive or a lifted finger would look like a press forever.
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        assert!(pads.feed(PadSide::Left, 0.4, 0.2, true, t0).is_none());
+        assert!(pads.is_touched(PadSide::Left));
+        // The very next sample without the bit ends the touch, however soon
+        // after the first one it arrives.
+        let g = pads.feed(
+            PadSide::Left,
+            0.4,
+            0.2,
+            false,
+            t0 + Duration::from_millis(8),
+        );
+        assert!(!pads.is_touched(PadSide::Left));
+        // A short touch that ends before it travelled is a tap, not nothing.
+        assert_eq!(g.expect("a tap").kind, GestureKind::Tap);
+    }
+
+    #[test]
+    fn a_firm_press_does_not_switch_light_touches_off() {
+        // The reported symptom: a firm press works, a light touch does not.
+        // A touch the bit reported must not make every later coordinate
+        // useless — a light touch that the bit misses is still a touch.
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        // A firm press: the bit is set.
+        assert!(pads.feed(PadSide::Left, 0.3, 0.3, true, t0).is_none());
+        assert!(pads.is_touched(PadSide::Left));
+        // Lifting is a tap, and the stale coordinate that stays behind must
+        // not restart the touch.
+        let g = pads.feed(
+            PadSide::Left,
+            0.3,
+            0.3,
+            false,
+            t0 + Duration::from_millis(60),
+        );
+        assert_eq!(g.expect("a tap").kind, GestureKind::Tap);
+        assert!(!pads.is_touched(PadSide::Left));
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                0.3,
+                0.3,
+                false,
+                t0 + Duration::from_millis(80)
+            )
+            .is_none());
+        assert!(!pads.is_touched(PadSide::Left));
+
+        // A light touch elsewhere, with no bit at all, is still a finger.
+        assert!(pads
+            .feed(
+                PadSide::Left,
+                -0.4,
+                0.2,
+                false,
+                t0 + Duration::from_millis(120)
+            )
+            .is_none());
+        assert!(pads.is_touched(PadSide::Left));
+    }
+
+    #[test]
+    fn a_position_only_pad_reads_the_coordinate() {
+        // evdev shape: no bit ever arrives, so the middle is the release and
+        // an offset is the finger.
+        let mut pads = PadTracker::new();
+        let t0 = Instant::now();
+        // The middle starts nothing.
+        assert!(pads.feed(PadSide::Right, 0.0, 0.0, false, t0).is_none());
+        assert!(!pads.is_touched(PadSide::Right));
+        // An offset is a finger.
+        assert!(pads
+            .feed(
+                PadSide::Right,
+                0.5,
+                -0.3,
+                false,
+                t0 + Duration::from_millis(8),
+            )
+            .is_none());
+        assert!(pads.is_touched(PadSide::Right));
+        // Back to the middle ends it.
+        assert!(pads
+            .feed(
+                PadSide::Right,
+                0.0,
+                0.0,
+                false,
+                t0 + Duration::from_millis(16),
+            )
+            .is_some());
+        assert!(!pads.is_touched(PadSide::Right));
     }
 
     #[test]
@@ -1749,15 +2454,40 @@ mod tests {
                 .iter()
                 .filter(|r| matches!(r, Raw::Axis { .. }))
                 .count(),
+            0
+        );
+        // Both pads are published on every report, so the live position and
+        // the touch bit never depend on the axes having changed.
+        assert_eq!(
+            first
+                .iter()
+                .filter(|r| matches!(r, Raw::Pad { .. }))
+                .count(),
             2
         );
 
-        // The same state again is silence, not a repeated press.
+        // The same state again repeats the pad samples but nothing else: no
+        // second press and no axis chatter.
         emit_deck_report(&report, &mut prev, &tx, "Steam Deck");
-        assert!(rx.try_iter().next().is_none());
+        let again: Vec<Raw> = rx.try_iter().collect();
+        assert_eq!(
+            again
+                .iter()
+                .filter(|r| matches!(r, Raw::Key { .. }))
+                .count(),
+            0
+        );
+        assert_eq!(
+            again
+                .iter()
+                .filter(|r| matches!(r, Raw::Pad { .. }))
+                .count(),
+            2
+        );
 
         report.buttons[slot] = false;
         report.lpad = (0.0, 0.0);
+        report.lpad_touched = false;
         emit_deck_report(&report, &mut prev, &tx, "Steam Deck");
         let released: Vec<Raw> = rx.try_iter().collect();
         assert_eq!(
@@ -1767,6 +2497,15 @@ mod tests {
                 .count(),
             1
         );
+        // The release is a touch bit going down, not a position guess.
+        assert!(released.iter().any(|r| matches!(
+            r,
+            Raw::Pad {
+                side: PadSide::Left,
+                touch: false,
+                ..
+            }
+        )));
     }
 
     #[test]

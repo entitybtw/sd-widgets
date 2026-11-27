@@ -2435,6 +2435,13 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
         DeckInput {
             state: &state,
             pressed: &pressed,
+            // A touch is only drawn while it is fresh: if the raw stream stops
+            // (Steam closed the node, the reader died), a stale position must
+            // not look like a finger still resting on the pad.
+            pad_touch: app.pad_touch.map(|t| {
+                t.filter(|(_, _, at)| at.elapsed() < Duration::from_millis(250))
+                    .map(|(x, y, _)| (x, y))
+            }),
             host: &host,
             pad_label: &pad_label,
             online,
@@ -2639,11 +2646,51 @@ pub fn gamepad(app: &mut App, ui: &mut Ui, t: &Tokens) {
                         .color(t.bad),
                 );
             }
+            // Live pad diagnostics. Every report is shown, not only the ones
+            // that became a touch: the raw bit and the pressure are what tell
+            // a light finger apart from a firmware that does not report one.
+            for (i, name) in [(0usize, "L"), (1usize, "R")] {
+                let touch = app.pad_touch[i];
+                let pos = match touch {
+                    Some((x, y, _)) => format!("{x:+.2} {y:+.2}"),
+                    None => "--".to_string(),
+                };
+                let text = format!(
+                    "{name}: {} {} · {} {} · {} {} · {pos}",
+                    t!(app.lang, "отчётов", "reports"),
+                    app.pad_frames[i],
+                    t!(app.lang, "бит", "bit"),
+                    u8::from(app.pad_bit[i]),
+                    t!(app.lang, "давл.", "press"),
+                    app.pad_pressure[i],
+                );
+                ui.label(
+                    RichText::new(text)
+                        .family(FontFamily::Monospace)
+                        .size(11.0)
+                        .color(if touch.is_some() { t.accent } else { t.faint }),
+                );
+            }
             if let Some((code, label, at)) = &app.last_button {
                 ui.label(
                     RichText::new(format!(
                         "{}: {label} ({code}) · {:.1}s",
                         t!(app.lang, "последняя кнопка", "last button"),
+                        at.elapsed().as_secs_f32()
+                    ))
+                    .family(FontFamily::Monospace)
+                    .size(11.0)
+                    .color(t.faint),
+                );
+            }
+            // The last gesture, with its surface: the quickest way to see
+            // whether a pad swipe arrived and which pad it came from.
+            if let Some((spec, at)) = &app.last_gesture {
+                ui.label(
+                    RichText::new(format!(
+                        "{}: {} · {:.1}s",
+                        t!(app.lang, "последний жест", "last gesture"),
+                        spec.label_lang(app.lang),
                         at.elapsed().as_secs_f32()
                     ))
                     .family(FontFamily::Monospace)

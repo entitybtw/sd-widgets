@@ -781,6 +781,17 @@ pub struct App {
     pub pressed: HashSet<u16>,
     pub last_button: Option<(u16, String, Instant)>,
     pub last_gesture: Option<(GestureSpec, Instant)>,
+    /// Latest position of each touchpad while a finger is on it. The raw
+    /// report's touch bit makes a centre touch visible instead of looking
+    /// untouched.
+    pub pad_touch: [Option<(f32, f32, Instant)>; 2],
+    /// Samples and touched samples per pad, for the input diagnostics card.
+    pub pad_frames: [u64; 2],
+    pub pad_touch_frames: [u64; 2],
+    /// Raw hardware signals for the input card: the touch bit and the pad
+    /// pressure. They say why a sample did or did not become a touch.
+    pub pad_bit: [bool; 2],
+    pub pad_pressure: [u16; 2],
     /// When a gesture was just recorded. The same physical touch can reach the
     /// app twice — as window input and from the kernel — and the second copy
     /// must not turn a page, open the panel or fire a bind.
@@ -1087,6 +1098,11 @@ impl App {
             pressed: HashSet::new(),
             last_button: None,
             last_gesture: None,
+            pad_touch: [None, None],
+            pad_frames: [0, 0],
+            pad_touch_frames: [0, 0],
+            pad_bit: [false, false],
+            pad_pressure: [0, 0],
             capture_guard: None,
             capture_drag: CaptureDrag::default(),
             pad_cursor: None,
@@ -4406,6 +4422,32 @@ impl App {
             DeckEvent::Pad(state) => {
                 self.gamepad = state;
                 self.last_pad = Instant::now();
+            }
+            DeckEvent::PadTouch {
+                side,
+                x,
+                y,
+                touched,
+                bit,
+                pressure,
+            } => {
+                let i = match side {
+                    PadSide::Left => 0,
+                    PadSide::Right => 1,
+                };
+                self.pad_bit[i] = bit;
+                self.pad_pressure[i] = pressure;
+                self.pad_frames[i] = self.pad_frames[i].saturating_add(1);
+                if touched {
+                    self.pad_touch_frames[i] = self.pad_touch_frames[i].saturating_add(1);
+                    self.pad_touch[i] = Some((x, y, Instant::now()));
+                    // A live finger on a pad is input like a button: keep the
+                    // frame rate up so the drawn position follows it.
+                    self.last_pad = Instant::now();
+                    self.pad_seen = true;
+                } else {
+                    self.pad_touch[i] = None;
+                }
             }
             DeckEvent::Devices(list, pad) => {
                 self.input_devices = list;
